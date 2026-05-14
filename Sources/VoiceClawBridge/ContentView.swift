@@ -285,7 +285,7 @@ private struct SetupPanel: View {
                             .buttonStyle(.bordered)
                         }
 
-                        Text("Default is 3191. Change it only if that port is already in use, or if you intentionally want a separate test bridge. The iPhone URL will include this port, and changing it means pairing the phone again.")
+                        Text("Default is 3191. Change it only if that port is already in use, or if you intentionally want a separate test bridge. Use 1024-65535. The iPhone URL will include this port, and changing it means pairing the phone again.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -380,8 +380,9 @@ private struct TailscalePanel: View {
         VStack(alignment: .leading, spacing: 16) {
             PanelHeader(title: "Tailscale", subtitle: "Voice.Claw uses Tailscale Serve so the iPhone can reach this Mac on your private network.", symbol: "network")
 
+            InfoCallout(symbol: "network.badge.shield.half.filled", title: "What Tailscale Serve Is", bodyText: "Tailscale Serve is a private HTTPS reverse proxy: it takes a Tailscale URL on this Mac and forwards it to the local Voice.Claw bridge running on 127.0.0.1. It is private to devices in your tailnet, not a public internet link.")
             InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the Voice.Claw bridge service on this Mac. With the default, the iPhone connects to a URL ending in :3191. If you choose another free port, run Install and Start again and pair the iPhone with the new QR code.")
-            InfoCallout(symbol: "lock", title: "Status Checks Are Read-Only", bodyText: "Check Again only asks Tailscale what is currently configured. It does not change your Tailnet. Tailscale Serve is configured only when you click Install and Start.")
+            InfoCallout(symbol: "lock", title: "What Must Be Allowed", bodyText: "Tailscale must be installed and signed in, and HTTPS certificates must be enabled for your tailnet. If you are not the tailnet owner or admin, ask that person to enable HTTPS certificates. Voice.Claw configures Serve only when you click Install and Start; Check Again is read-only.")
 
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
 
@@ -390,6 +391,20 @@ private struct TailscalePanel: View {
                     store.openTailscaleInstallPage()
                 } label: {
                     Label("Get Tailscale", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    store.openTailscaleAdminConsole()
+                } label: {
+                    Label("Admin Console", systemImage: "gearshape")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    store.openTailscaleServeDocs()
+                } label: {
+                    Label("Serve Help", systemImage: "questionmark.circle")
                 }
                 .buttonStyle(.bordered)
 

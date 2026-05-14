@@ -59,8 +59,9 @@ final class BridgeStore: ObservableObject {
 
     func setupBridge() async {
         guard let portValue = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
-              (1...65535).contains(portValue)
+              (1024...65535).contains(portValue)
         else {
+            lastLog = "Choose a port from 1024 to 65535. Ports below 1024 are system ports and can fail without extra macOS privileges."
             status = .failed("Choose a valid port.")
             return
         }
@@ -120,6 +121,14 @@ final class BridgeStore: ObservableObject {
 
     func openTailscaleInstallPage() {
         NSWorkspace.shared.open(URL(string: "https://tailscale.com/download/mac")!)
+    }
+
+    func openTailscaleServeDocs() {
+        NSWorkspace.shared.open(URL(string: "https://tailscale.com/docs/features/tailscale-serve")!)
+    }
+
+    func openTailscaleAdminConsole() {
+        NSWorkspace.shared.open(URL(string: "https://login.tailscale.com/admin/dns")!)
     }
 
     func openNodeInstallPage() {
@@ -210,7 +219,7 @@ final class BridgeStore: ObservableObject {
                 tailscaleSummary = lines.prefix(10).joined(separator: "\n")
             }
         } catch {
-            tailscaleSummary = "Tailscale Serve is not ready. Install Tailscale, sign in on this Mac, then click Install and Start. This status check is read-only and does not change your Tailscale settings."
+            tailscaleSummary = "Tailscale Serve is not ready. This read-only check could not find an active Serve mapping for port \(port). Install and sign in to Tailscale, then click Install and Start. If setup still fails, enable HTTPS certificates in the Tailscale admin console."
         }
     }
 
@@ -250,7 +259,8 @@ final class BridgeStore: ObservableObject {
         }
 
         if lower.contains("tailscale") {
-            return "Tailscale is required for private iPhone-to-Mac access. Install Tailscale, sign in on this Mac, make sure Tailscale Serve is allowed, then click Install and Start again. The app only changes Tailscale Serve when you click Install and Start."
+            let detail = raw.isEmpty ? "" : "\n\nTailscale detail: \(raw)"
+            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local Voice.Claw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the iPhone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoice.Claw only changes Tailscale Serve when you click Install and Start; Check Again is read-only.\(detail)"
         }
 
         if lower.contains("launchctl") || lower.contains("bootstrap") || lower.contains("launch agent") {

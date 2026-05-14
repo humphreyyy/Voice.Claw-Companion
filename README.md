@@ -6,6 +6,7 @@ Voice.Claw Companion is the macOS bridge app for VoiceClaw on iPhone. It connect
 
 - macOS 13 or later.
 - Tailscale installed and signed in on the Mac.
+- Tailscale HTTPS certificates enabled for the user's tailnet.
 - Node.js installed on the Mac.
 - OpenClaw installed on the Mac, usually at `~/.openclaw`.
 - VoiceClaw installed on iPhone from TestFlight.
@@ -21,6 +22,8 @@ Open the app and click **Install and Start**. The companion will:
 - install `~/Library/LaunchAgents/ai.voiceclaw.bridge.plist`;
 - publish the local bridge through Tailscale Serve;
 - show a QR code and setup JSON for pairing the iPhone.
+
+Tailscale Serve is Tailscale's private HTTPS reverse proxy. It forwards a private Tailscale URL on the Mac to the local Voice.Claw bridge service. The default bridge port is `3191`; users should change it only if the port is already in use or they intentionally want a separate test bridge.
 
 The pairing payload does not include the user's OpenAI API key. The API key is entered in VoiceClaw on iPhone and stored in iOS Keychain.
 
@@ -46,4 +49,3 @@ Package a GitHub release artifact:
 ```
 
 For public distribution, notarize and staple the generated DMG before uploading it to a GitHub Release.
-
