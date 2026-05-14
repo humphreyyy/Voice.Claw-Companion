@@ -160,6 +160,10 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - Before calling openclaw_turn, say at most one brief bridge phrase, for example: "On it.", "Checking.", or "One sec." Do not explain routing, tools, architecture, or plans unless the user asks.
 - Do not invent tool results. Never claim you checked tools, files, memory, calendar, messages, or system state unless openclaw_turn returned that result.
 
+# iPhone-side tools
+- Use iphone_status when the user asks about this iPhone, VoiceClaw app version, battery, audio route, locale, timezone, GPT-Realtime-2 route, voice settings, or current VoiceClaw session setup.
+- iPhone-side tools are answered by the iPhone app, not by OpenClaw on the Mac.
+
 # Tool-call speech discipline
 - When doing something, do it. Do not narrate mechanics.
 - After a successful tool action, give a brief useful completion note. Do not overexplain implementation details unless asked.
@@ -184,6 +188,7 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - You are GPT-Realtime-2 in direct realtime intercom mode for User.
 - Use your native realtime audio, reasoning, and conversation capabilities fully.
 - Do not claim access to OpenClaw bridge tools, local files, memory, browser, calendars, messages, system state, or live dashboards unless those tools are explicitly supplied in the current session.
+- You may use iphone_status when the user asks about this iPhone, VoiceClaw app version, battery, audio route, locale, timezone, or current VoiceClaw session setup.
 - If the user asks for OpenClaw-backed work/current system facts, say briefly that Direct mode needs the OpenClaw Bridge mode for that and continue helpfully with what you can answer directly.
 - Keep spoken replies concise, natural, and high-agency. Do not narrate process; give a brief useful completion note when an action finishes.
 `;
@@ -228,6 +233,26 @@ const REALTIME_TOOLS = [
     name: 'bridge_status',
     description: 'Report local Realtime bridge state such as selected OpenClaw model, active work, queue, mic mute state, and recent latency.',
     parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
+  }
+];
+
+const IPHONE_REALTIME_TOOLS = [
+  {
+    type: 'function',
+    name: 'iphone_status',
+    description: 'Read current iPhone and VoiceClaw app status: app version, battery, thermal state, audio route, locale, timezone, GPT-Realtime-2 route, voice settings, and microphone mute state. Use only when the user asks about this phone, this app, audio route, or current session setup.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        detail: {
+          type: 'string',
+          enum: ['brief', 'full'],
+          description: 'Use full for troubleshooting; brief for ordinary questions.'
+        }
+      },
+      required: []
+    }
   }
 ];
 
@@ -588,12 +613,20 @@ function toolResultAnswerInstructions(result, fallback = '') {
 ${seed}`;
 }
 
+function isIPhoneOwnedRealtimeTool(name = '') {
+  return String(name || '').startsWith('iphone_');
+}
+
 async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
   const state = realtimeSidebandStateFor(key);
   const name = event.name || event.tool_name || event.function?.name;
   const callId = event.call_id || event.callId || event.item_id || event.id;
   if (!callId) return;
+  if (isIPhoneOwnedRealtimeTool(name)) {
+    await appendRealtimeLog({ kind: 'sideband_iphone_tool_ignored', sessionToken: key, name, callId });
+    return;
+  }
   if (state.handledCallIds.has(callId)) {
     await appendRealtimeLog({ kind: 'sideband_function_duplicate_ignored', sessionToken: key, name, callId });
     return;
@@ -805,7 +838,7 @@ function realtimeInstructionsForRoute(routeMode = '') {
 }
 
 function realtimeToolsForRoute(routeMode = '') {
-  return isOpenClawRealtimeRoute(routeMode) ? REALTIME_TOOLS : [];
+  return isOpenClawRealtimeRoute(routeMode) ? [...REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS] : IPHONE_REALTIME_TOOLS;
 }
 
 async function appendRealtimeLog(event) {
