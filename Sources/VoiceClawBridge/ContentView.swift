@@ -294,12 +294,18 @@ private struct SetupPanel: View {
 
                 GridRow {
                     FieldLabel("OpenClaw Install Path")
-                    TextField("\(NSHomeDirectory())/.openclaw", text: $store.openClawInstallPath)
-                        .textFieldStyle(.roundedBorder)
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("\(NSHomeDirectory())/.openclaw", text: $store.openClawInstallPath)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Choose the folder that contains openclaw.json. On most Macs this is ~/.openclaw.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
             InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates Voice.Claw's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. The Check Again buttons only read status.")
+            InfoCallout(symbol: "arrow.counterclockwise", title: "Testing First-Run Setup", bodyText: "Use Reset First-Run State when you want to experience setup from scratch. It removes only Voice.Claw's LaunchAgent and local bridge config. It does not uninstall Tailscale, change OpenClaw, remove Node.js, or erase tailnet settings.")
 
             HStack(spacing: 10) {
                 Button {
@@ -317,6 +323,14 @@ private struct SetupPanel: View {
                 }
                 .buttonStyle(.bordered)
                 .help("Re-check status after changing Tailscale, Node.js, OpenClaw, or the port outside this app.")
+
+                Button(role: .destructive) {
+                    Task { await store.resetForFirstRun() }
+                } label: {
+                    Label("Reset First-Run State", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.status.isWorking)
             }
         }
         .panelStyle()

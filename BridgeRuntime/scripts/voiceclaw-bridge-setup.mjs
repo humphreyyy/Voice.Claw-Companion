@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -22,6 +22,7 @@ function parseArgs(argv) {
     start: false,
     configureTailscale: false,
     jsonOnly: false,
+    reset: false,
     port: 3191,
     openClawInstallPath: join(HOME, '.openclaw'),
   };
@@ -32,6 +33,7 @@ function parseArgs(argv) {
     else if (arg === '--start') options.start = true;
     else if (arg === '--configure-tailscale' || arg === '--tailscale') options.configureTailscale = true;
     else if (arg === '--json') options.jsonOnly = true;
+    else if (arg === '--reset') options.reset = true;
     else if (arg === '--port') options.port = Number(argv[++index]);
     else if (arg.startsWith('--port=')) options.port = Number(arg.slice('--port='.length));
     else if (arg === '--openclaw-path') options.openClawInstallPath = argv[++index] || options.openClawInstallPath;
@@ -42,8 +44,8 @@ function parseArgs(argv) {
     }
   }
 
-  if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
-    throw new Error(`Invalid port: ${options.port}`);
+  if (!Number.isInteger(options.port) || options.port < 1024 || options.port > 65535) {
+    throw new Error(`Invalid port: ${options.port}. Choose a port from 1024 to 65535.`);
   }
 
   return options;
@@ -59,6 +61,7 @@ Options:
   --install-launch-agent     Install ~/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist
   --start                    Start or restart the launch agent after installing it
   --configure-tailscale      Run tailscale serve for the configured bridge port
+  --reset                    Stop Voice.Claw LaunchAgent and remove Voice.Claw bridge config
   --json                     Print only the iPhone setup JSON
   --port 3191                Bridge/Tailscale HTTPS port
   --openclaw-path PATH       OpenClaw install/config folder, usually ~/.openclaw
@@ -107,9 +110,30 @@ async function resolveNodePath() {
   return resolved;
 }
 
+async function resolveTailscalePath() {
+  const candidates = [
+    '/usr/local/bin/tailscale',
+    '/opt/homebrew/bin/tailscale',
+    '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+
+  try {
+    const { stdout } = await execFileAsync('/usr/bin/env', ['which', 'tailscale']);
+    const resolved = stdout.trim();
+    if (resolved) return resolved;
+  } catch {}
+
+  throw new Error('Tailscale CLI was not found. Install Tailscale, sign in, then reopen Voice.Claw Companion.');
+}
+
 async function detectTailscaleDNSName() {
   try {
-    const { stdout } = await execFileAsync('tailscale', ['status', '--json'], { timeout: 5000 });
+    const tailscalePath = await resolveTailscalePath();
+    const { stdout } = await execFileAsync(tailscalePath, ['status', '--json'], { timeout: 5000 });
     const status = JSON.parse(stdout);
     const dnsName = String(status?.Self?.DNSName || '').replace(/\.$/, '');
     return dnsName || '';
@@ -119,7 +143,8 @@ async function detectTailscaleDNSName() {
 }
 
 async function configureTailscaleServe(port) {
-  await execFileAsync('tailscale', [
+  const tailscalePath = await resolveTailscalePath();
+  await execFileAsync(tailscalePath, [
     'serve',
     '--yes',
     '--bg',
@@ -127,6 +152,13 @@ async function configureTailscaleServe(port) {
     String(port),
     `http://127.0.0.1:${port}`,
   ], { timeout: 15000 });
+}
+
+function validateOpenClawInstallPath(openClawInstallPath) {
+  const openClawConfigPath = join(openClawInstallPath, 'openclaw.json');
+  if (!existsSync(openClawConfigPath)) {
+    throw new Error(`OpenClaw config was not found at ${openClawConfigPath}. Choose the folder that contains openclaw.json, usually ~/.openclaw.`);
+  }
 }
 
 function xmlEscape(value) {
@@ -193,6 +225,13 @@ async function startLaunchAgent() {
   await execFileAsync('launchctl', ['kickstart', '-k', `${target}/${LAUNCH_AGENT_LABEL}`], { timeout: 10000 }).catch(() => {});
 }
 
+async function resetBridgeState() {
+  const target = `gui/${process.getuid()}`;
+  await execFileAsync('launchctl', ['bootout', target, LAUNCH_AGENT_FILE]).catch(() => {});
+  await rm(LAUNCH_AGENT_FILE, { force: true }).catch(() => {});
+  await rm(CONFIG_FILE, { force: true }).catch(() => {});
+}
+
 function buildPairingPayload(config) {
   return {
     VoiceClawSetupVersion: 1,
@@ -219,12 +258,24 @@ function printSummary(config, pairingPayload, actions) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.reset) {
+    await resetBridgeState();
+    if (options.jsonOnly) {
+      console.log(JSON.stringify({ ok: true, reset: true }, null, 2));
+    } else {
+      console.log('Voice.Claw bridge state reset. Tailscale, OpenClaw, and Node.js were not modified.');
+    }
+    return;
+  }
+
   const existing = await readBridgeConfig();
   const dnsName = await detectTailscaleDNSName();
   const port = options.port || existing.port || 3191;
+  const openClawInstallPath = normalizeInstallPath(options.openClawInstallPath || existing.openClawInstallPath);
+  validateOpenClawInstallPath(openClawInstallPath);
   const config = {
     port,
-    openClawInstallPath: normalizeInstallPath(options.openClawInstallPath || existing.openClawInstallPath),
+    openClawInstallPath,
     gatewayToken: existing.gatewayToken || generateToken(),
     tailscaleDNSName: dnsName || existing.tailscaleDNSName || '',
   };

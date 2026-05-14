@@ -40,6 +40,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>$APP_NAME</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleInfoDictionaryVersion</key>
@@ -116,4 +118,3 @@ For public GitHub releases, notarize the DMG before publishing:
   xcrun notarytool submit "$DMG_PATH" --key /path/to/AuthKey.p8 --key-id KEY_ID --issuer ISSUER_ID --wait
   xcrun stapler staple "$DMG_PATH"
 SUMMARY
-

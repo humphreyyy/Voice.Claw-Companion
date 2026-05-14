@@ -139,6 +139,36 @@ final class BridgeStore: ObservableObject {
         NSWorkspace.shared.open(URL(fileURLWithPath: normalizedOpenClawPath, isDirectory: true))
     }
 
+    func resetForFirstRun() async {
+        status = .working("Resetting")
+        do {
+            _ = try await runner.run(
+                executable: try await resolveNodeExecutable(),
+                arguments: [
+                    "scripts/voiceclaw-bridge-setup.mjs",
+                    "--reset",
+                    "--json",
+                ],
+                workingDirectory: projectRoot,
+                environment: ["VOICECLAW_BRIDGE_ROOT": projectRoot.path]
+            )
+            port = "3191"
+            openClawInstallPath = "\(NSHomeDirectory())/.openclaw"
+            bridgeURL = ""
+            tailscaleSummary = "Not checked"
+            localBridgeSummary = "Not checked"
+            pairingJSON = ""
+            pairingPreview = ""
+            pairingURL = ""
+            lastLog = "Reset complete. Voice.Claw removed its LaunchAgent and local bridge config only. Tailscale, OpenClaw, Node.js, and tailnet settings were not changed."
+            status = .idle
+            await refreshStatus()
+        } catch {
+            lastLog = Self.userFacingSetupError(error)
+            status = .failed("Reset Failed")
+        }
+    }
+
     private var normalizedOpenClawPath: String {
         let trimmed = openClawInstallPath.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "\(NSHomeDirectory())/.openclaw" : trimmed.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
@@ -260,7 +290,11 @@ final class BridgeStore: ObservableObject {
 
         if lower.contains("tailscale") {
             let detail = raw.isEmpty ? "" : "\n\nTailscale detail: \(raw)"
-            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local Voice.Claw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the iPhone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoice.Claw only changes Tailscale Serve when you click Install and Start; Check Again is read-only.\(detail)"
+            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local Voice.Claw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the iPhone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoice.Claw looks for the Tailscale command in the standard macOS install locations and only changes Tailscale Serve when you click Install and Start; Check Again is read-only.\(detail)"
+        }
+
+        if lower.contains("openclaw config was not found") || lower.contains("openclaw.json") {
+            return "\(raw)\n\nThe install path should be the folder that contains openclaw.json. On this Mac, that is usually ~/.openclaw, not ~/openclaw."
         }
 
         if lower.contains("launchctl") || lower.contains("bootstrap") || lower.contains("launch agent") {
@@ -271,7 +305,7 @@ final class BridgeStore: ObservableObject {
             return "Setup failed before returning details. Check that Node.js and Tailscale are installed, then try Install and Start again."
         }
 
-        return "\(raw)\n\nCheck that Node.js and Tailscale are installed and that the selected port is free, then try Install and Start again."
+        return "\(raw)\n\nCheck that Node.js and Tailscale are installed, that the OpenClaw path contains openclaw.json, and that the selected port is free. Then try Install and Start again."
     }
 
     private static func resolveProjectRoot() -> URL {
