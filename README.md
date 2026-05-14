@@ -23,7 +23,7 @@ Open the app and click **Install and Start**. The companion will:
 - publish the local bridge through Tailscale Serve;
 - show a QR code and setup JSON for pairing the iPhone.
 
-Tailscale Serve is Tailscale's private HTTPS reverse proxy. It forwards a private Tailscale URL on the Mac to the local Voice.Claw bridge service. The default bridge port is `3191`; users should change it only if the port is already in use or they intentionally want a separate test bridge.
+Tailscale Serve is Tailscale's private HTTPS reverse proxy. It forwards a private Tailscale URL on the Mac to the local Voice.Claw bridge service. The default bridge port is `3191`; users should change it only if the port is already in use or they intentionally want a separate test bridge. **Fresh Test Port** chooses an unused high port without changing the Mac; the user still has to click **Install and Start** before anything is installed or published.
 
 The pairing payload does not include the user's OpenAI API key. The API key is entered in VoiceClaw on iPhone and stored in iOS Keychain.
 
@@ -35,6 +35,8 @@ The companion includes **Reset First-Run State** for testing onboarding. It remo
 - `~/.voiceclaw/bridge.json`
 
 It does not uninstall Tailscale, change tailnet settings, remove OpenClaw, remove Node.js, or delete iPhone settings.
+
+For a cleaner onboarding test, **Reset App + Tailscale Mapping** can also remove the selected Tailscale Serve mapping. This action is intentionally guarded: it runs only when diagnostics identify the selected port as a Voice.Claw mapping that forwards exactly to `http://127.0.0.1:<port>`. It refuses to remove other Serve mappings, and it never runs Tailscale's full `serve reset` command.
 
 ## Develop
 

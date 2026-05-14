@@ -265,6 +265,7 @@ private struct BannerContent: View {
 
 private struct SetupPanel: View {
     @ObservedObject var store: BridgeStore
+    @State private var showingNetworkResetConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -283,9 +284,17 @@ private struct SetupPanel: View {
                                 store.useDefaultPort()
                             }
                             .buttonStyle(.bordered)
+
+                            Button {
+                                Task { await store.chooseFreshTestPort() }
+                            } label: {
+                                Label("Fresh Test Port", systemImage: "shuffle")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(store.status.isWorking)
                         }
 
-                        Text("Default is 3191. Change it only if that port is already in use, or if you intentionally want a separate test bridge. Use 1024-65535. The iPhone URL will include this port, and changing it means pairing the phone again.")
+                        Text("Default is 3191. Fresh Test Port chooses an unused high port without changing your Mac, which is useful when you want to test onboarding without reusing an old Tailscale Serve mapping. The iPhone URL will include this port, and changing it means pairing the phone again.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -305,7 +314,8 @@ private struct SetupPanel: View {
             }
 
             InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates Voice.Claw's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. The Check Again buttons only read status.")
-            InfoCallout(symbol: "arrow.counterclockwise", title: "Testing First-Run Setup", bodyText: "Use Reset First-Run State when you want to experience setup from scratch. It removes only Voice.Claw's LaunchAgent and local bridge config. It does not uninstall Tailscale, change OpenClaw, remove Node.js, or erase tailnet settings.")
+            InfoCallout(symbol: "arrow.counterclockwise", title: "Testing First-Run Setup", bodyText: "Reset First-Run State removes only Voice.Claw's LaunchAgent and local bridge config. Use Reset App + Tailscale Mapping only when Diagnostics says the selected port is a Voice.Claw mapping; it will refuse to touch other Serve mappings.")
+            InfoCallout(symbol: "lightbulb", title: "Recommended Next Step", bodyText: store.setupAdvice)
 
             HStack(spacing: 10) {
                 Button {
@@ -331,9 +341,30 @@ private struct SetupPanel: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(store.status.isWorking)
+
+                Button(role: .destructive) {
+                    showingNetworkResetConfirmation = true
+                } label: {
+                    Label("Reset App + Tailscale Mapping", systemImage: "network.slash")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.status.isWorking || !store.canResetTailscaleMapping)
+                .help(store.canResetTailscaleMapping ? "Remove Voice.Claw's local state and the selected Tailscale Serve mapping." : "Available only when Diagnostics identifies the selected port as a Voice.Claw Tailscale Serve mapping.")
             }
         }
         .panelStyle()
+        .confirmationDialog(
+            "Remove the selected Voice.Claw Tailscale Serve mapping?",
+            isPresented: $showingNetworkResetConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Reset App + Mapping", role: .destructive) {
+                Task { await store.resetForFirstRun(removeTailscaleMapping: true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes Voice.Claw's LaunchAgent and local bridge config, then removes only the selected Tailscale Serve port if it maps exactly to the Voice.Claw bridge. Tailscale, OpenClaw, and Node.js remain installed.")
+        }
     }
 }
 
@@ -397,6 +428,7 @@ private struct TailscalePanel: View {
             InfoCallout(symbol: "network.badge.shield.half.filled", title: "What Tailscale Serve Is", bodyText: "Tailscale Serve is a private HTTPS reverse proxy: it takes a Tailscale URL on this Mac and forwards it to the local Voice.Claw bridge running on 127.0.0.1. It is private to devices in your tailnet, not a public internet link.")
             InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the Voice.Claw bridge service on this Mac. With the default, the iPhone connects to a URL ending in :3191. If you choose another free port, run Install and Start again and pair the iPhone with the new QR code.")
             InfoCallout(symbol: "lock", title: "What Must Be Allowed", bodyText: "Tailscale must be installed and signed in, and HTTPS certificates must be enabled for your tailnet. If you are not the tailnet owner or admin, ask that person to enable HTTPS certificates. Voice.Claw configures Serve only when you click Install and Start; Check Again is read-only.")
+            InfoCallout(symbol: "trash.slash", title: "Why Voice.Claw Does Not Use Serve Reset", bodyText: "Tailscale's full Serve reset clears every Serve mapping on this Mac. Voice.Claw only offers a guarded cleanup for the selected port, and only when the mapping looks exactly like Voice.Claw's own bridge.")
 
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
 
@@ -443,6 +475,7 @@ private struct StatusPanel: View {
 
             StatusRow(title: "Local Bridge", value: store.localBridgeSummary, symbol: "server.rack")
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
+            StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
 
             if let lastRefreshDate = store.lastRefreshDate {
                 StatusRow(title: "Last Checked", value: lastRefreshDate.formatted(date: .abbreviated, time: .standard), symbol: "clock")

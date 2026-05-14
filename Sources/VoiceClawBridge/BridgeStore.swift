@@ -14,6 +14,8 @@ final class BridgeStore: ObservableObject {
     @Published var pairingURL: String = ""
     @Published var lastLog: String = ""
     @Published var lastRefreshDate: Date?
+    @Published var setupAdvice: String = "Click Install and Start to install the bridge and configure Tailscale Serve for this port."
+    @Published var canResetTailscaleMapping: Bool = false
 
     private let runner = ProcessRunner()
     private lazy var projectRoot: URL = Self.resolveProjectRoot()
@@ -47,13 +49,14 @@ final class BridgeStore: ObservableObject {
     }
 
     init() {
-        Task { await refreshStatus() }
+        Task {
+            await loadSavedBridgeConfig()
+            await refreshStatus()
+        }
     }
 
     func refreshStatus() async {
-        await loadSavedBridgeConfig()
-        await refreshLocalBridge()
-        await refreshTailscaleServe()
+        await refreshBridgeDiagnostics()
         lastRefreshDate = Date()
     }
 
@@ -70,11 +73,8 @@ final class BridgeStore: ObservableObject {
         lastLog = ""
 
         do {
-            let nodeExecutable = try await resolveNodeExecutable()
-            let output = try await runner.run(
-                executable: nodeExecutable,
+            let output = try await runSetupScript(
                 arguments: [
-                    "scripts/voiceclaw-bridge-setup.mjs",
                     "--install",
                     "--start",
                     "--tailscale",
@@ -83,9 +83,7 @@ final class BridgeStore: ObservableObject {
                     String(portValue),
                     "--openclaw-path",
                     normalizedOpenClawPath,
-                ],
-                workingDirectory: projectRoot,
-                environment: ["VOICECLAW_BRIDGE_ROOT": projectRoot.path]
+                ]
             )
 
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -117,6 +115,11 @@ final class BridgeStore: ObservableObject {
 
     func useDefaultPort() {
         port = "3191"
+        bridgeURL = ""
+        pairingJSON = ""
+        pairingPreview = ""
+        pairingURL = ""
+        lastLog = "Selected the default bridge port. Click Install and Start to create a fresh setup payload for this port."
     }
 
     func openTailscaleInstallPage() {
@@ -139,19 +142,35 @@ final class BridgeStore: ObservableObject {
         NSWorkspace.shared.open(URL(fileURLWithPath: normalizedOpenClawPath, isDirectory: true))
     }
 
-    func resetForFirstRun() async {
-        status = .working("Resetting")
+    func chooseFreshTestPort() async {
+        status = .working("Choosing Fresh Port")
         do {
-            _ = try await runner.run(
-                executable: try await resolveNodeExecutable(),
-                arguments: [
-                    "scripts/voiceclaw-bridge-setup.mjs",
-                    "--reset",
-                    "--json",
-                ],
-                workingDirectory: projectRoot,
-                environment: ["VOICECLAW_BRIDGE_ROOT": projectRoot.path]
-            )
+            let output = try await runSetupScript(arguments: ["--suggest-port", "--json"])
+            let data = Data(output.utf8)
+            let response = try JSONDecoder().decode(SuggestedPortResponse.self, from: data)
+            port = String(response.suggestedPort)
+            bridgeURL = ""
+            pairingJSON = ""
+            pairingPreview = ""
+            pairingURL = ""
+            lastLog = "Selected unused test port \(response.suggestedPort). Nothing changed on this Mac yet. Click Install and Start to configure the bridge and Tailscale Serve for this port, then pair the iPhone again."
+            status = .idle
+            await refreshStatus()
+        } catch {
+            lastLog = Self.userFacingSetupError(error)
+            status = .failed("Could Not Choose Port")
+        }
+    }
+
+    func resetForFirstRun(removeTailscaleMapping: Bool = false) async {
+        status = .working(removeTailscaleMapping ? "Resetting App and Network Mapping" : "Resetting")
+        do {
+            var arguments = ["--reset", "--json"]
+            if removeTailscaleMapping {
+                arguments.append(contentsOf: ["--reset-tailscale-port", "--port", port])
+            }
+            let output = try await runSetupScript(arguments: arguments)
+            let resetResponse = try? JSONDecoder().decode(ResetResponse.self, from: Data(output.utf8))
             port = "3191"
             openClawInstallPath = "\(NSHomeDirectory())/.openclaw"
             bridgeURL = ""
@@ -160,13 +179,27 @@ final class BridgeStore: ObservableObject {
             pairingJSON = ""
             pairingPreview = ""
             pairingURL = ""
-            lastLog = "Reset complete. Voice.Claw removed its LaunchAgent and local bridge config only. Tailscale, OpenClaw, Node.js, and tailnet settings were not changed."
+            if removeTailscaleMapping {
+                let networkSummary = resetResponse?.tailscaleReset?.summary ?? "No matching Voice.Claw Tailscale Serve mapping needed removal."
+                lastLog = "Reset complete. Voice.Claw removed its LaunchAgent and local bridge config. \(networkSummary) Tailscale itself, OpenClaw, and Node.js were not changed."
+            } else {
+                lastLog = "Reset complete. Voice.Claw removed its LaunchAgent and local bridge config only. Tailscale, OpenClaw, Node.js, and tailnet settings were not changed."
+            }
             status = .idle
             await refreshStatus()
         } catch {
             lastLog = Self.userFacingSetupError(error)
             status = .failed("Reset Failed")
         }
+    }
+
+    private func runSetupScript(arguments: [String]) async throws -> String {
+        try await runner.run(
+            executable: try await resolveNodeExecutable(),
+            arguments: ["scripts/voiceclaw-bridge-setup.mjs"] + arguments,
+            workingDirectory: projectRoot,
+            environment: ["VOICECLAW_BRIDGE_ROOT": projectRoot.path]
+        )
     }
 
     private var normalizedOpenClawPath: String {
@@ -199,57 +232,33 @@ final class BridgeStore: ObservableObject {
         }
     }
 
-    private func refreshLocalBridge() async {
-        guard let portValue = Int(port) else {
-            localBridgeSummary = "Invalid port"
-            return
-        }
-
+    private func refreshBridgeDiagnostics() async {
         do {
-            let url = URL(string: "http://127.0.0.1:\(portValue)/healthz")!
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 3
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                localBridgeSummary = "No HTTP response"
-                return
-            }
-            if http.statusCode == 200,
-               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               object["ok"] as? Bool == true {
-                let auth = object["auth"] as? [String: Any]
-                let authText = (auth?["required"] as? Bool == true) ? "auth on" : "auth off"
-                if authText == "auth off", !pairingJSON.isEmpty {
-                    localBridgeSummary = "Running on localhost:\(portValue), auth off. Click Install and Start to restart the protected bridge."
-                } else {
-                    localBridgeSummary = "Running on localhost:\(portValue), \(authText)"
-                }
-            } else {
-                localBridgeSummary = "HTTP \(http.statusCode)"
+            let output = try await runSetupScript(arguments: ["--diagnose", "--json", "--port", port])
+            let diagnostics = try JSONDecoder().decode(BridgeDiagnostics.self, from: Data(output.utf8))
+            localBridgeSummary = diagnostics.local.summary
+            tailscaleSummary = diagnostics.tailscale.summary
+            setupAdvice = diagnostics.suggestedAction
+            canResetTailscaleMapping = diagnostics.tailscale.canClearSafely ?? false
+
+            guard !status.isWorking else { return }
+            if diagnostics.local.state == "running", diagnostics.tailscale.state == "voiceclaw_mapping" {
+                status = .ready
+            } else if diagnostics.tailscale.state == "stale_voiceclaw_mapping" || diagnostics.tailscale.state == "occupied_by_other_mapping" || (diagnostics.savedConfigExists && diagnostics.tailscale.state == "not_available") {
+                status = .warning("Bridge Needs Attention")
+            } else if case .ready = status {
+                status = .idle
+            } else if case .warning = status {
+                status = .idle
             }
         } catch {
-            localBridgeSummary = "Not running"
-        }
-    }
-
-    private func refreshTailscaleServe() async {
-        do {
-            let output = try await runner.run(
-                executable: "/usr/bin/env",
-                arguments: ["tailscale", "serve", "status"],
-                workingDirectory: projectRoot,
-                environment: [:]
-            )
-            let lines = output.split(separator: "\n").map(String.init)
-            if let index = lines.firstIndex(where: { $0.contains(":\(port)") || $0.contains("127.0.0.1:\(port)") }) {
-                let start = max(0, index - 1)
-                let end = min(lines.count, index + 3)
-                tailscaleSummary = lines[start..<end].joined(separator: "\n")
-            } else {
-                tailscaleSummary = lines.prefix(10).joined(separator: "\n")
+            localBridgeSummary = "Diagnostics could not run."
+            tailscaleSummary = Self.userFacingSetupError(error)
+            setupAdvice = "Install Node.js and Tailscale if needed, then click Install and Start."
+            canResetTailscaleMapping = false
+            if !status.isWorking {
+                status = .warning("Diagnostics Need Attention")
             }
-        } catch {
-            tailscaleSummary = "Tailscale Serve is not ready. This read-only check could not find an active Serve mapping for port \(port). Install and sign in to Tailscale, then click Install and Start. If setup still fails, enable HTTPS certificates in the Tailscale admin console."
         }
     }
 
@@ -369,6 +378,32 @@ final class BridgeStore: ObservableObject {
         else { return json }
 
         return string
+    }
+}
+
+private struct SuggestedPortResponse: Decodable {
+    let suggestedPort: Int
+}
+
+private struct ResetResponse: Decodable {
+    let tailscaleReset: TailscaleReset?
+
+    struct TailscaleReset: Decodable {
+        let removed: Bool?
+        let summary: String?
+    }
+}
+
+private struct BridgeDiagnostics: Decodable {
+    let savedConfigExists: Bool
+    let local: Component
+    let tailscale: Component
+    let suggestedAction: String
+
+    struct Component: Decodable {
+        let state: String
+        let summary: String
+        let canClearSafely: Bool?
     }
 }
 
