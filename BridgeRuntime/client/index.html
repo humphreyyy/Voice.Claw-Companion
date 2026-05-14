@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#070b14" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23050816'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%2376a7ff'/%3E%3Ccircle cx='32' cy='32' r='9' fill='%23f5f8ff'/%3E%3C/svg%3E" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>OpenClaw Voice</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">OpenClaw voice console</p>
+          <h1>OpenClaw Voice <span class="rd-title-badge">— R&amp;D</span></h1>
+        </div>
+        <div class="topbar-actions">
+          <a class="ghost nav-pill" href="./realtime.html">Realtime</a>
+        </div>
+      </header>
+
+      <section class="hero" aria-live="polite">
+        <div class="halo-wrap">
+          <div id="halo" class="halo state-idle">
+            <div class="halo-core">
+              <span id="statusLabel">Idle</span>
+              <strong id="phaseLabel">Ready when you are</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="chips" role="status">
+          <span id="transportChip" class="chip">offline</span>
+          <span id="micChip" class="chip">mic unknown</span>
+          <span id="interruptChip" class="chip subtle ui-hidden">interruptibility unknown</span>
+          <span id="sessionChip" class="chip subtle ui-hidden">session pending</span>
+        </div>
+      </section>
+
+      <section class="controls">
+        <button id="connectButton" class="primary">Connect</button>
+        <button id="disconnectButton" class="secondary" disabled>Disconnect</button>
+        <button id="newSessionButton" class="secondary" type="button">New Session</button>
+      </section>
+
+      <section class="talk-card">
+        <div class="mode-card">
+          <div class="mode-head">
+            <h3>Input Mode</h3>
+            <div class="segmented" role="tablist" aria-label="Input mode">
+              <button id="pttModeButton" class="seg active" type="button">Push to talk</button>
+              <button id="handsfreeModeButton" class="seg" type="button">Hands-free</button>
+            </div>
+          </div>
+          <p id="modeHint" class="mode-hint">Press and hold to speak.</p>
+          <div class="mode-actions">
+            <button id="manualWakeButton" class="secondary small ui-hidden" type="button" disabled>Trigger wake</button>
+            <label class="checkbox-row compact listen-toggle">
+              <input id="continuousListenInput" type="checkbox" />
+              <span>Continuous listen</span>
+            </label>
+            <span id="wakeChip" class="chip subtle ui-hidden">wake unavailable</span>
+            <span id="wakePhraseChip" class="chip subtle ui-hidden">wake phrase: Hey</span>
+            <span id="handsfreeChip" class="chip subtle ui-hidden">hands-free off</span>
+          </div>
+        </div>
+
+        <div class="processing-card">
+          <div class="processing-head">
+            <h3>OpenClaw AI Model</h3>
+          </div>
+          <div class="processing-grid">
+            <label>
+              Model
+              <select id="processingAgentSelect"></select>
+            </label>
+            <label>
+              Reasoning
+              <select id="processingThinkingSelect">
+                <option value="off">off</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="processing-card realtime-launch-card">
+          <div class="processing-head">
+            <h3>Realtime‑2 Command Voice</h3>
+            <a id="openRealtimeOptionLink" class="ghost small" href="./realtime.html">Open</a>
+          </div>
+          <p id="cloudOptionNote" class="settings-note">Use the Realtime‑2 console for the primary high-capability intercom: GPT‑Realtime‑2 speech-to-speech, OpenClaw sideband tools, optional captions, and explicit turn detection. This classic page remains the legacy push-to-talk path.</p>
+        </div>
+
+        <div class="voice-card">
+          <div class="processing-head">
+            <h3>Voice Output</h3>
+          </div>
+          <div class="processing-grid voice-grid">
+            <label>
+              Speaking voice
+              <select id="voiceSelect"></select>
+            </label>
+            <label>
+              Speech speed
+              <select id="ttsSpeedSelect">
+                <option value="slower">Slower</option>
+                <option value="normal">Normal</option>
+                <option value="faster">Faster</option>
+                <option value="fastest">Fastest</option>
+              </select>
+            </label>
+            <label class="checkbox-row compact process-sound-toggle">
+              <input id="processSoundInput" type="checkbox" />
+              <span>Safe process sound</span>
+            </label>
+          </div>
+          <p class="settings-note process-sound-note">Subtle local texture for push-to-talk processing only; automatically quiet in hands-free and realtime-sensitive states.</p>
+        </div>
+
+        <button id="talkButton" class="talk-button" disabled>
+          <span id="talkTitle" class="talk-title">Hold to send</span>
+          <span id="talkHint" class="talk-hint">Release to transmit</span>
+        </button>
+        <button id="interruptButton" class="interrupt-button" disabled>Interrupt</button>
+      </section>
+
+      <section class="meter-card">
+        <div class="meter-labels">
+          <span>You</span>
+          <span>Remote</span>
+        </div>
+        <div class="meters">
+          <div class="meter"><div id="localMeter" class="meter-fill"></div></div>
+          <div class="meter"><div id="remoteMeter" class="meter-fill remote"></div></div>
+        </div>
+      </section>
+
+      <section class="transcript-card">
+        <div class="section-head">
+          <h2>Transcript</h2>
+          <button id="clearTranscriptButton" class="ghost small">Clear</button>
+        </div>
+        <ol id="transcriptList" class="transcript-list">
+          <li class="placeholder">Your conversation will appear here.</li>
+        </ol>
+      </section>
+
+      <section id="settingsPanel" class="settings hidden" aria-label="Relay settings">
+        <form class="settings-form" autocomplete="off">
+          <label>
+            Relay URL
+            <input id="signalUrlInput" type="url" inputmode="url" placeholder="ws://127.0.0.1:3100/ws" />
+          </label>
+          <label>
+            Session code
+            <input id="sessionCodeInput" type="text" autocapitalize="none" autocomplete="off" placeholder="optional" />
+          </label>
+          <label>
+            Access token
+            <input id="tokenInput" type="password" autocapitalize="none" autocomplete="off" placeholder="optional" />
+          </label>
+          <label class="checkbox-row">
+            <input id="demoModeInput" type="checkbox" />
+            <span>Preview mode (no network)</span>
+          </label>
+          <p class="settings-note">Private WebSocket relay plus binary audio upload/download. Query params <code>?relay=</code>, <code>?code=</code>, <code>?token=</code>, and <code>?demo=1</code> override saved values.</p>
+        </form>
+      </section>
+    </main>
+
+    <audio id="remoteAudio" autoplay playsinline></audio>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
