@@ -1,11 +1,11 @@
 {
   "name": "voiceclaw-bridge-runtime",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "check": "node --check server/index.js && node --check server/asr.js && node --check server/tts.js && node --check server/dialogue.js && node --check scripts/voiceclaw-bridge-setup.mjs"
+    "check": "node --check server/index.js && node --check server/asr.js && node --check server/tts.js && node --check server/dialogue.js && node --check server/realtime-auth.js && node --check scripts/voiceclaw-bridge-setup.mjs"
   },
   "dependencies": {
     "ws": "^8.19.0"

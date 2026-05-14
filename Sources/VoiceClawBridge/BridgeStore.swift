@@ -2,10 +2,37 @@ import AppKit
 import Foundation
 import Security
 
+enum CompanionRealtimeAuthMode: String, CaseIterable, Identifiable {
+    case apiKey = "api-key"
+    case openClawOAuth = "openclaw-oauth"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .apiKey:
+            "API Key"
+        case .openClawOAuth:
+            "OpenClaw OAuth"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .apiKey:
+            "Use the OpenAI API key from the iPhone or the bridge environment."
+        case .openClawOAuth:
+            "Use OpenClaw's ChatGPT/Codex login on this Mac to mint short-lived GPT-Realtime-2 client secrets."
+        }
+    }
+}
+
 @MainActor
 final class BridgeStore: ObservableObject {
     private enum DefaultsKeys {
         static let includeOpenAIAPIKeyInPairing = "voiceclaw.includeOpenAIAPIKeyInPairing"
+        static let realtimeAuthMode = "voiceclaw.realtimeAuthMode"
+        static let realtimeAuthFallbackToAPIKey = "voiceclaw.realtimeAuthFallbackToAPIKey"
     }
 
     @Published var port: String = "3191"
@@ -20,6 +47,20 @@ final class BridgeStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(includeOpenAIAPIKeyInPairing, forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
             refreshPairingPayloadSecrets()
+        }
+    }
+    @Published var realtimeAuthMode: CompanionRealtimeAuthMode = .apiKey {
+        didSet {
+            UserDefaults.standard.set(realtimeAuthMode.rawValue, forKey: DefaultsKeys.realtimeAuthMode)
+            refreshPairingPayloadSecrets()
+            Task { await persistBridgeAuthDefaults() }
+        }
+    }
+    @Published var realtimeAuthFallbackToAPIKey: Bool = true {
+        didSet {
+            UserDefaults.standard.set(realtimeAuthFallbackToAPIKey, forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey)
+            refreshPairingPayloadSecrets()
+            Task { await persistBridgeAuthDefaults() }
         }
     }
     @Published var status: BridgeStatus = .idle
@@ -70,6 +111,13 @@ final class BridgeStore: ObservableObject {
         if UserDefaults.standard.object(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing) != nil {
             includeOpenAIAPIKeyInPairing = UserDefaults.standard.bool(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
         }
+        if let savedMode = UserDefaults.standard.string(forKey: DefaultsKeys.realtimeAuthMode),
+           let mode = CompanionRealtimeAuthMode(rawValue: savedMode) {
+            realtimeAuthMode = mode
+        }
+        if UserDefaults.standard.object(forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey) != nil {
+            realtimeAuthFallbackToAPIKey = UserDefaults.standard.bool(forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey)
+        }
         Task {
             await loadSavedBridgeConfig()
             await refreshStatus()
@@ -104,6 +152,9 @@ final class BridgeStore: ObservableObject {
                     String(portValue),
                     "--openclaw-path",
                     normalizedOpenClawPath,
+                    "--realtime-auth-mode",
+                    realtimeAuthMode.rawValue,
+                    realtimeAuthFallbackToAPIKey ? "--realtime-auth-fallback-to-api-key" : "--no-realtime-auth-fallback-to-api-key",
                 ]
             )
 
@@ -241,6 +292,13 @@ final class BridgeStore: ObservableObject {
         if let savedURL = object["tailscaleBaseURL"] as? String {
             bridgeURL = savedURL
         }
+        if let savedMode = object["realtimeAuthMode"] as? String,
+           let mode = CompanionRealtimeAuthMode(rawValue: savedMode) {
+            realtimeAuthMode = mode
+        }
+        if let fallback = object["realtimeAuthFallbackToAPIKey"] as? Bool {
+            realtimeAuthFallbackToAPIKey = fallback
+        }
 
         let payload = Self.pairingPayload(from: object)
         updatePairingPayload(payload)
@@ -267,6 +325,8 @@ final class BridgeStore: ObservableObject {
         } else {
             updated.removeValue(forKey: "OpenAIAPIKey")
         }
+        updated["RealtimeAuthMode"] = realtimeAuthMode.rawValue
+        updated["RealtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
 
         guard let data = try? JSONSerialization.data(withJSONObject: updated, options: [.prettyPrinted]),
               let json = String(data: data, encoding: .utf8)
@@ -280,6 +340,20 @@ final class BridgeStore: ObservableObject {
     private func refreshPairingPayloadSecrets() {
         guard !pairingJSON.isEmpty else { return }
         updatePairingPayload(from: pairingJSON)
+    }
+
+    private func persistBridgeAuthDefaults() async {
+        let configURL = URL(fileURLWithPath: "\(NSHomeDirectory())/.voiceclaw/bridge.json")
+        guard let data = try? Data(contentsOf: configURL),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        object["realtimeAuthMode"] = realtimeAuthMode.rawValue
+        object["realtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
+
+        guard let output = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]) else { return }
+        try? output.write(to: configURL, options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
     }
 
     private func refreshBridgeDiagnostics() async {
@@ -402,6 +476,8 @@ final class BridgeStore: ObservableObject {
             "OpenClawGatewayToken": config["gatewayToken"] as? String ?? "",
             "RouteMode": "openclaw-bridge",
             "RealtimeModel": "gpt-realtime-2",
+            "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
+            "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? true,
         ]
     }
 

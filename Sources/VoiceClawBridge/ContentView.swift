@@ -373,9 +373,35 @@ private struct PairingPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Pair iPhone", subtitle: "Scan this QR code in VoiceClaw Settings. The setup payload can include the OpenAI API key so the iPhone is ready immediately.", symbol: "qrcode")
+            PanelHeader(title: "Pair iPhone", subtitle: "Scan this QR code in VoiceClaw Settings. The setup payload includes this Mac's preferred GPT-Realtime-2 auth mode; the iPhone can still override it later.", symbol: "qrcode")
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                GridRow {
+                    FieldLabel("Realtime Auth")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Realtime Auth", selection: $store.realtimeAuthMode) {
+                            ForEach(CompanionRealtimeAuthMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        Text(store.realtimeAuthMode.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Toggle("Fall back to API key if OpenClaw OAuth fails", isOn: $store.realtimeAuthFallbackToAPIKey)
+                            .toggleStyle(.checkbox)
+                            .disabled(store.realtimeAuthMode != .openClawOAuth)
+
+                        Text("When the iPhone sends its own setting, the iPhone wins. Fallback uses the iPhone's API key if it was included in pairing or entered on the phone; otherwise the bridge can only use an API key already available to its local environment.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
                 GridRow {
                     FieldLabel("OpenAI API Key")
                     VStack(alignment: .leading, spacing: 6) {
@@ -493,6 +519,7 @@ private struct StatusPanel: View {
 
             StatusRow(title: "Local Bridge", value: store.localBridgeSummary, symbol: "server.rack")
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
+            StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off")", symbol: "key.horizontal")
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
 
             if let lastRefreshDate = store.lastRefreshDate {
@@ -531,6 +558,8 @@ private struct StatusPanel: View {
                 }
                 .buttonStyle(.bordered)
             }
+
+            DiagnosticsVersionFooter()
         }
         .panelStyle()
     }
@@ -618,6 +647,36 @@ private struct StatusRow: View {
             }
             Spacer(minLength: 0)
         }
+    }
+}
+
+private struct DiagnosticsVersionFooter: View {
+    private var versionText: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String
+        let build = info?["CFBundleVersion"] as? String
+
+        switch (version?.isEmpty == false ? version : nil, build?.isEmpty == false ? build : nil) {
+        case let (.some(version), .some(build)):
+            return "Voice.Claw Companion \(version) (\(build))"
+        case let (.some(version), .none):
+            return "Voice.Claw Companion \(version)"
+        case let (.none, .some(build)):
+            return "Voice.Claw Companion build \(build)"
+        case (.none, .none):
+            return "Voice.Claw Companion version unavailable"
+        }
+    }
+
+    var body: some View {
+        Text(versionText)
+            .font(.caption2.monospaced())
+            .foregroundStyle(.tertiary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 4)
+            .accessibilityLabel("App Version")
+            .accessibilityValue(versionText)
     }
 }
 

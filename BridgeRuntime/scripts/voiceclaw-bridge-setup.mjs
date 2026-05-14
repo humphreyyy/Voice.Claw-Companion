@@ -30,6 +30,8 @@ function parseArgs(argv) {
     suggestPort: false,
     port: null,
     openClawInstallPath: join(HOME, '.openclaw'),
+    realtimeAuthMode: null,
+    realtimeAuthFallbackToAPIKey: null,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -46,6 +48,10 @@ function parseArgs(argv) {
     else if (arg.startsWith('--port=')) options.port = Number(arg.slice('--port='.length));
     else if (arg === '--openclaw-path') options.openClawInstallPath = argv[++index] || options.openClawInstallPath;
     else if (arg.startsWith('--openclaw-path=')) options.openClawInstallPath = arg.slice('--openclaw-path='.length);
+    else if (arg === '--realtime-auth-mode') options.realtimeAuthMode = normalizeRealtimeAuthMode(argv[++index]);
+    else if (arg.startsWith('--realtime-auth-mode=')) options.realtimeAuthMode = normalizeRealtimeAuthMode(arg.slice('--realtime-auth-mode='.length));
+    else if (arg === '--realtime-auth-fallback-to-api-key') options.realtimeAuthFallbackToAPIKey = true;
+    else if (arg === '--no-realtime-auth-fallback-to-api-key') options.realtimeAuthFallbackToAPIKey = false;
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -76,6 +82,8 @@ Options:
   --json                     Print only the iPhone setup JSON
   --port 3191                Bridge/Tailscale HTTPS port
   --openclaw-path PATH       OpenClaw install/config folder, usually ~/.openclaw
+  --realtime-auth-mode MODE   api-key or openclaw-oauth
+  --realtime-auth-fallback-to-api-key / --no-realtime-auth-fallback-to-api-key
 
 Recommended first run:
   node scripts/voiceclaw-bridge-setup.mjs --install --start --tailscale
@@ -101,6 +109,13 @@ function generateToken() {
 
 function normalizeInstallPath(value) {
   return String(value || '').trim().replace(/\/+$/g, '') || join(HOME, '.openclaw');
+}
+
+function normalizeRealtimeAuthMode(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'openclaw-oauth' || normalized === 'oauth' || normalized === 'openclaw'
+    ? 'openclaw-oauth'
+    : 'api-key';
 }
 
 async function resolveNodePath() {
@@ -475,6 +490,8 @@ function buildPairingPayload(config) {
     OpenClawGatewayToken: config.gatewayToken,
     RouteMode: 'openclaw-bridge',
     RealtimeModel: 'gpt-realtime-2',
+    RealtimeAuthMode: config.realtimeAuthMode,
+    RealtimeAuthFallbackToAPIKey: config.realtimeAuthFallbackToAPIKey,
   };
 }
 
@@ -532,6 +549,8 @@ async function main() {
     openClawInstallPath,
     gatewayToken: existing.gatewayToken || generateToken(),
     tailscaleDNSName: dnsName || existing.tailscaleDNSName || '',
+    realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'api-key'),
+    realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? true,
   };
   config.tailscaleBaseURL = config.tailscaleDNSName ? `https://${config.tailscaleDNSName}:${config.port}` : (existing.tailscaleBaseURL || '');
 

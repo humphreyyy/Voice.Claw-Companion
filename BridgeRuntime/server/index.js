@@ -13,6 +13,12 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { transcribe } from './asr.js';
 import { synthesize, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
+import {
+  REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
+  buildRealtimeAuthStatus,
+  realtimeAuthPreferences,
+  resolveRealtimeBearer,
+} from './realtime-auth.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const CLIENT_DIR = join(__dirname, '..', 'client');
@@ -734,7 +740,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', REALTIME_MODEL], routeModes: ['direct', 'openclaw'], openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', REALTIME_MODEL], routeModes: ['direct', 'openclaw'], auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;
@@ -839,14 +845,26 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/auth/status`) {
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const probe = ['1', 'true', 'yes'].includes(String(url.searchParams.get('probe') || '').toLowerCase());
+      const model = String(url.searchParams.get('model') || REALTIME_MODEL).trim() || REALTIME_MODEL;
+      const voice = String(url.searchParams.get('voice') || REALTIME_VOICE).trim() || REALTIME_VOICE;
+      const status = await buildRealtimeAuthStatus({
+        req,
+        apiKey: openAIKeyForRealtimeRequest(req),
+        probe,
+        model,
+        voice,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(status));
+      return;
+    }
+
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/session`) {
       const routeMode = realtimeRoutingMode(req);
       const apiKey = openAIKeyForRealtimeRequest(req);
-      if (!apiKey) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'OpenAI API key is not configured on the server' }));
-        return;
-      }
 
       const sessionToken = req.headers['x-voice-session-token'] || `browser-${Date.now().toString(36)}`;
       const options = realtimeRequestOptions(req, routeMode, sessionToken);
@@ -869,19 +887,39 @@ const httpServer = createServer(async (req, res) => {
       }
       fd.set('session', JSON.stringify(realtimeSession));
 
+      let realtimeBearer;
+      try {
+        realtimeBearer = await resolveRealtimeBearer({
+          req,
+          session: realtimeSession,
+          apiKey,
+        });
+      } catch (error) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error), auth: realtimeAuthPreferences(req) }));
+        return;
+      }
+
+      const usesClientSecretSignaling = realtimeBearer.source === REALTIME_AUTH_MODE_OPENCLAW_OAUTH;
       const upstream = await fetch('https://api.openai.com/v1/realtime/calls', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}` },
-        body: fd,
+        headers: {
+          Authorization: `Bearer ${realtimeBearer.bearer}`,
+          ...(usesClientSecretSignaling ? { 'Content-Type': 'application/sdp' } : {}),
+        },
+        body: usesClientSecretSignaling ? sdpOffer : fd,
       });
       const body = await upstream.text();
       const location = upstream.headers.get('location') || upstream.headers.get('Location') || '';
-      const sidebandStarted = hasServerOwnedRealtimeTools(routeMode) && upstream.ok && location ? await startRealtimeSideband(location, sessionToken, apiKey) : false;
-      if (upstream.ok) await appendRealtimeLog({ kind: 'realtime_session_created', sessionToken: sanitizeRealtimeSessionToken(sessionToken), routeMode, sidebandLocationHeader: !!location, sidebandStarted, options: { model: options.model, voice: options.voice, noiseReduction: options.noiseReduction, captions: options.captions, turnDetection: options.turnDetection, realtimeReasoning: options.realtimeReasoning, transcriptionDelay: options.transcriptionDelay } });
+      const sidebandStarted = hasServerOwnedRealtimeTools(routeMode) && upstream.ok && location ? await startRealtimeSideband(location, sessionToken, realtimeBearer.sidebandBearer || realtimeBearer.bearer) : false;
+      if (upstream.ok) await appendRealtimeLog({ kind: 'realtime_session_created', sessionToken: sanitizeRealtimeSessionToken(sessionToken), routeMode, sidebandLocationHeader: !!location, sidebandStarted, authSource: realtimeBearer.source, authPreferenceSource: realtimeBearer.preferences.source, fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey, oauthFallbackError: realtimeBearer.oauthError || '', options: { model: options.model, voice: options.voice, noiseReduction: options.noiseReduction, captions: options.captions, turnDetection: options.turnDetection, realtimeReasoning: options.realtimeReasoning, transcriptionDelay: options.transcriptionDelay } });
       const headers = { 'Content-Type': upstream.ok ? 'application/sdp' : 'text/plain' };
       if (location) headers['X-OpenAI-Realtime-Location'] = 'present';
       headers['X-OpenClaw-Route'] = routeMode;
       if (sidebandStarted) headers['X-OpenClaw-Sideband'] = 'started';
+      headers['X-VoiceClaw-Realtime-Auth'] = realtimeBearer.source;
+      headers['X-VoiceClaw-Realtime-Auth-Preference'] = realtimeBearer.preferences.mode;
+      headers['X-VoiceClaw-Realtime-Auth-Fallback'] = realtimeBearer.oauthError ? 'used' : (realtimeBearer.preferences.fallbackToAPIKey ? 'enabled' : 'disabled');
       headers['X-Realtime-Captions'] = options.captions ? 'on' : 'off';
       headers['X-Realtime-Turn-Detection'] = options.turnDetection;
       headers['X-Realtime-Reasoning'] = options.realtimeReasoning;
