@@ -238,6 +238,8 @@ const realtimeSidebands = new Map();
 const realtimePendingCounts = new Map();
 const realtimeCancelTombstones = new Map();
 const realtimeSessionConfigs = new Map();
+const realtimeCompletedResults = new Map();
+const REALTIME_RESULT_TTL_MS = Number(process.env.REALTIME_RESULT_TTL_MS || 10 * 60 * 1000);
 
 
 function parseRealtimeBoolean(value, fallback = false) {
@@ -407,15 +409,46 @@ function decrementRealtimeQueue(sessionToken) {
   if (count) realtimePendingCounts.set(key, count); else realtimePendingCounts.delete(key);
 }
 
-function closeRealtimeSideband(sessionToken, reason = 'client disconnect') {
+function pruneRealtimeResults() {
+  const now = Date.now();
+  for (const [key, result] of realtimeCompletedResults.entries()) {
+    if (now - result.completedAt > REALTIME_RESULT_TTL_MS) realtimeCompletedResults.delete(key);
+  }
+}
+
+function rememberRealtimeResult(sessionToken, result = {}) {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  realtimeCompletedResults.set(key, {
+    ok: !!result.ok,
+    reply: result.reply || '',
+    error: result.error || '',
+    turnId: result.turnId || '',
+    timings: result.timings || null,
+    completedAt: Date.now(),
+  });
+  pruneRealtimeResults();
+}
+
+function latestRealtimeResult(sessionToken) {
+  pruneRealtimeResults();
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const result = realtimeCompletedResults.get(key);
+  if (!result) return null;
+  return {
+    ...result,
+    completedAgoMs: Date.now() - result.completedAt,
+  };
+}
+
+function closeRealtimeSideband(sessionToken, reason = 'client disconnect', { clearSession = true, clearQueue = true } = {}) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
   const ws = realtimeSidebands.get(key);
   if (ws) {
     try { ws.close(1000, reason); } catch {}
     realtimeSidebands.delete(key);
   }
-  realtimeSessionConfigs.delete(key);
-  realtimePendingCounts.delete(key);
+  if (clearSession) realtimeSessionConfigs.delete(key);
+  if (clearQueue) realtimePendingCounts.delete(key);
   return !!ws;
 }
 
@@ -425,10 +458,14 @@ function bridgeStatusSnapshot(sessionToken = '') {
   const sideband = realtimeSidebands.get(key);
   const sidebandState = sideband ? ['connecting', 'open', 'closing', 'closed'][sideband.readyState] || String(sideband.readyState) : 'none';
   const sessionConfig = realtimeSessionConfigs.get(key) || null;
-  return { active: !!current, turnId: current?.turnId || null, activeForMs: current ? Date.now() - current.startedAt : 0, realtimePending: realtimeQueueCount(key), maxRealtimePending: MAX_REALTIME_PENDING_TURNS, sideband: sidebandState, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, sessionConfig, tts: getTtsStatus() };
+  return { active: !!current, turnId: current?.turnId || null, activeForMs: current ? Date.now() - current.startedAt : 0, realtimePending: realtimeQueueCount(key), maxRealtimePending: MAX_REALTIME_PENDING_TURNS, sideband: sidebandState, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, sessionConfig, lastResult: latestRealtimeResult(key), tts: getTtsStatus() };
 }
 
-function sendSidebandEvent(ws, event) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event)); }
+function sendSidebandEvent(ws, event) {
+  if (ws?.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify(event));
+  return true;
+}
 
 function toolResultSpeechSeed(result) {
   const r = result?.result || result || {};
@@ -621,6 +658,7 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
 
   const key = sanitizeRealtimeSessionToken(sessionToken);
   if (realtimeTurns.has(key)) return await steerRealtimeOpenClawTurn({ text: cleanedText, sessionToken: key, urgency, processing });
+  realtimeCompletedResults.delete(key);
   const controller = new AbortController();
   const openclawToken = realtimeOpenClawSessionToken(key);
   const effectiveTurnId = String(turnId || `rt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -643,6 +681,7 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
     if (realtimeTurns.get(key)?.turnId === effectiveTurnId) realtimeTurns.delete(key);
     const answer = reply || "I didn't catch that. Say it again.";
     await appendRealtimeLog({ kind: 'assistant', sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, timings, text: answer });
+    rememberRealtimeResult(key, { ok: true, reply: answer, turnId: effectiveTurnId, timings });
     return { ok: true, reply: answer, sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, timings };
   } catch (err) {
     if (realtimeTurns.get(key)?.turnId === effectiveTurnId) realtimeTurns.delete(key);
@@ -652,6 +691,7 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
     }
     console.error('[realtime-openclaw]', err.message);
     await appendRealtimeLog({ kind: 'error', sessionToken: key, turnId: effectiveTurnId, error: err.message });
+    rememberRealtimeResult(key, { ok: false, error: 'OpenClaw turn failed', turnId: effectiveTurnId });
     return { ok: false, error: 'OpenClaw turn failed' };
   }
 }
@@ -777,11 +817,16 @@ const httpServer = createServer(async (req, res) => {
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       const key = sanitizeRealtimeSessionToken(payload.sessionToken || '');
-      const cancelled = cancelRealtimeTurn(key, payload.reason || 'client disconnect', '', { force: true });
-      const sidebandClosed = closeRealtimeSideband(key, payload.reason || 'client disconnect');
-      await appendRealtimeLog({ kind: 'realtime_session_disconnected', sessionToken: key, cancelled, sidebandClosed });
+      const reason = payload.reason || 'client disconnect';
+      const cancelActive = payload.cancelActive !== false;
+      const closeSideband = payload.closeSideband !== false;
+      const clearQueue = payload.clearQueue !== false;
+      const cancelled = cancelActive ? cancelRealtimeTurn(key, reason, '', { force: true }) : false;
+      if (cancelActive && clearQueue) realtimePendingCounts.delete(key);
+      const sidebandClosed = closeSideband ? closeRealtimeSideband(key, reason, { clearSession: cancelActive, clearQueue: cancelActive && clearQueue }) : false;
+      await appendRealtimeLog({ kind: 'realtime_session_disconnected', sessionToken: key, reason, cancelActive, closeSideband, clearQueue, cancelled, sidebandClosed, activePreserved: !cancelActive, transportState: payload.transportState || '', clientState: payload.clientState || '' });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, cancelled, sidebandClosed }));
+      res.end(JSON.stringify({ ok: true, cancelled, sidebandClosed, activePreserved: !cancelActive }));
       return;
     }
 
