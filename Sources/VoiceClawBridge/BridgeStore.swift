@@ -1,10 +1,27 @@
 import AppKit
 import Foundation
+import Security
 
 @MainActor
 final class BridgeStore: ObservableObject {
+    private enum DefaultsKeys {
+        static let includeOpenAIAPIKeyInPairing = "voiceclaw.includeOpenAIAPIKeyInPairing"
+    }
+
     @Published var port: String = "3191"
     @Published var openClawInstallPath: String = "\(NSHomeDirectory())/.openclaw"
+    @Published var openAIAPIKey: String = "" {
+        didSet {
+            CompanionKeychainStore.save(openAIAPIKey, account: "openai.apiKey")
+            refreshPairingPayloadSecrets()
+        }
+    }
+    @Published var includeOpenAIAPIKeyInPairing: Bool = true {
+        didSet {
+            UserDefaults.standard.set(includeOpenAIAPIKeyInPairing, forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
+            refreshPairingPayloadSecrets()
+        }
+    }
     @Published var status: BridgeStatus = .idle
     @Published var bridgeURL: String = ""
     @Published var tailscaleSummary: String = "Not checked"
@@ -49,6 +66,10 @@ final class BridgeStore: ObservableObject {
     }
 
     init() {
+        openAIAPIKey = CompanionKeychainStore.load(account: "openai.apiKey") ?? ""
+        if UserDefaults.standard.object(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing) != nil {
+            includeOpenAIAPIKeyInPairing = UserDefaults.standard.bool(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
+        }
         Task {
             await loadSavedBridgeConfig()
             await refreshStatus()
@@ -87,9 +108,7 @@ final class BridgeStore: ObservableObject {
             )
 
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            pairingJSON = trimmed
-            pairingPreview = Self.redactedPairingJSON(trimmed)
-            pairingURL = Self.deepLink(for: trimmed)
+            updatePairingPayload(from: trimmed)
             lastLog = "Setup completed. Copy or scan the iPhone setup payload."
             status = .ready
             await refreshStatus()
@@ -224,12 +243,43 @@ final class BridgeStore: ObservableObject {
         }
 
         let payload = Self.pairingPayload(from: object)
-        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),
-           let json = String(data: data, encoding: .utf8) {
+        updatePairingPayload(payload)
+    }
+
+    private func updatePairingPayload(from json: String) {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
             pairingJSON = json
             pairingPreview = Self.redactedPairingJSON(json)
             pairingURL = Self.deepLink(for: json)
+            return
         }
+
+        updatePairingPayload(object)
+    }
+
+    private func updatePairingPayload(_ payload: [String: Any]) {
+        var updated = payload
+        let trimmedKey = openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if includeOpenAIAPIKeyInPairing, !trimmedKey.isEmpty {
+            updated["OpenAIAPIKey"] = trimmedKey
+        } else {
+            updated.removeValue(forKey: "OpenAIAPIKey")
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: updated, options: [.prettyPrinted]),
+              let json = String(data: data, encoding: .utf8)
+        else { return }
+
+        pairingJSON = json
+        pairingPreview = Self.redactedPairingJSON(json)
+        pairingURL = Self.deepLink(for: json)
+    }
+
+    private func refreshPairingPayloadSecrets() {
+        guard !pairingJSON.isEmpty else { return }
+        updatePairingPayload(from: pairingJSON)
     }
 
     private func refreshBridgeDiagnostics() async {
@@ -372,6 +422,9 @@ final class BridgeStore: ObservableObject {
         if let token = object["OpenClawGatewayToken"] as? String, !token.isEmpty {
             object["OpenClawGatewayToken"] = "••••••••••••\(token.suffix(4))"
         }
+        if let key = object["OpenAIAPIKey"] as? String, !key.isEmpty {
+            object["OpenAIAPIKey"] = "••••••••••••\(key.suffix(4))"
+        }
 
         guard let redacted = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]),
               let string = String(data: redacted, encoding: .utf8)
@@ -454,5 +507,46 @@ struct BridgeProcessError: LocalizedError {
 
     var errorDescription: String? {
         message.isEmpty ? "Bridge command failed." : message
+    }
+}
+
+enum CompanionKeychainStore {
+    private static let service = "ai.voiceclaw.bridge"
+
+    static func save(_ value: String, account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+
+        SecItemDelete(query as CFDictionary)
+
+        guard !value.isEmpty,
+              let data = value.data(using: .utf8)
+        else { return }
+
+        var attributes = query
+        attributes[kSecValueData as String] = data
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        SecItemAdd(attributes as CFDictionary, nil)
+    }
+
+    static func load(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data
+        else { return nil }
+
+        return String(data: data, encoding: .utf8)
     }
 }

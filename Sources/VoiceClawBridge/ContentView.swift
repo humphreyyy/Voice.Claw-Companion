@@ -373,7 +373,25 @@ private struct PairingPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Pair iPhone", subtitle: "Copy the setup payload into VoiceClaw Settings, or scan the QR code with Camera to open VoiceClaw.", symbol: "qrcode")
+            PanelHeader(title: "Pair iPhone", subtitle: "Scan this QR code in VoiceClaw Settings. The setup payload can include the OpenAI API key so the iPhone is ready immediately.", symbol: "qrcode")
+
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                GridRow {
+                    FieldLabel("OpenAI API Key")
+                    VStack(alignment: .leading, spacing: 6) {
+                        SecureField("sk-...", text: $store.openAIAPIKey)
+                            .textFieldStyle(.roundedBorder)
+
+                        Toggle("Include API Key in Setup QR", isOn: $store.includeOpenAIAPIKeyInPairing)
+                            .toggleStyle(.checkbox)
+
+                        Text("On by default. When enabled, the QR code and setup JSON include this key so VoiceClaw stores it in the iPhone Keychain during pairing. The preview below redacts it.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
 
             HStack(alignment: .top, spacing: 18) {
                 QRCodeView(value: store.pairingURL.isEmpty ? store.pairingJSON : store.pairingURL)
