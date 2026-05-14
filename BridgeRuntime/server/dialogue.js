@@ -337,7 +337,7 @@ function buildIntercomPrompt(userText) {
 Realtime/OpenClaw fallback instruction:
 - Fulfill the user's request using normal OpenClaw/Julian judgment and tools.
 - Return a concise spoken/text response back to Realtime that primarily answers the user's original request.
-- Do not send outside chat messages, stage tool-creation proposals, or recommend future tool creation as part of this voice bridge handoff.`;
+- Do not perform side effects outside the current OpenClaw request unless the user explicitly asks for them.`;
 }
 
 export function clearHistory() {
