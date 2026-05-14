@@ -133,6 +133,11 @@ function getOpenAIApiKey() {
   return process.env.OPENAI_API_KEY || loadOpenAIKeyFromConfig();
 }
 
+function openAIKeyForRealtimeRequest(req) {
+  const forwarded = String(req.headers['x-openai-api-key'] || req.headers['x-voiceclaw-openai-key'] || '').trim();
+  return forwarded || getOpenAIApiKey();
+}
+
 const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 # Role
 - You are OpenClaw's high-capability realtime intercom layer running on GPT-Realtime-2.
@@ -277,6 +282,9 @@ function buildRealtimeTurnDetection(mode) {
 function realtimeRequestOptions(req, routeMode, sessionToken) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const processing = parseJsonHeader(req.headers['x-openclaw-processing']);
+  const model = String(req.headers['x-realtime-model'] || url.searchParams.get('model') || REALTIME_MODEL).trim() || REALTIME_MODEL;
+  const voice = String(req.headers['x-realtime-voice'] || url.searchParams.get('voice') || REALTIME_VOICE).trim() || REALTIME_VOICE;
+  const noiseReduction = normalizeRealtimeNoiseReduction(req.headers['x-realtime-noise-reduction'] || url.searchParams.get('noiseReduction'));
   const captions = parseRealtimeBoolean(req.headers['x-realtime-captions'] ?? url.searchParams.get('captions'), REALTIME_TRANSCRIPTION_DEFAULT);
   const turnDetection = normalizeTurnDetectionMode(req.headers['x-realtime-turn-detection'] || url.searchParams.get('vad'));
   const realtimeReasoning = normalizeRealtimeReasoning(req.headers['x-realtime-reasoning'] || url.searchParams.get('reasoning'));
@@ -286,6 +294,9 @@ function realtimeRequestOptions(req, routeMode, sessionToken) {
     sessionToken: sanitizeRealtimeSessionToken(sessionToken),
     routeMode,
     processing,
+    model,
+    voice,
+    noiseReduction,
     captions,
     turnDetection,
     realtimeReasoning,
@@ -295,15 +306,24 @@ function realtimeRequestOptions(req, routeMode, sessionToken) {
   };
 }
 
+function normalizeRealtimeNoiseReduction(value = '') {
+  const clean = String(value || '').toLowerCase().replace('-', '_');
+  if (['near', 'near_field'].includes(clean)) return 'near_field';
+  if (['far', 'far_field'].includes(clean)) return 'far_field';
+  if (['off', 'none', 'disabled', 'null'].includes(clean)) return 'off';
+  return 'near_field';
+}
+
 function buildRealtimeAudioConfig(options = {}) {
-  const input = { noise_reduction: { type: 'near_field' } };
+  const input = {};
+  if (options.noiseReduction && options.noiseReduction !== 'off') input.noise_reduction = { type: options.noiseReduction };
   if (options.captions) {
     input.transcription = { model: REALTIME_TRANSCRIPTION_MODEL, delay: options.transcriptionDelay || REALTIME_TRANSCRIPTION_DELAY };
     if (options.transcriptionLanguage) input.transcription.language = options.transcriptionLanguage;
   }
   const turnDetection = buildRealtimeTurnDetection(options.turnDetection);
   input.turn_detection = turnDetection;
-  return { input, output: { voice: REALTIME_VOICE } };
+  return { input, output: { voice: options.voice || REALTIME_VOICE } };
 }
 
 function normalizeActionText(text = '') {
@@ -486,8 +506,8 @@ function realtimeCallIdFromLocation(location = '') {
   }
 }
 
-async function startRealtimeSideband(location, sessionToken) {
-  if (!REALTIME_SIDEBAND_ENABLED || !location || !getOpenAIApiKey()) return false;
+async function startRealtimeSideband(location, sessionToken, apiKey = getOpenAIApiKey()) {
+  if (!REALTIME_SIDEBAND_ENABLED || !location || !apiKey) return false;
   const key = sanitizeRealtimeSessionToken(sessionToken);
   const callId = realtimeCallIdFromLocation(location);
   const wsUrl = callId ? `wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}` : '';
@@ -495,7 +515,7 @@ async function startRealtimeSideband(location, sessionToken) {
   try {
     const existing = realtimeSidebands.get(key);
     if (existing?.readyState === WebSocket.OPEN || existing?.readyState === WebSocket.CONNECTING) existing.close();
-    const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${getOpenAIApiKey()}` } });
+    const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${apiKey}` } });
     realtimeSidebands.set(key, ws);
     let opened = false;
     const openPromise = new Promise((resolve) => {
@@ -776,7 +796,7 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/session`) {
       const routeMode = realtimeRoutingMode(req);
-      const apiKey = getOpenAIApiKey();
+      const apiKey = openAIKeyForRealtimeRequest(req);
       if (!apiKey) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: 'OpenAI API key is not configured on the server' }));
@@ -791,7 +811,7 @@ const httpServer = createServer(async (req, res) => {
       fd.set('sdp', sdpOffer);
       const realtimeSession = {
         type: 'realtime',
-        model: REALTIME_MODEL,
+        model: options.model,
         reasoning: { effort: options.realtimeReasoning },
         instructions: realtimeInstructionsForRoute(routeMode),
         audio: buildRealtimeAudioConfig(options),
@@ -811,8 +831,8 @@ const httpServer = createServer(async (req, res) => {
       });
       const body = await upstream.text();
       const location = upstream.headers.get('location') || upstream.headers.get('Location') || '';
-      const sidebandStarted = hasServerOwnedRealtimeTools(routeMode) && upstream.ok && location ? await startRealtimeSideband(location, sessionToken) : false;
-      if (upstream.ok) await appendRealtimeLog({ kind: 'realtime_session_created', sessionToken: sanitizeRealtimeSessionToken(sessionToken), routeMode, sidebandLocationHeader: !!location, sidebandStarted, options: { captions: options.captions, turnDetection: options.turnDetection, realtimeReasoning: options.realtimeReasoning, transcriptionDelay: options.transcriptionDelay } });
+      const sidebandStarted = hasServerOwnedRealtimeTools(routeMode) && upstream.ok && location ? await startRealtimeSideband(location, sessionToken, apiKey) : false;
+      if (upstream.ok) await appendRealtimeLog({ kind: 'realtime_session_created', sessionToken: sanitizeRealtimeSessionToken(sessionToken), routeMode, sidebandLocationHeader: !!location, sidebandStarted, options: { model: options.model, voice: options.voice, noiseReduction: options.noiseReduction, captions: options.captions, turnDetection: options.turnDetection, realtimeReasoning: options.realtimeReasoning, transcriptionDelay: options.transcriptionDelay } });
       const headers = { 'Content-Type': upstream.ok ? 'application/sdp' : 'text/plain' };
       if (location) headers['X-OpenAI-Realtime-Location'] = 'present';
       headers['X-OpenClaw-Route'] = routeMode;
