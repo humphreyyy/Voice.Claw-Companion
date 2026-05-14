@@ -2,6 +2,12 @@
 
 Voice.Claw Companion is the macOS bridge app for VoiceClaw on iPhone. It connects the iPhone app to the user's own OpenClaw installation through their private Tailscale network, without using another person's Mac, Tailnet, or API credentials.
 
+<p align="center">
+  <img src="docs/assets/voiceclaw-companion-icon.png" alt="Voice.Claw app icon" width="180">
+</p>
+
+![Voice.Claw Companion setup screen](docs/assets/voiceclaw-companion-setup.png)
+
 ## Requirements
 
 - macOS 13 or later.
