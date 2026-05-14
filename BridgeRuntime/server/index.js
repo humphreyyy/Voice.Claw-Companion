@@ -4,22 +4,17 @@
 
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { readFile, stat, mkdir, appendFile, writeFile, readdir } from 'node:fs/promises';
+import { readFile, stat, mkdir, appendFile, readdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { join, extname, basename } from 'node:path';
+import { join, extname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import WebSocket, { WebSocketServer } from 'ws';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { transcribe } from './asr.js';
 import { synthesize, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
-import { describeRdFlags, rdRouteModeIds } from './rd-flags.js';
-import { callOpenClawMcpTool } from './rd-mcp/openclaw-mcp-client.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const execFileAsync = promisify(execFile);
 const CLIENT_DIR = join(__dirname, '..', 'client');
 const PORT = parseInt(process.env.VB_PORT || '3100', 10);
 const BIND_HOST = (process.env.VB_BIND_HOST || process.env.HOST || '127.0.0.1').trim() || '127.0.0.1';
@@ -52,11 +47,6 @@ const REALTIME_SEMANTIC_VAD_EAGERNESS = process.env.REALTIME_SEMANTIC_VAD_EAGERN
 const REALTIME_VOICE = process.env.REALTIME_VOICE || 'marin';
 const REALTIME_LOG_DIR = process.env.REALTIME_LOG_DIR || join(__dirname, '..', 'ops-node', 'logs');
 const REALTIME_TRANSCRIPT_LOG = join(REALTIME_LOG_DIR, 'realtime-transcripts.jsonl');
-const RD_DATA_DIR = join(__dirname, '..', 'data');
-const RD_NOTES_DIR = join(__dirname, '..', 'notes');
-const RD_CODEX_TASK_DIR = join(__dirname, '..', 'codex-tasks');
-const RD_SCREENSHOT_DIR = join(__dirname, '..', 'screenshots');
-const RD_DASHBOARD_TASKS_FILE = join(RD_DATA_DIR, 'rd-dashboard-tasks.json');
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(homedir(), '.openclaw', 'openclaw.json');
 const REALTIME_VAD_THRESHOLD = Number(process.env.REALTIME_VAD_THRESHOLD || 0.68);
 const REALTIME_VAD_PREFIX_PADDING_MS = Number(process.env.REALTIME_VAD_PREFIX_PADDING_MS || 240);
@@ -116,7 +106,7 @@ function isProtectedBridgePath(urlPath) {
   const logicalPath = logicalPathForAuth(urlPath);
   return logicalPath === '/config'
     || logicalPath.startsWith('/realtime/')
-    || logicalPath.startsWith('/rd/');
+    || logicalPath === '/ws';
 }
 
 function requireBridgeAuth(req, res) {
@@ -152,7 +142,6 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 # Routing rule: when to call OpenClaw
 - For any substantive request, question, decision, reminder, memory/calendar/file/message/browser/coding/business task, or anything needing tools/current state/deeper reasoning, call the openclaw_turn tool.
 - Preserve the user's request faithfully and completely in the tool text. You do not need a separate transcription model to do this: infer the text from the live audio and pass the full intent.
-- If you are calling OpenClaw because no direct Realtime/MCP tool can handle the request, include that fact in the tool text and ask OpenClaw to both fulfill the request and consider whether this should become a modification of an existing local MCP tool or a future direct local MCP tool. The default heuristic is: if future repeats would be faster/directer as a local tool than by routing through OpenClaw, OpenClaw should say it is creating/staging/recommending that tool and tell the user. Also ask OpenClaw/Julian to message the Matrix room “Realtime Tool Creation” either way with the recommendation and why. If it is not a good tool candidate, OpenClaw should keep that Matrix note brief.
 - Before calling openclaw_turn, say at most one brief bridge phrase, for example: "On it.", "Checking.", or "One sec." Do not explain the route, tools, architecture, plan, or why you are calling OpenClaw.
 - Do not invent tool results. Never claim you checked tools, files, memory, calendar, messages, or system state unless openclaw_turn returned that result.
 
@@ -186,20 +175,6 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - Do not claim access to OpenClaw bridge tools, local files, memory, browser, calendars, messages, system state, or live dashboards unless those tools are explicitly supplied in the current session.
 - If the user asks for OpenClaw-backed work/current system facts, say briefly that Direct mode needs the OpenClaw Bridge mode for that and continue helpfully with what you can answer directly.
 - Keep spoken replies concise, natural, and high-agency. Do not narrate process; give a brief useful completion note when an action finishes.
-`;
-
-const REALTIME_DIRECT_TOOLS_INSTRUCTIONS = process.env.REALTIME_DIRECT_TOOLS_INSTRUCTIONS || `
-# Role
-- You are GPT-Realtime-2 in direct realtime intercom mode for User, with only lightweight Realtime-native tools supplied in this session.
-- Do not claim access to OpenClaw bridge tools, local files, memory, browser, calendars, messages, system state, or live dashboards.
-- If the user asks for OpenClaw-backed work/current system facts, say briefly that OpenClaw Bridge mode is required for that.
-
-# Tools
-- Use only the tools explicitly provided in this session.
-- If the latest audio is silence, background noise, side conversation, or speech not addressed to you, call wait_for_user and do not speak afterward.
-- If the user asks what mode/tools/status you are in, call realtime_status.
-- If the user asks for fresh public web information, call the server-owned web_search function directly.
-- For normal conversation, answer directly and concisely. Do not narrate process; give a brief useful completion note when an action finishes.
 `;
 
 const REALTIME_TOOLS = [
@@ -244,466 +219,6 @@ const REALTIME_TOOLS = [
     parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
   }
 ];
-
-const LOCAL_OPENCLAW_MCP_TOOLS = [
-  {
-    type: 'function',
-    name: 'openclaw_status',
-    description: 'Use the local OpenClaw MCP adapter to read real OpenClaw status from this machine. This is a server-owned R&D route; it does not expose localhost to OpenAI.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        includeRaw: { type: 'boolean', description: 'Include raw CLI stdout/stderr in the tool result. Default false.' }
-      },
-      required: []
-    }
-  },
-  {
-    type: 'function',
-    name: 'openclaw_default_model',
-    description: 'Use the local OpenClaw MCP adapter to read the configured default OpenClaw model from this machine.',
-    parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'bridge_status',
-    description: 'Report local Realtime bridge state without leaving this server.',
-    parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
-  }
-];
-
-const WEB_SEARCH_REALTIME_TOOL = {
-  type: 'function',
-  name: 'web_search',
-  description: 'Server Realtime-2 web search function. Searches the public web from the local R&D server and returns concise result titles, URLs, and snippets. This is server-owned, not an OpenAI-native hosted web_search tool and not an OpenClaw tool.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      query: { type: 'string', description: 'Search query.' },
-      count: { type: 'number', description: 'Number of results to return, 1-10. Default 5.' },
-      country: { type: 'string', description: 'Optional 2-letter region/country hint.' },
-      language: { type: 'string', description: 'Optional language hint, e.g. en.' }
-    },
-    required: ['query']
-  }
-};
-
-const DIRECT_REALTIME_TOOLS = [
-  WEB_SEARCH_REALTIME_TOOL,
-  {
-    type: 'function',
-    name: 'wait_for_user',
-    description: 'Call this when the latest audio is silence, background noise, side conversation, or otherwise does not need a spoken response. Do not speak after this tool call.',
-    parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'realtime_status',
-    description: 'Report the current direct Realtime session mode, turn detection, captions, voice, and tool-choice state. This does not access OpenClaw.',
-    parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
-  }
-];
-
-const RND_MCP_TOOLS = [
-  {
-    type: 'function',
-    name: 'workspace_arrange_apps',
-    description: 'Visible R&D tool: open/focus common apps and optionally arrange their front windows into a split-screen workspace preset.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        preset: { type: 'string', enum: ['intercom_demo', 'browser_codex', 'browser_notes', 'focus_only'], description: 'Workspace arrangement preset.' },
-        apps: { type: 'array', items: { type: 'string' }, description: 'Optional app names to activate, e.g. Google Chrome, Terminal, TextEdit, Codex.' }
-      },
-      required: []
-    }
-  },
-  {
-    type: 'function',
-    name: 'screen_capture_summary',
-    description: 'Visible R&D tool: capture a local screenshot and return screen summary using front app/window metadata and local OCR when available.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        includeOcr: { type: 'boolean', description: 'Run local tesseract OCR if available. Default true.' }
-      },
-      required: []
-    }
-  },
-  {
-    type: 'function',
-    name: 'project_note_update',
-    description: 'Productivity R&D tool: create or append to a visible local markdown project note under the Intercom R&D notes folder.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        title: { type: 'string', description: 'Note title.' },
-        body: { type: 'string', description: 'Markdown body to write or append.' },
-        bullets: { type: 'array', items: { type: 'string' }, description: 'Optional bullet items.' },
-        append: { type: 'boolean', description: 'Append to an existing note instead of replacing the body. Default true.' }
-      },
-      required: ['title']
-    }
-  },
-  {
-    type: 'function',
-    name: 'rd_dashboard_task',
-    description: 'Productivity R&D tool: add/list/complete local Project Intercom R&D tasks in a small command-center JSON file.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        action: { type: 'string', enum: ['add', 'list', 'complete'], description: 'Task operation.' },
-        title: { type: 'string', description: 'Task title for add/complete.' },
-        description: { type: 'string', description: 'Optional task detail.' },
-        priority: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Priority for new task.' }
-      },
-      required: ['action']
-    }
-  },
-  {
-    type: 'function',
-    name: 'codex_task_file',
-    description: 'Productivity R&D tool: create a local Codex task brief file that can be picked up by Codex/app-server work.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        title: { type: 'string', description: 'Short task title.' },
-        prompt: { type: 'string', description: 'Detailed task prompt/brief.' }
-      },
-      required: ['prompt']
-    }
-  },
-  {
-    type: 'function',
-    name: 'browser_action',
-    description: 'Visible R&D tool: open a URL in the browser or take a local screenshot of the current screen after browser navigation.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        action: { type: 'string', enum: ['open_url', 'screenshot_current'], description: 'Browser action.' },
-        url: { type: 'string', description: 'URL to open for open_url.' }
-      },
-      required: ['action']
-    }
-  },
-  {
-    type: 'function',
-    name: 'consulting_client_lookup',
-    description: 'Lookup a Consulting dashboard client by query/name/clientName and return match counts, key identifiers/status/next action, invoices/changelog/BEN mentions. Dashboard-only; OpenClaw verification is flagged when needed.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        query: { type: 'string', description: 'Client search query.' },
-        name: { type: 'string', description: 'Alias for query.' },
-        clientName: { type: 'string', description: 'Alias for query.' },
-        client: { type: 'string', description: 'Alias for query.' },
-        title: { type: 'string', description: 'Alias for query.' },
-        search: { type: 'string', description: 'Alias for query.' },
-        q: { type: 'string', description: 'Alias for query.' },
-        dashboard: { type: 'string', enum: ['consulting'], description: 'Optional dashboard selector; only consulting is supported.' },
-        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum client matches to summarize.' },
-        includeActivity: { type: 'boolean', description: 'Accepted for compatibility; client record activity is included when present.' },
-        includeRelationshipIntel: { type: 'boolean', description: 'Accepted for compatibility.' },
-        includeInvoices: { type: 'boolean', description: 'Include matching invoices. Default true.' },
-        includeChangelog: { type: 'boolean', description: 'Include matching changelog entries. Default true.' },
-        includeBenMentions: { type: 'boolean', description: 'Include related BEN dashboard mentions. Default false for speed.' },
-        includeRaw: { type: 'boolean', description: 'Include raw full client/BEN records. Default false for compact low-latency Realtime output.' },
-        includeRawClient: { type: 'boolean', description: 'Alias for includeRaw.' },
-        invoiceLimit: { type: 'integer', minimum: 1, maximum: 20, description: 'Max invoices to return. Default 5.' },
-        changelogLimit: { type: 'integer', minimum: 1, maximum: 20, description: 'Max changelog entries to return. Default 5.' },
-        benMentionLimit: { type: 'integer', minimum: 1, maximum: 12, description: 'Max BEN mentions to return when includeBenMentions is true. Default 5.' }
-      },
-      required: []
-    }
-  },
-  {
-    type: 'function',
-    name: 'stage_delivery_to_openclaw',
-    description: 'Stage text, local files, or inline attachments in the Project Intercom R&D workspace and asynchronously hand the manifest to OpenClaw/Julian for delivery under normal guardrails.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        title: { type: 'string', description: 'Short delivery title used for the staging folder.' },
-        text: { type: 'string', description: 'Text/body/message to stage for delivery.' },
-        body: { type: 'string', description: 'Alias for text.' },
-        message: { type: 'string', description: 'Alias for text.' },
-        files: {
-          type: 'array',
-          description: 'Absolute local file paths, or objects with path/filename/mimeType, to copy into staging.',
-          items: {
-            oneOf: [
-              { type: 'string' },
-              { type: 'object', additionalProperties: false, properties: { path: { type: 'string' }, filename: { type: 'string' }, mimeType: { type: 'string' } }, required: ['path'] }
-            ]
-          }
-        },
-        attachments: {
-          type: 'array',
-          description: 'Attachments as local paths, base64 content, or text content.',
-          items: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              path: { type: 'string' },
-              filePath: { type: 'string' },
-              filename: { type: 'string' },
-              name: { type: 'string' },
-              mimeType: { type: 'string' },
-              contentType: { type: 'string' },
-              contentBase64: { type: 'string' },
-              text: { type: 'string' }
-            }
-          }
-        },
-        delivery: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            channel: { type: 'string', description: 'Requested channel, e.g. signal or matrix.' },
-            target: { type: 'string', description: 'Requested delivery target.' },
-            to: { type: 'string', description: 'Alias for target.' },
-            audience: { type: 'string', description: 'Human-readable audience, e.g. User.' },
-            instructions: { type: 'string', description: 'Delivery instructions for OpenClaw.' },
-            userOnly: { type: 'boolean', description: 'Default true. If true, OpenClaw should deliver only to User/internal approved destinations.' }
-          }
-        },
-        instructions: { type: 'string', description: 'Additional delivery instructions.' },
-        timeoutSeconds: { type: 'integer', minimum: 30, maximum: 1800, description: 'OpenClaw async handoff timeout. Default 600.' }
-      },
-      required: []
-    }
-  },
-  {
-    type: 'function',
-    name: 'real_ben_calendar_lookup',
-    description: 'Lookup calendar items from the REAL BEN dashboard local calendar data file backing port 7777. This does not call Google Calendar.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        query: { type: 'string', description: 'Optional text search across title, description, location, calendar, and status.' },
-        date: { type: 'string', description: 'Specific date YYYY-MM-DD in Israel time.' },
-        from: { type: 'string', description: 'Start date/datetime. YYYY-MM-DD is interpreted in Israel time.' },
-        to: { type: 'string', description: 'End date/datetime. YYYY-MM-DD is interpreted in Israel time.' },
-        datePreset: { type: 'string', enum: ['today', 'tomorrow', 'next_7_days', 'all'], description: 'Convenience date window.' },
-        days: { type: 'integer', minimum: 1, maximum: 60, description: 'Upcoming N-day window starting today in Israel time.' },
-        includePast: { type: 'boolean', description: 'If true and no date window is provided, include past items. Default false.' },
-        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum items to return.' }
-      },
-      required: []
-    }
-  },
-  {
-    type: 'function',
-    name: 'ben_dashboard_items',
-    description: 'List REAL BEN dashboard items with bucket/category placement, source email/thread metadata, user override flags, AI summary/classification metadata, freshness, and optional raw records.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        bucket: { type: 'string', enum: ['urgent', 'active', 'deferred', 'reminders', 'needs-review', 'completed', 'archived', 'auto-closed'], description: 'Filter to a BEN dashboard bucket/category.' },
-        category: { type: 'string', enum: ['urgent', 'active', 'deferred', 'reminders', 'needs-review', 'completed', 'archived', 'auto-closed'], description: 'Alias for bucket.' },
-        status: { type: 'string', description: 'Optional status text filter, e.g. overdue or action-needed.' },
-        tag: { type: 'string', description: 'Optional exact tag filter, e.g. consulting or email.' },
-        sourceType: { type: 'string', description: 'Optional source/sourceType filter, e.g. gmail, manual, twitter.' },
-        query: { type: 'string', description: 'Optional search query across BEN item fields.' },
-        sort: { type: 'string', enum: ['attention', 'updated', 'due', 'title'], description: 'Sort order. Default attention.' },
-        includeMetadata: { type: 'boolean', description: 'Include source/userOverride/AI/placement metadata. Default true.' },
-        includeRaw: { type: 'boolean', description: 'Include raw item records. Default false.' },
-        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum items to return.' }
-      },
-      required: []
-    }
-  },
-  {
-    type: 'function',
-    name: 'ben_dashboard_item_lookup',
-    description: 'Deep-read one REAL BEN dashboard item by query/id/title, including source email/thread fields, bucket/category placement, user overrides, AI classification/summary runtime metadata, related changelog entries, and optional raw record.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        query: { type: 'string', description: 'BEN item search query.' },
-        id: { oneOf: [{ type: 'string' }, { type: 'number' }], description: 'BEN item id.' },
-        title: { type: 'string', description: 'Alias for query.' },
-        name: { type: 'string', description: 'Alias for query.' },
-        includeRaw: { type: 'boolean', description: 'Include raw item and changelog records. Default false.' },
-        includeChangelog: { type: 'boolean', description: 'Include related BEN changelog entries. Default true.' },
-        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum matches to summarize.' },
-        changelogLimit: { type: 'integer', minimum: 1, maximum: 30, description: 'Maximum related changelog entries.' }
-      },
-      required: []
-    }
-  },
-  {
-    type: 'function',
-    name: 'dashboard_open_card',
-    description: 'Visible R&D tool: open an existing dashboard card by name/query (REAL BEN first, then Consulting by default), capture the opened card, browser-snapshot-review it, and optionally send the screenshot to User on Signal via Julian. No browser click-driving.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        dashboard: { type: 'string', enum: ['auto', 'real-ben', 'consulting'], description: 'Dashboard target. Default auto tries REAL BEN first, then Consulting.' },
-        clientName: { type: 'string', description: 'Client/card name to open.' },
-        name: { type: 'string', description: 'Alternate card name field.' },
-        query: { type: 'string', description: 'General card search query.' },
-        sendSignal: { type: 'boolean', description: 'Send the reviewed screenshot to User on Signal via Julian. Default true.' },
-        timeoutMs: { type: 'integer', minimum: 1000, maximum: 180000, description: 'Optional local call timeout.' }
-      },
-      required: []
-    }
-  },
-  {
-    type: 'function',
-    name: 'openclaw_status',
-    description: 'Read real local OpenClaw status from this machine through the local MCP adapter.',
-    parameters: { type: 'object', additionalProperties: false, properties: { includeRaw: { type: 'boolean', description: 'Include raw CLI stdout/stderr. Default false.' } }, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'openclaw_default_model',
-    description: 'Read the configured default OpenClaw model from this machine through the local MCP adapter.',
-    parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'dashboard_data_map',
-    description: 'Inspect available REAL BEN, Consulting, and System Monitor dashboard data files, fields, counts, freshness, and source URLs.',
-    parameters: { type: 'object', additionalProperties: false, properties: { dashboard: { type: 'string', enum: ['ben', 'consulting', 'system', 'all'] }, includeFields: { type: 'boolean' }, includeCounts: { type: 'boolean' } }, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'dashboard_overview',
-    description: 'Broad read-only overview of BEN, Consulting, System Monitor, or all dashboards with summary, warnings, and next actions.',
-    parameters: { type: 'object', additionalProperties: false, properties: { dashboard: { type: 'string', enum: ['ben', 'consulting', 'system', 'all'] }, focus: { type: 'string', enum: ['urgent', 'changes', 'stale', 'attention', 'revenue', 'health', 'all'] }, timeWindowHours: { type: 'integer', minimum: 1, maximum: 168 }, limit: { type: 'integer', minimum: 1, maximum: 30 } }, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'dashboard_search',
-    description: 'Search BEN, Consulting, and System Monitor records for tasks, clients, invoices, changes, agents, improvements, model audit entries, calendar/email cache, and X-scan cache.',
-    parameters: { type: 'object', additionalProperties: false, properties: { query: { type: 'string' }, dashboards: { type: 'array', items: { type: 'string', enum: ['ben', 'consulting', 'system'] } }, recordTypes: { type: 'array', items: { type: 'string', enum: ['task', 'client', 'invoice', 'calendar_event', 'change', 'agent', 'cron', 'improvement', 'model_audit', 'body_status', 'x_scan', 'email', 'any'] } }, limit: { type: 'integer', minimum: 1, maximum: 50 }, includeSnippets: { type: 'boolean' } }, required: ['query'] }
-  },
-  {
-    type: 'function',
-    name: 'dashboard_card_lookup',
-    description: 'Fetch one dashboard card/record by title/name/query and return key fields, source file, index, raw record, and recommended next action.',
-    parameters: { type: 'object', additionalProperties: false, properties: { query: { type: 'string' }, dashboard: { type: 'string', enum: ['ben', 'consulting', 'system', 'all'] }, dashboards: { type: 'array', items: { type: 'string', enum: ['ben', 'consulting', 'system'] } }, limit: { type: 'integer', minimum: 1, maximum: 20 } }, required: ['query'] }
-  },
-  {
-    type: 'function',
-    name: 'dashboard_attention_queue',
-    description: 'Rank what needs attention across BEN, Consulting, and System Monitor by urgency, revenue, deadline, stale state, response-needed state, and system errors.',
-    parameters: { type: 'object', additionalProperties: false, properties: { dashboards: { type: 'array', items: { type: 'string', enum: ['ben', 'consulting', 'system'] } }, mode: { type: 'string', enum: ['user', 'agent', 'business', 'ops', 'all'] }, maxItems: { type: 'integer', minimum: 1, maximum: 50 }, includeRationale: { type: 'boolean' } }, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'consulting_response_needed',
-    description: 'List Consulting dashboard clients marked or inferred as needing response; flags that definitive status requires OpenClaw sent/received email verification.',
-    parameters: { type: 'object', additionalProperties: false, properties: { includeStale: { type: 'boolean' }, minAgeHours: { type: 'integer', minimum: 0, maximum: 720 }, limit: { type: 'integer', minimum: 1, maximum: 50 } }, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'dashboard_contradiction_scan',
-    description: 'Find stale/conflicting dashboard facts across BEN, Consulting, and System Monitor, such as response-needed closed clients or open invoices for closed/paid clients.',
-    parameters: { type: 'object', additionalProperties: false, properties: { scope: { type: 'string', enum: ['consulting', 'tasks', 'system', 'all'] }, entity: { type: 'string' }, severity: { type: 'string', enum: ['high', 'medium', 'all'] } }, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'dashboard_next_action_recommender',
-    description: 'Generate ranked next actions from dashboard evidence, with money/ops/schedule prioritization and OpenClaw escalation flags where verification is required.',
-    parameters: { type: 'object', additionalProperties: false, properties: { domain: { type: 'string', enum: ['money', 'ops', 'schedule', 'all'] }, timeBudgetMinutes: { type: 'integer', minimum: 5, maximum: 240 }, riskTolerance: { type: 'string', enum: ['low', 'normal', 'aggressive'] }, maxRecommendations: { type: 'integer', minimum: 1, maximum: 10 } }, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'system_agent_deployments',
-    description: 'Read current and recently active agent deployments from the System Monitor Agent Deployments panel plus local session indexes.',
-    parameters: { type: 'object', additionalProperties: false, properties: { windowHours: { type: 'integer', minimum: 1, maximum: 168 }, includePanel: { type: 'boolean' }, includeSessionIndex: { type: 'boolean' }, limit: { type: 'integer', minimum: 1, maximum: 100 } }, required: [] }
-  },
-  {
-    type: 'function',
-    name: 'sec_edgar_search',
-    description: 'Search SEC EDGAR recent company submissions by ticker/CIK with form, date, and after-hours filters using the local SEC helper.',
-    parameters: { type: 'object', additionalProperties: false, properties: { identifiers: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 20 }, forms: { type: 'string' }, formPrefix: { type: 'boolean' }, after: { type: 'string' }, before: { type: 'string' }, afterHours: { type: 'boolean' }, afterHoursStart: { type: 'string' }, afterHoursEnd: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 200 }, userAgent: { type: 'string' }, timeoutMs: { type: 'integer', minimum: 5000, maximum: 120000 } }, required: ['identifiers'] }
-  }
-];
-
-const RND_MCP_TOOL_NAMES = new Set(RND_MCP_TOOLS.map((tool) => tool.name));
-
-const LOCAL_MCP_CALL_TOOLS = [
-  {
-    type: 'function',
-    name: 'local_mcp_call',
-    description: 'Call one approved local MCP stdio tool by name. IMPORTANT: for search/lookup tools, include either arguments:{query:"..."} or top-level query/clientName/name. Examples: {tool:"consulting_client_lookup", arguments:{query:"Brenner"}}; {tool:"dashboard_search", arguments:{query:"Brenner", dashboards:["consulting"]}}; {tool:"dashboard_card_lookup", arguments:{query:"Brenner", dashboard:"consulting"}}.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        tool: { type: 'string', description: 'Local MCP tool name: ben_dashboard_items, ben_dashboard_item_lookup, consulting_client_lookup, dashboard_search, dashboard_card_lookup, dashboard_overview, dashboard_data_map, dashboard_attention_queue, consulting_response_needed, dashboard_contradiction_scan, dashboard_next_action_recommender, system_agent_deployments, stage_delivery_to_openclaw, real_ben_calendar_lookup, sec_edgar_search, screen_capture_summary, rd_dashboard_task, openclaw_status, openclaw_default_model.' },
-        arguments: { type: 'object', additionalProperties: true, description: 'JSON object arguments for the selected local MCP tool. For consulting_client_lookup and dashboard_search this must include query/name/clientName, e.g. {"query":"Brenner"}.' },
-        query: { type: 'string', description: 'Convenience top-level query alias. The bridge copies this into arguments.query if arguments is missing/incomplete.' },
-        clientName: { type: 'string', description: 'Convenience top-level client name alias for consulting_client_lookup.' },
-        name: { type: 'string', description: 'Convenience top-level name alias.' },
-        dashboard: { type: 'string', description: 'Convenience top-level dashboard selector.' },
-        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Convenience top-level result limit.' }
-      },
-      required: ['tool']
-    }
-  }
-];
-
-
-function localMcpCatalogPrompt() {
-  return `
-# Local MCP tool catalog and required argument examples
-When calling local_mcp_call, always pass the selected tool AND its arguments. Do not call lookup/search tools with only the tool name.
-- consulting_client_lookup: local_mcp_call({"tool":"consulting_client_lookup","arguments":{"query":"Brenner","limit":3}}). Accepts query/name/clientName/client/title/search/q.
-- ben_dashboard_items: local_mcp_call({"tool":"ben_dashboard_items","arguments":{"bucket":"urgent","includeMetadata":true,"limit":10}}).
-- ben_dashboard_item_lookup: local_mcp_call({"tool":"ben_dashboard_item_lookup","arguments":{"query":"Charles Brenner","includeChangelog":true,"includeRaw":false}}).
-- dashboard_search: local_mcp_call({"tool":"dashboard_search","arguments":{"query":"Brenner","dashboards":["consulting"],"limit":5}}).
-- dashboard_card_lookup: local_mcp_call({"tool":"dashboard_card_lookup","arguments":{"query":"Brenner","dashboard":"consulting"}}).
-- consulting_response_needed: local_mcp_call({"tool":"consulting_response_needed","arguments":{"limit":10}}).
-- dashboard_data_map: local_mcp_call({"tool":"dashboard_data_map","arguments":{"dashboard":"all"}}).
-- dashboard_overview: local_mcp_call({"tool":"dashboard_overview","arguments":{"dashboard":"all","focus":"attention"}}).
-- dashboard_attention_queue: local_mcp_call({"tool":"dashboard_attention_queue","arguments":{"dashboards":["ben","consulting","system"],"maxItems":10}}).
-- real_ben_calendar_lookup: local_mcp_call({"tool":"real_ben_calendar_lookup","arguments":{"datePreset":"today","limit":10}}).
-- stage_delivery_to_openclaw: local_mcp_call({"tool":"stage_delivery_to_openclaw","arguments":{"title":"...","text":"...","delivery":{"audience":"User","instructions":"..."}}}).
-- sec_edgar_search: local_mcp_call({"tool":"sec_edgar_search","arguments":{"identifiers":["AAPL"],"forms":"8-K","limit":5}}).
-If a user asks “look up X”, “find X”, or names a client, include X as arguments.query. If the tool returns a missing_query error, immediately call it again with the query from the user's request.`;
-}
-
-const REALTIME_MCP_TOOLS_INSTRUCTIONS = process.env.REALTIME_MCP_TOOLS_INSTRUCTIONS || `
-# Role
-- You are GPT-Realtime-2 in Project Intercom R&D tools mode.
-- Realtime sees a single server-owned function tool: local_mcp_call({ tool, arguments }).
-- Use local_mcp_call for the visible local MCP tool catalog: dashboard reading/search/attention/recommendation tools for BEN, Consulting, and System Monitor; System Monitor agent deployments; SEC/EDGAR search; staged delivery handoff to OpenClaw; REAL BEN dashboard calendar lookup; app arrangement; local screen capture summary; project notes; R&D task command center; Codex task briefs; browser actions; dashboard card opening/screenshot delivery; and narrow OpenClaw local status/model checks.
-- Do not narrate tool mechanics. After successful tool calls, give the substantive result the user asked for. Never answer only 'done', 'completed', 'finished', or 'successful'.
-- These tools are intentionally full-power R&D primitives. Do not nerf them into toy/demo-only behavior.
-- If the user asks for broader OpenClaw/Julian work and OpenClaw tools are not present in this session, say briefly that OpenClaw Tools or MCP + OpenClaw is needed.
-${localMcpCatalogPrompt()}
-`;
-
-const REALTIME_HYBRID_TOOLS_INSTRUCTIONS = process.env.REALTIME_HYBRID_TOOLS_INSTRUCTIONS || `
-# Role
-- You are GPT-Realtime-2 in Project Intercom R&D hybrid mode.
-- You have two lanes:
-  1. local_mcp_call({ tool, arguments }) for fast local MCP actions. The MCP server owns and expands this catalog; call it for concrete local tool work.
-  2. openclaw_turn({ text, urgency }) for the full local OpenClaw agent runtime. This is the high-power lane. It is NOT limited to the three Realtime bridge functions and it is NOT limited to the MCP catalog. When you call openclaw_turn, pass the user's complete intent and let OpenClaw decide/use whatever local tools, files, shell commands, browser actions, memory, crons, messages, subagents, coding/research flows, dashboards, and longer-running work are appropriate under its normal agent rules.
-- Do not tell the user that OpenClaw only has a few tools in this mode. The Realtime API sees only a small bridge surface, but the OpenClaw runtime behind that bridge has its normal broad local tool authority.
-- Prefer the server-owned web_search function for fresh public web lookup; prefer local_mcp_call for quick concrete local actions; prefer openclaw_turn for anything that benefits from agentic judgment, multi-step work, broad tools, current-state investigation, or autonomy.
-- If local_mcp_call cannot directly do what the user wants, call openclaw_turn to get it done. If OpenClaw is already active and the user adds/corrects/changes instructions or asks a follow-up, call steer_openclaw immediately rather than waiting or claiming you cannot send another request. You can send steering while OpenClaw is active. In the text to OpenClaw, explicitly say that no suitable direct MCP tool was available and ask OpenClaw to consider whether to make/stage/recommend a modification of an existing local MCP tool or a future direct local MCP tool for this pattern. Default yes when future repeats would be faster/directer as a local tool than via OpenClaw routing. Ask OpenClaw/Julian to message the Matrix room “Realtime Tool Creation” either way with the recommendation and why, and to keep that Matrix note brief. If OpenClaw/Julian creates the tool, tell it that the completed tool should be registered in the local MCP catalog behind local_mcp_call, not left as a separate side server and not described as OpenAI-native unless OpenAI actually hosts/executes it.
-- These tools are intentionally full-power R&D primitives. Do not nerf them into toy/demo-only behavior.
-- Keep spoken replies concise, natural, and substantive. Do not narrate mechanics. Never answer only 'done', 'completed', 'finished', or 'successful' after a tool call; state the useful result itself. Explain only on request, failure, or real blocker.
-`;
 
 const realtimeTurns = new Map();
 
@@ -895,255 +410,6 @@ function bridgeStatusSnapshot(sessionToken = '') {
 
 function sendSidebandEvent(ws, event) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event)); }
 
-function safeSlug(value = 'untitled') {
-  const clean = String(value || 'untitled').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return clean.slice(0, 80) || 'untitled';
-}
-
-function isoCompact() { return new Date().toISOString().replace(/[:.]/g, '-'); }
-
-async function runCommand(command, args = [], options = {}) {
-  const result = await execFileAsync(command, args, { timeout: options.timeoutMs || 8000, maxBuffer: options.maxBuffer || 800_000, ...options });
-  return { stdout: String(result.stdout || '').trim(), stderr: String(result.stderr || '').trim() };
-}
-
-async function osascript(script, options = {}) {
-  return runCommand('/usr/bin/osascript', ['-e', script], options);
-}
-
-async function toolWorkspaceArrangeApps(args = {}) {
-  const preset = args.preset || 'intercom_demo';
-  const apps = Array.isArray(args.apps) && args.apps.length ? args.apps.map((app) => String(app || '').trim()).filter(Boolean) : (preset === 'browser_notes' ? ['Google Chrome', 'TextEdit'] : ['Google Chrome', 'Terminal']);
-  if (!apps.length) return { ok: false, error: 'No app names requested.' };
-  for (const app of apps.slice(0, 4)) {
-    await osascript(`tell application ${JSON.stringify(String(app))} to activate`, { timeoutMs: 4000 }).catch(() => null);
-  }
-  if (preset !== 'focus_only') {
-    const script = `
-tell application "System Events"
-  set screenWidth to 1728
-  set screenHeight to 1117
-  set visibleApps to {${apps.slice(0, 2).map((a) => JSON.stringify(String(a))).join(',')}}
-  repeat with i from 1 to count of visibleApps
-    set appName to item i of visibleApps
-    if exists process appName then
-      tell process appName
-        if exists window 1 then
-          if i is 1 then
-            set position of window 1 to {0, 25}
-            set size of window 1 to {864, 1030}
-          else
-            set position of window 1 to {864, 25}
-            set size of window 1 to {864, 1030}
-          end if
-        end if
-      end tell
-    end if
-  end repeat
-end tell`;
-    await osascript(script, { timeoutMs: 6000 }).catch(() => null);
-  }
-  return { ok: true, preset, apps: apps.slice(0, 4), summary: `Activated ${apps.slice(0, 4).join(', ')}${preset === 'focus_only' ? '' : ' and arranged the first two windows side by side'}.` };
-}
-
-async function frontWindowSummary() {
-  const script = `
-tell application "System Events"
-  set frontApp to name of first application process whose frontmost is true
-  set winTitle to ""
-  try
-    tell process frontApp
-      if exists window 1 then set winTitle to name of window 1
-    end tell
-  end try
-  return frontApp & "||" & winTitle
-end tell`;
-  const { stdout } = await osascript(script, { timeoutMs: 4000 }).catch(() => ({ stdout: 'unknown||' }));
-  const [frontApp, windowTitle] = stdout.split('||');
-  return { frontApp: frontApp || 'unknown', windowTitle: windowTitle || '' };
-}
-
-async function toolScreenCaptureSummary(args = {}) {
-  await mkdir(RD_SCREENSHOT_DIR, { recursive: true });
-  const screenshotPath = join(RD_SCREENSHOT_DIR, `screen-${isoCompact()}.png`);
-  const front = await frontWindowSummary();
-  let captured = true;
-  let captureError = '';
-  try {
-    await runCommand('/usr/sbin/screencapture', ['-x', screenshotPath], { timeoutMs: 8000 });
-  } catch (err) {
-    captured = false;
-    captureError = err.message;
-  }
-  let ocr = '';
-  if (captured && args.includeOcr !== false) {
-    const tesseract = await runCommand('/usr/bin/which', ['tesseract'], { timeoutMs: 2000 }).catch(() => null);
-    if (tesseract?.stdout) {
-      const ocrResult = await runCommand(tesseract.stdout, [screenshotPath, 'stdout'], { timeoutMs: 15000, maxBuffer: 500_000 }).catch((err) => ({ stdout: '', stderr: err.message }));
-      ocr = String(ocrResult.stdout || '').trim().replace(/\s+/g, ' ').slice(0, 1200);
-    }
-  }
-  const summary = captured
-    ? `Captured the screen locally. Front app: ${front.frontApp}${front.windowTitle ? ` — ${front.windowTitle}` : ''}${ocr ? `. Local OCR excerpt: ${ocr.slice(0, 240)}` : '.'}`
-    : `Screen image capture is unavailable in this runtime (${captureError.split('\n')[0]}). Front app: ${front.frontApp}${front.windowTitle ? ` — ${front.windowTitle}` : ''}.`;
-  return { ok: true, captured, screenshotPath: captured ? screenshotPath : null, captureError: captured ? '' : captureError, ...front, ocr, summary };
-}
-
-async function toolProjectNoteUpdate(args = {}) {
-  await mkdir(RD_NOTES_DIR, { recursive: true });
-  const title = String(args.title || 'Project Intercom Note').trim();
-  const filePath = join(RD_NOTES_DIR, `${safeSlug(title)}.md`);
-  const bullets = Array.isArray(args.bullets) && args.bullets.length ? `\n${args.bullets.map((b) => `- ${String(b).trim()}`).join('\n')}\n` : '';
-  const body = String(args.body || '').trim();
-  const entry = `\n\n## ${new Date().toLocaleString('en-IL', { timeZone: 'Asia/Jerusalem' })}\n${body ? `${body}\n` : ''}${bullets}`.trim() + '\n';
-  let existing = '';
-  if (args.append !== false) existing = await readFile(filePath, 'utf8').catch(() => `# ${title}\n`);
-  await writeFile(filePath, existing ? `${existing.trim()}\n\n${entry}` : `# ${title}\n\n${entry}`);
-  return { ok: true, title, filePath, summary: `Updated note “${title}” at ${filePath}.` };
-}
-
-async function readDashboardTasks() {
-  const raw = await readFile(RD_DASHBOARD_TASKS_FILE, 'utf8').catch(() => '{"tasks":[]}');
-  try { const parsed = JSON.parse(raw); return Array.isArray(parsed.tasks) ? parsed : { tasks: [] }; } catch { return { tasks: [] }; }
-}
-
-async function writeDashboardTasks(data) {
-  await mkdir(RD_DATA_DIR, { recursive: true });
-  await writeFile(RD_DASHBOARD_TASKS_FILE, JSON.stringify({ ...data, updatedAt: new Date().toISOString() }, null, 2));
-}
-
-async function toolRdDashboardTask(args = {}) {
-  const action = args.action || 'list';
-  const data = await readDashboardTasks();
-  if (action === 'add') {
-    const task = { id: `rd-${Date.now().toString(36)}`, title: String(args.title || 'Untitled R&D task').trim(), description: String(args.description || '').trim(), priority: args.priority || 'normal', status: 'open', createdAt: new Date().toISOString() };
-    data.tasks.push(task);
-    await writeDashboardTasks(data);
-    return { ok: true, task, filePath: RD_DASHBOARD_TASKS_FILE, summary: `Added R&D dashboard task: ${task.title}.` };
-  }
-  if (action === 'complete') {
-    const wanted = String(args.title || '').toLowerCase();
-    if (!wanted.trim()) return { ok: false, error: 'A non-empty title is required to complete an R&D dashboard task.', filePath: RD_DASHBOARD_TASKS_FILE };
-    const task = data.tasks.find((item) => item.status !== 'done' && item.title.toLowerCase().includes(wanted));
-    if (task) { task.status = 'done'; task.completedAt = new Date().toISOString(); await writeDashboardTasks(data); }
-    return { ok: !!task, task: task || null, filePath: RD_DASHBOARD_TASKS_FILE, summary: task ? `Completed R&D dashboard task: ${task.title}.` : 'No matching open R&D task found.' };
-  }
-  const open = data.tasks.filter((task) => task.status !== 'done').slice(-10);
-  return { ok: true, tasks: open, filePath: RD_DASHBOARD_TASKS_FILE, summary: open.length ? `Open R&D tasks: ${open.map((t) => t.title).join('; ')}.` : 'No open R&D tasks.' };
-}
-
-async function toolCodexTaskFile(args = {}) {
-  await mkdir(RD_CODEX_TASK_DIR, { recursive: true });
-  const title = String(args.title || 'Codex R&D Task').trim();
-  const filePath = join(RD_CODEX_TASK_DIR, `${isoCompact()}-${safeSlug(title)}.md`);
-  const prompt = String(args.prompt || '').trim();
-  await writeFile(filePath, `# ${title}\n\nCreated: ${new Date().toISOString()}\n\n## Prompt\n\n${prompt}\n`);
-  return { ok: true, title, filePath, summary: `Created Codex task brief “${title}” at ${filePath}.` };
-}
-
-async function toolBrowserAction(args = {}) {
-  const action = args.action || 'open_url';
-  if (action === 'open_url') {
-    const url = String(args.url || '').trim();
-    if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'URL must start with http:// or https://' };
-    await runCommand('/usr/bin/open', ['-a', 'Google Chrome', url], { timeoutMs: 5000 }).catch(async () => runCommand('/usr/bin/open', [url], { timeoutMs: 5000 }));
-    return { ok: true, url, summary: `Opened ${url} in the browser.` };
-  }
-  const capture = await toolScreenCaptureSummary({ includeOcr: false });
-  return { ok: true, ...capture, summary: `Captured the current browser/screen view at ${capture.screenshotPath}.` };
-}
-
-function decodeHtmlEntities(text = '') {
-  return String(text || '')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)));
-}
-
-function stripHtml(text = '') {
-  return decodeHtmlEntities(String(text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
-}
-
-function normalizeDuckDuckGoUrl(raw = '') {
-  const value = decodeHtmlEntities(raw);
-  try {
-    const parsed = new URL(value, 'https://duckduckgo.com');
-    const uddg = parsed.searchParams.get('uddg');
-    return uddg ? decodeURIComponent(uddg) : parsed.href;
-  } catch {
-    return value;
-  }
-}
-
-async function toolWebSearch(args = {}) {
-  const query = String(args.query || '').trim();
-  if (!query) return { ok: false, error: 'web_search requires a non-empty query.' };
-  const count = Math.max(1, Math.min(10, Number(args.count || 5) || 5));
-  const params = new URLSearchParams({ q: query });
-  if (args.country) params.set('kl', String(args.country).toLowerCase());
-  const url = `https://html.duckduckgo.com/html/?${params.toString()}`;
-  let html = '';
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'OpenClaw-Realtime-RD/1.0 (+local R&D web_search tool)',
-        'Accept': 'text/html,application/xhtml+xml',
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok) return { ok: false, provider: 'duckduckgo-html', error: `DuckDuckGo returned HTTP ${response.status}.` };
-    html = await response.text();
-  } catch (err) {
-    return { ok: false, provider: 'duckduckgo-html', error: `web_search request failed: ${err.message}` };
-  }
-
-  const results = [];
-  const blockRegex = /<div[^>]+class="[^"]*result[^"]*"[\s\S]*?(?=<div[^>]+class="[^"]*result[^"]*"|<\/body>|$)/gi;
-  const blocks = html.match(blockRegex) || [];
-  for (const block of blocks) {
-    const link = block.match(/<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
-    if (!link) continue;
-    const title = stripHtml(link[2]);
-    const resultUrl = normalizeDuckDuckGoUrl(link[1]);
-    const snippetMatch = block.match(/<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i) || block.match(/<div[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
-    const snippet = snippetMatch ? stripHtml(snippetMatch[1]) : '';
-    if (title && resultUrl && !results.some((item) => item.url === resultUrl)) results.push({ title, url: resultUrl, snippet });
-    if (results.length >= count) break;
-  }
-  const summary = results.length ? `Found ${results.length} web result${results.length === 1 ? '' : 's'} for “${query}”.` : `No web results found for “${query}”.`;
-  return { ok: true, provider: 'duckduckgo-html', query, count, results, summary };
-}
-
-function normalizeLocalMcpArguments(payload = {}) {
-  const out = payload.arguments && typeof payload.arguments === 'object' && !Array.isArray(payload.arguments) ? { ...payload.arguments } : {};
-  for (const key of ['query', 'clientName', 'name', 'client', 'title', 'search', 'q', 'dashboard', 'dashboards', 'limit', 'date', 'from', 'to', 'datePreset', 'days', 'identifiers', 'forms', 'includeBenMentions', 'includeRaw', 'includeRawClient', 'invoiceLimit', 'changelogLimit', 'benMentionLimit']) {
-    if (payload[key] !== undefined && out[key] === undefined) out[key] = payload[key];
-  }
-  return out;
-}
-
-async function handleRdRealtimeTool(name, args = {}, sessionToken = '') {
-  const startedAt = Date.now();
-  let result;
-  if (name === 'workspace_arrange_apps') result = await toolWorkspaceArrangeApps(args);
-  else if (name === 'screen_capture_summary') result = await toolScreenCaptureSummary(args);
-  else if (name === 'project_note_update') result = await toolProjectNoteUpdate(args);
-  else if (name === 'rd_dashboard_task') result = await toolRdDashboardTask(args);
-  else if (name === 'codex_task_file') result = await toolCodexTaskFile(args);
-  else if (name === 'browser_action') result = await toolBrowserAction(args);
-  else if (name === 'dashboard_open_card') {
-    const mcpResult = await callOpenClawMcpTool('dashboard_open_card', args);
-    result = { ...mcpResult, summary: mcpResult.result?.summary || mcpResult.error || 'dashboard_open_card completed.' };
-  }
-  else result = { ok: false, error: `Unsupported R&D tool: ${name}` };
-  await appendRealtimeLog({ kind: 'rd_mcp_tool_result', sessionToken: sanitizeRealtimeSessionToken(sessionToken), toolName: name, ok: !!result.ok, elapsedMs: Date.now() - startedAt, summary: result.summary || result.error || '' });
-  return result;
-}
-
 function toolResultSpeechSeed(result) {
   const r = result?.result || result || {};
   if (typeof r.spoken === 'string' && r.spoken.trim()) return r.spoken.trim();
@@ -1196,51 +462,6 @@ async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
     return;
   }
   if (name === 'bridge_status') { outputAndSpeak(JSON.stringify(bridgeStatusSnapshot(sessionToken))); return; }
-  if (name === 'web_search') {
-    try {
-      const result = await toolWebSearch(args);
-      outputJsonAndSpeakSummary(result);
-      await appendRealtimeLog({ kind: 'web_search_result', sessionToken: sanitizeRealtimeSessionToken(sessionToken), ok: !!result.ok, provider: result.provider, query: args.query || '', resultCount: result.results?.length || 0 });
-    } catch (err) {
-      outputJsonAndSpeakSummary({ ok: false, error: `web_search error: ${err.message}` });
-      await appendRealtimeLog({ kind: 'web_search_error', sessionToken: sanitizeRealtimeSessionToken(sessionToken), error: err.message });
-    }
-    return;
-  }
-  if (name === 'local_mcp_call') {
-    const requestedTool = String(args.tool || '').trim();
-    const requestedArgs = normalizeLocalMcpArguments(args);
-    try {
-      const mcpResult = await callOpenClawMcpTool(requestedTool, requestedArgs);
-      outputJsonAndSpeakSummary({ ...mcpResult, summary: mcpResult.result?.summary || mcpResult.error || `Local MCP tool ${requestedTool} returned a result.` });
-      await appendRealtimeLog({ kind: 'local_mcp_call_result', sessionToken: sanitizeRealtimeSessionToken(sessionToken), callId, toolName: requestedTool, ok: mcpResult.ok, elapsedMs: mcpResult.elapsedMs, listedTools: mcpResult.listedTools });
-    } catch (err) {
-      outputJsonAndSpeakSummary({ ok: false, error: `Local MCP adapter error: ${err.message}` });
-      await appendRealtimeLog({ kind: 'local_mcp_call_error', sessionToken: sanitizeRealtimeSessionToken(sessionToken), callId, toolName: requestedTool, error: err.message });
-    }
-    return;
-  }
-  if (RND_MCP_TOOL_NAMES.has(name)) {
-    try {
-      const result = await handleRdRealtimeTool(name, args, sessionToken);
-      outputJsonAndSpeakSummary(result);
-    } catch (err) {
-      outputJsonAndSpeakSummary({ ok: false, error: `R&D tool error: ${err.message}` });
-      await appendRealtimeLog({ kind: 'rd_mcp_tool_error', sessionToken: sanitizeRealtimeSessionToken(sessionToken), toolName: name, error: err.message });
-    }
-    return;
-  }
-  if (name === 'openclaw_status' || name === 'openclaw_default_model') {
-    try {
-      const mcpResult = await callOpenClawMcpTool(name, args);
-      outputAndSpeak(JSON.stringify(mcpResult));
-      await appendRealtimeLog({ kind: 'local_mcp_tool_result', sessionToken: sanitizeRealtimeSessionToken(sessionToken), toolName: name, ok: mcpResult.ok, elapsedMs: mcpResult.elapsedMs, listedTools: mcpResult.listedTools });
-    } catch (err) {
-      outputAndSpeak(`Local OpenClaw MCP adapter error: ${err.message}`);
-      await appendRealtimeLog({ kind: 'local_mcp_tool_error', sessionToken: sanitizeRealtimeSessionToken(sessionToken), toolName: name, error: err.message });
-    }
-    return;
-  }
   if (name && name !== 'openclaw_turn') return;
   const gate = actionability(args.text || '', { allowWake: false, allowShortCommand: true, context: 'realtime-sideband' });
   if (!gate.actionable) { outputAndSpeak("I didn't catch that. Say it again?"); return; }
@@ -1310,35 +531,24 @@ function realtimeOpenClawSessionToken(browserSessionId = '') {
 function realtimeRoutingMode(req) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const value = String(url.searchParams.get('route') || req.headers['x-openclaw-route'] || '').toLowerCase();
-  if (['direct-tools', 'native', 'native-tools', 'realtime-tools'].includes(value)) return 'direct-tools';
-  if (['mcp', 'mcp-tools', 'tools'].includes(value)) return 'mcp-tools';
-  if (['hybrid', 'mcp-openclaw', 'mcp+openclaw', 'mcp-openclaw-tools'].includes(value)) return 'mcp-openclaw';
-  if (rdRouteModeIds().includes(value)) return value;
   return value === 'direct' || value === 'pure' || value === 'realtime-only' ? 'direct' : 'openclaw';
 }
 
 function isOpenClawRealtimeRoute(routeMode = '') {
-  return routeMode === 'openclaw' || routeMode === 'mcp-openclaw' || String(routeMode || '').startsWith('openclaw-');
+  return routeMode === 'openclaw';
 }
 
 function hasServerOwnedRealtimeTools(routeMode = '') {
-  return isOpenClawRealtimeRoute(routeMode) || routeMode === 'direct-tools' || routeMode === 'mcp-tools';
+  return isOpenClawRealtimeRoute(routeMode);
 }
 
 function realtimeInstructionsForRoute(routeMode = '') {
-  if (routeMode === 'mcp-tools') return REALTIME_MCP_TOOLS_INSTRUCTIONS;
-  if (routeMode === 'mcp-openclaw') return REALTIME_HYBRID_TOOLS_INSTRUCTIONS;
   if (isOpenClawRealtimeRoute(routeMode)) return REALTIME_INSTRUCTIONS;
-  return routeMode === 'direct-tools' ? REALTIME_DIRECT_TOOLS_INSTRUCTIONS : REALTIME_DIRECT_INSTRUCTIONS;
+  return REALTIME_DIRECT_INSTRUCTIONS;
 }
 
 function realtimeToolsForRoute(routeMode = '') {
-  if (routeMode === 'openclaw-local-mcp') return LOCAL_OPENCLAW_MCP_TOOLS;
-  if (routeMode === 'mcp-tools') return LOCAL_MCP_CALL_TOOLS;
-  if (routeMode === 'mcp-openclaw') return [WEB_SEARCH_REALTIME_TOOL, ...LOCAL_MCP_CALL_TOOLS, ...REALTIME_TOOLS];
-  if (isOpenClawRealtimeRoute(routeMode)) return [WEB_SEARCH_REALTIME_TOOL, ...REALTIME_TOOLS];
-  if (routeMode === 'direct-tools') return DIRECT_REALTIME_TOOLS;
-  return [];
+  return isOpenClawRealtimeRoute(routeMode) ? REALTIME_TOOLS : [];
 }
 
 async function appendRealtimeLog(event) {
@@ -1464,7 +674,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', REALTIME_MODEL], routeModes: ['direct', 'direct-tools', 'openclaw', 'mcp-tools', 'mcp-openclaw', ...rdRouteModeIds()], experiments: describeRdFlags(), directTools: DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), mcpTools: LOCAL_MCP_CALL_TOOLS.map(({ name, description }) => ({ name, description })), mcpToolCatalog: RND_MCP_TOOLS.map(({ name, description }) => ({ name, description })), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), localOpenClawMcpTools: LOCAL_OPENCLAW_MCP_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', REALTIME_MODEL], routeModes: ['direct', 'openclaw'], openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;
@@ -1480,74 +690,6 @@ const httpServer = createServer(async (req, res) => {
         const result = await prewarmProcessing({ ...(payload.processing || {}), sessionToken: openclawToken, fastMode: 'on' });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, sessionToken: key, openclawSessionToken: openclawToken, ...result }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
-      return;
-    }
-
-    if (req.method === 'POST' && urlPath === `${BASE_PATH}/rd/web-search`) {
-      const body = await readRequestBody(req, 50_000).catch(() => '{}');
-      let payload;
-      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
-      try {
-        const result = await toolWebSearch(payload.arguments || payload || {});
-        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ adapter: 'server_realtime_web_search', ...result }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, adapter: 'server_realtime_web_search', error: err.message }));
-      }
-      return;
-    }
-
-    if (req.method === 'POST' && urlPath === `${BASE_PATH}/rd/local-mcp-call`) {
-      const body = await readRequestBody(req, 200_000).catch(() => '{}');
-      let payload;
-      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
-      const tool = String(payload.tool || '').trim();
-      try {
-        const result = await callOpenClawMcpTool(tool, normalizeLocalMcpArguments(payload));
-        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ adapter: 'local_mcp_call', ...result }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, adapter: 'local_mcp_call', error: err.message }));
-      }
-      return;
-    }
-
-    if (req.method === 'POST' && urlPath === `${BASE_PATH}/rd/local-mcp-tool`) {
-      const body = await readRequestBody(req, 50_000).catch(() => '{}');
-      let payload;
-      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
-      const tool = payload.tool || 'openclaw_status';
-      try {
-        const result = await callOpenClawMcpTool(tool, normalizeLocalMcpArguments(payload));
-        res.writeHead(result.ok ? 200 : 502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
-      return;
-    }
-
-    if (req.method === 'POST' && urlPath === `${BASE_PATH}/rd/realtime-tool`) {
-      const body = await readRequestBody(req, 200_000).catch(() => '{}');
-      let payload;
-      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
-      const toolName = String(payload.tool || '').trim();
-      if (!RND_MCP_TOOL_NAMES.has(toolName)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: `unsupported R&D realtime tool: ${toolName}` }));
-        return;
-      }
-      try {
-        const result = await handleRdRealtimeTool(toolName, normalizeLocalMcpArguments(payload), payload.sessionToken || 'browser-fallback');
-        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));
@@ -1654,11 +796,7 @@ const httpServer = createServer(async (req, res) => {
         instructions: realtimeInstructionsForRoute(routeMode),
         audio: buildRealtimeAudioConfig(options),
       };
-      if (routeMode === 'openclaw-local-mcp') {
-        realtimeSession.instructions = `${REALTIME_INSTRUCTIONS}\n\n# R&D local MCP route\n- For requests about OpenClaw runtime status or configured model, call openclaw_status or openclaw_default_model.\n- These tools are executed by the server-side local MCP adapter using the official MCP SDK over stdio.\n- Do not claim broader OpenClaw tool access in this R&D route.`;
-        realtimeSession.tools = LOCAL_OPENCLAW_MCP_TOOLS;
-        realtimeSession.tool_choice = 'auto';
-      } else if (routeMode !== 'direct') {
+      if (routeMode !== 'direct') {
         realtimeSession.tools = realtimeToolsForRoute(routeMode);
         realtimeSession.tool_choice = 'auto';
       } else {

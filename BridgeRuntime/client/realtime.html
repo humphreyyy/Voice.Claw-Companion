@@ -2,124 +2,47 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#070b14" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23050816'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%2376a7ff'/%3E%3Ccircle cx='32' cy='32' r='9' fill='%23f5f8ff'/%3E%3C/svg%3E" />
-  <title>OpenClaw Realtime Intercom</title>
-  <link rel="stylesheet" href="style.css?v=20260514-1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07111f" />
+  <title>VoiceClaw Bridge</title>
+  <link rel="stylesheet" href="style.css?v=20260514-2" />
 </head>
 <body class="realtime-page">
   <main class="shell realtime-shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">OpenClaw realtime intercom</p>
-        <h1>Realtime‑2 Command Voice <span class="rd-title-badge">— R&amp;D</span></h1>
+        <p class="eyebrow">VoiceClaw Bridge</p>
+        <h1>Bridge runtime is running</h1>
       </div>
       <div class="topbar-actions">
-        <a class="ghost nav-pill" href="./index.html">Classic</a>
+        <a class="ghost nav-pill" href="./index.html">Classic Setup</a>
       </div>
     </header>
 
     <section class="hero realtime-hero">
       <div class="hero-copy">
-        <p class="eyebrow">Primary runtime</p>
-        <h2>GPT‑Realtime‑2 voice brain, OpenClaw tool body.</h2>
-        <p>Fast speech-to-speech conversation with sideband bridge control, optional captions, explicit turn detection, and full OpenClaw routing when enabled.</p>
+        <p class="eyebrow">Native app pairing</p>
+        <h2>Use VoiceClaw on iPhone to start GPT-Realtime-2.</h2>
+        <p>This Mac bridge exposes only the private OpenClaw handoff endpoints needed by your paired iPhone. Voice sessions, credentials, and setup are managed in the native apps.</p>
       </div>
       <div class="halo-wrap compact">
-        <div id="realtimeHalo" class="halo state-idle">
+        <div class="halo state-idle">
           <div class="halo-core">
-            <span id="realtimeStatus">Idle</span>
+            <span id="bridgeStatus">Checking</span>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="talk-card realtime-controls-card">
-      <button id="connectRealtimeButton" class="talk-button" type="button">
-        <span class="talk-title">Connect Realtime‑2 intercom</span>
-        <span class="talk-hint">Live microphone starts only after connect</span>
-      </button>
-      <button id="muteRealtimeButton" class="ghost mute-button" type="button" disabled>Mute</button>
-      <button id="stopOpenClawButton" class="ghost stop-openclaw-button" type="button" disabled>Stop OpenClaw</button>
-      <button id="disconnectRealtimeButton" class="interrupt-button" type="button" disabled>Disconnect</button>
-      <button id="newRealtimeSessionButton" class="ghost" type="button">New conversation</button>
-    </section>
-
-    <section class="meter-card realtime-processing-card command-card">
+    <section class="meter-card command-card">
       <div class="section-head">
         <div>
-          <p class="eyebrow">Capability routing</p>
-          <h2>Mode and bridge</h2>
+          <p class="eyebrow">Status</p>
+          <h2>Local bridge</h2>
         </div>
-        <span id="bridgeStateChip" class="chip bridge-chip">Bridge idle</span>
+        <span id="bridgeStateChip" class="chip bridge-chip">Checking</span>
       </div>
-      <div class="processing-grid realtime-grid">
-        <fieldset class="tools-radio-field">
-          <legend>Tools</legend>
-          <div id="realtimeRouteSelect" class="tools-radio-group" role="radiogroup" aria-label="Realtime tools profile">
-            <label><input type="radio" name="realtimeTools" value="direct" /> <span>None</span></label>
-            <label><input type="radio" name="realtimeTools" value="direct-tools" /> <span>GPT‑Realtime‑2 Native Tools</span></label>
-            <label><input type="radio" name="realtimeTools" value="openclaw" /> <span>OpenClaw Tools</span></label>
-            <label><input type="radio" name="realtimeTools" value="mcp-tools" /> <span>MCP Tools</span></label>
-            <label><input type="radio" name="realtimeTools" value="mcp-openclaw" /> <span>MCP Tools + OpenClaw Tools</span></label>
-          </div>
-        </fieldset>
-        <label>
-          Realtime reasoning
-          <select id="realtimeReasoningSelect"></select>
-        </label>
-        <label>
-          Turn detection
-          <select id="turnDetectionSelect"></select>
-        </label>
-        <label class="toggle-row realtime-toggle-row">
-          <span>
-            <strong>Live captions</strong>
-            <small>Optional GPT‑Realtime‑Whisper transcript/debug layer</small>
-          </span>
-          <input id="liveCaptionsToggle" type="checkbox" />
-        </label>
-      </div>
-      <p id="realtimeRouteNote" class="settings-note">Bridge mode lets GPT‑Realtime‑2 run the live conversation and call OpenClaw through the server sideband for tools, memory, files, browser, crons, and heavier reasoning.</p>
-    </section>
-
-    <section class="meter-card realtime-processing-card command-card openclaw-tuning-card">
-      <div class="section-head">
-        <div>
-          <p class="eyebrow">OpenClaw bridge target</p>
-          <h2>Tool reasoning</h2>
-        </div>
-      </div>
-      <div class="processing-grid">
-        <label>
-          OpenClaw model
-          <select id="realtimeModelSelect"></select>
-        </label>
-        <label>
-          OpenClaw reasoning
-          <select id="realtimeThinkingSelect"></select>
-        </label>
-      </div>
-      <p class="settings-note">These settings are stored server-side when the session starts, so sideband-owned tool calls use the selected OpenClaw configuration instead of falling back silently.</p>
-    </section>
-
-    <audio id="realtimeAudio" autoplay playsinline></audio>
-
-    <section class="transcript-card public-transcript-card">
-      <div class="section-head">
-        <div>
-          <p class="eyebrow">Conversation</p>
-          <h2>Transcript</h2>
-        </div>
-        <button id="clearRealtimeLog" class="ghost small" type="button">Clear</button>
-      </div>
-      <div id="realtimeLog" class="transcript-list realtime-log"><p class="placeholder">Spoken replies and optional captions will appear here.</p></div>
-    </section>
-
-    <section class="meter-card about-card realtime-about-card">
-      <div class="section-head"><h2>Architecture</h2></div>
-      <p class="settings-note">Default: GPT‑Realtime‑2 listens, reasons over audio, and speaks directly. Transcription is not required; captions are an optional diagnostic layer. Semantic VAD is the natural-turn default; server VAD is available for faster silence-based cuts. In Bridge mode, OpenClaw tools run through the server sideband so the browser never owns tool execution or API credentials.</p>
+      <p id="bridgeDetail" class="settings-note">Checking bridge health.</p>
     </section>
   </main>
   <script type="module" src="realtime.js"></script>

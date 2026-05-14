@@ -1,14 +1,13 @@
 {
   "name": "voiceclaw-bridge-runtime",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "check": "node --check server/index.js && node --check server/asr.js && node --check server/tts.js && node --check server/dialogue.js && node --check server/rd-flags.js && node --check server/rd-mcp/openclaw-mcp-client.mjs && node --check scripts/voiceclaw-bridge-setup.mjs"
+    "check": "node --check server/index.js && node --check server/asr.js && node --check server/tts.js && node --check server/dialogue.js && node --check scripts/voiceclaw-bridge-setup.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "ws": "^8.19.0"
   }
 }

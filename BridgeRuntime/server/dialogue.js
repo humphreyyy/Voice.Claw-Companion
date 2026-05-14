@@ -62,7 +62,7 @@ function buildProcessingRoutes() {
   // Put the bridge's preferred brain first without changing OpenClaw's global default.
   // The default must remain OpenClaw-aware: raw chat-latest is available as an
   // explicit instant option, but it has no tools/context and cannot answer
-  // calendar/dashboard/name questions correctly.
+  // calendar, account, or personal-context questions correctly.
   addModel(BRIDGE_DEFAULT_MODEL);
 
   // Match the models surfaced by OpenClaw's /models view: configured model entries,
@@ -336,10 +336,8 @@ function buildIntercomPrompt(userText) {
 
 Realtime/OpenClaw fallback instruction:
 - Fulfill the user's request using normal OpenClaw/Julian judgment and tools.
-- After fulfilling or determining the blocker, send a Matrix message to the room named “Realtime Tool Creation” stating whether you recommend creating/staging a future direct local MCP/Realtime tool for this kind of request, and why.
-- Recommend a future direct tool when repeats would be faster, more reliable, or more natural as a direct tool than routing through OpenClaw. Do not recommend a tool when the task is one-off, judgment-heavy, ambiguous, unsafe, external-approval-bound, or not materially faster as a direct tool.
-- Keep the Matrix note brief and concrete. If you are creating/staging/recommending a tool, say so. If not, say no and why. Target room: Realtime Tool Creation.
-- Your spoken/text response back to Realtime should primarily answer the user's original request; mention tool creation only if it materially matters to the immediate voice interaction.`;
+- Return a concise spoken/text response back to Realtime that primarily answers the user's original request.
+- Do not send outside chat messages, stage tool-creation proposals, or recommend future tool creation as part of this voice bridge handoff.`;
 }
 
 export function clearHistory() {
