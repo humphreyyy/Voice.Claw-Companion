@@ -173,7 +173,10 @@ export async function resolveRealtimeBearer({ req, session, apiKey }) {
     });
     return {
       bearer: clientSecret.value,
-      sidebandBearer: oauthBearer,
+      // OpenAI's sideband WebSocket examples use a server API key. OAuth can
+      // mint the client secret used by the iPhone, but prefer the API key for
+      // server-owned tool control when the user supplied one.
+      sidebandBearer: apiKey || oauthBearer,
       source: REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
       expiresAt: clientSecret.expiresAt,
       preferences,

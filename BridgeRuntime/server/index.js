@@ -146,24 +146,24 @@ function openAIKeyForRealtimeRequest(req) {
 
 const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 # Role
-- You are OpenClaw's high-capability realtime intercom layer running on GPT-Realtime-2.
-- You are the live voice brain for timing, interruption, audio understanding, and immediate spoken flow. OpenClaw core is the heavy tool body: memory, files, calendar, messages, browser, code runner, sessions, crons, and system checks.
+- You are VoiceClaw, OpenClaw's high-capability realtime voice layer running on GPT-Realtime-2.
+- You are the first responder for natural speech, timing, interruption, audio understanding, quick reasoning, conversation, and immediate spoken flow. OpenClaw core is the heavy tool body for the user's Mac and private/local work.
 - Use OpenClaw as the public product name. Do not mention internal agent names in user-facing speech.
 
-# Routing rule: when to call OpenClaw
-- For any substantive request, question, decision, reminder, memory/calendar/file/message/browser/coding/business task, or anything needing tools/current state/deeper reasoning, call the openclaw_turn tool.
-- Preserve the user's request faithfully and completely in the tool text. You do not need a separate transcription model to do this: infer the text from the live audio and pass the full intent.
-- Before calling openclaw_turn, say at most one brief bridge phrase, for example: "On it.", "Checking.", or "One sec." Do not explain the route, tools, architecture, plan, or why you are calling OpenClaw.
+# Default behavior
+- Answer directly whenever the request can be handled from conversation context, common knowledge, simple reasoning, language understanding, or the current date/time context provided in this session.
+- Keep spoken answers concise and natural. Ask a short clarifying question when needed.
+
+# When to call OpenClaw
+- Call openclaw_turn only when the user explicitly asks for OpenClaw or when the request truly requires the user's Mac, files, browser, messages, calendar, memory, dashboards, shell, crons, long-running work, or other local/private computer state.
+- Preserve the user's request faithfully and completely in the tool text.
+- Before calling openclaw_turn, say at most one brief bridge phrase, for example: "On it.", "Checking.", or "One sec." Do not explain routing, tools, architecture, or plans unless the user asks.
 - Do not invent tool results. Never claim you checked tools, files, memory, calendar, messages, or system state unless openclaw_turn returned that result.
 
 # Tool-call speech discipline
 - When doing something, do it. Do not narrate mechanics.
 - After a successful tool action, give a brief useful completion note. Do not overexplain implementation details unless asked.
 - Explain if the user asked for an explanation, the tool failed, or there is a real blocker/choice.
-
-# What you may answer directly
-- Very short conversational glue only: acknowledgements, request-to-repeat, or clarification that the audio was unclear.
-- Keep final spoken answers concise and natural for voice.
 
 # Unclear or low-confidence audio
 - If audio is missing, blank, likely environmental noise, or you are unsure what the user said, do not guess. Ask briefly: "Say that again?" or "I didn’t catch that."
@@ -192,7 +192,7 @@ const REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'openclaw_turn',
-    description: "Hand the user's full request to the local OpenClaw agent runtime. This is not a tiny helper: once invoked, OpenClaw may use its normal local tools/session authority for files, shell, browser, memory, crons, messages, subagents, coding, research, dashboards, and multi-step work, subject only to the agent's standing safety/approval rules. Returns the final answer to speak.",
+    description: "Escalate a request to the local OpenClaw agent runtime when the user's Mac, files, browser, memory, calendar, messages, shell, crons, dashboards, coding, research, or other local/private computer capabilities are needed, or when the user explicitly asks for OpenClaw. Returns the final answer to speak.",
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -241,6 +241,7 @@ const MIN_AUDIO_BYTES = Number(process.env.VB_MIN_AUDIO_BYTES || 1200);
 const REALTIME_SIDEBAND_ENABLED = !['0', 'false', 'off'].includes(String(process.env.REALTIME_SIDEBAND_ENABLED || '1').toLowerCase());
 const REALTIME_SIDEBAND_OPEN_TIMEOUT_MS = Number(process.env.REALTIME_SIDEBAND_OPEN_TIMEOUT_MS || 2500);
 const realtimeSidebands = new Map();
+const realtimeSidebandStates = new Map();
 const realtimePendingCounts = new Map();
 const realtimeCancelTombstones = new Map();
 const realtimeSessionConfigs = new Map();
@@ -446,6 +447,31 @@ function latestRealtimeResult(sessionToken) {
   };
 }
 
+function realtimeSidebandStateFor(sessionToken) {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  let state = realtimeSidebandStates.get(key);
+  if (!state) {
+    state = {
+      activeResponseId: null,
+      pendingResponseCreates: [],
+      lastResponseCreate: null,
+      handledCallIds: new Set(),
+      lastToolCallId: '',
+      lastError: '',
+      lastCloseCode: null,
+      lastCloseReason: '',
+      connectedAt: null,
+    };
+    realtimeSidebandStates.set(key, state);
+  }
+  return state;
+}
+
+function resetRealtimeSidebandState(sessionToken) {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  realtimeSidebandStates.delete(key);
+}
+
 function closeRealtimeSideband(sessionToken, reason = 'client disconnect', { clearSession = true, clearQueue = true } = {}) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
   const ws = realtimeSidebands.get(key);
@@ -455,6 +481,7 @@ function closeRealtimeSideband(sessionToken, reason = 'client disconnect', { cle
   }
   if (clearSession) realtimeSessionConfigs.delete(key);
   if (clearQueue) realtimePendingCounts.delete(key);
+  if (clearSession) resetRealtimeSidebandState(key);
   return !!ws;
 }
 
@@ -463,14 +490,87 @@ function bridgeStatusSnapshot(sessionToken = '') {
   const current = realtimeTurns.get(key);
   const sideband = realtimeSidebands.get(key);
   const sidebandState = sideband ? ['connecting', 'open', 'closing', 'closed'][sideband.readyState] || String(sideband.readyState) : 'none';
+  const sidebandDiagnostics = realtimeSidebandStates.get(key) || null;
   const sessionConfig = realtimeSessionConfigs.get(key) || null;
-  return { active: !!current, turnId: current?.turnId || null, activeForMs: current ? Date.now() - current.startedAt : 0, realtimePending: realtimeQueueCount(key), maxRealtimePending: MAX_REALTIME_PENDING_TURNS, sideband: sidebandState, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, sessionConfig, lastResult: latestRealtimeResult(key), tts: getTtsStatus() };
+  return {
+    active: !!current,
+    turnId: current?.turnId || null,
+    activeForMs: current ? Date.now() - current.startedAt : 0,
+    realtimePending: realtimeQueueCount(key),
+    maxRealtimePending: MAX_REALTIME_PENDING_TURNS,
+    sideband: sidebandState,
+    sidebandEnabled: REALTIME_SIDEBAND_ENABLED,
+    sidebandDiagnostics: sidebandDiagnostics ? {
+      activeResponseId: sidebandDiagnostics.activeResponseId,
+      pendingResponseCreates: sidebandDiagnostics.pendingResponseCreates.length,
+      handledToolCalls: sidebandDiagnostics.handledCallIds.size,
+      lastToolCallId: sidebandDiagnostics.lastToolCallId,
+      lastError: sidebandDiagnostics.lastError,
+      lastCloseCode: sidebandDiagnostics.lastCloseCode,
+      lastCloseReason: sidebandDiagnostics.lastCloseReason,
+      connectedAt: sidebandDiagnostics.connectedAt,
+    } : null,
+    sessionConfig,
+    lastResult: latestRealtimeResult(key),
+    tts: getTtsStatus(),
+  };
 }
 
 function sendSidebandEvent(ws, event) {
   if (ws?.readyState !== WebSocket.OPEN) return false;
   ws.send(JSON.stringify(event));
   return true;
+}
+
+function queueSidebandResponseCreate(ws, sessionToken, event, reason = 'queued') {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const state = realtimeSidebandStateFor(key);
+  const eventId = String(event?.event_id || '');
+  const alreadyQueued = eventId && state.pendingResponseCreates.some((queued) => queued.event_id === eventId);
+  if (!alreadyQueued) state.pendingResponseCreates.push(event);
+  appendRealtimeLog({ kind: 'sideband_response_create_queued', sessionToken: key, reason, pending: state.pendingResponseCreates.length, activeResponseId: state.activeResponseId });
+  flushSidebandResponseCreates(ws, key);
+}
+
+function requestSidebandResponseCreate(ws, sessionToken, response = {}, reason = 'tool-output') {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const state = realtimeSidebandStateFor(key);
+  const event = {
+    type: 'response.create',
+    event_id: `vc-sideband-${reason}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  };
+  if (response && Object.keys(response).length) event.response = response;
+
+  if (state.activeResponseId) {
+    queueSidebandResponseCreate(ws, key, event, reason);
+    return false;
+  }
+
+  state.lastResponseCreate = event;
+  state.activeResponseId = 'requested';
+  const sent = sendSidebandEvent(ws, event);
+  appendRealtimeLog({ kind: sent ? 'sideband_response_create_sent' : 'sideband_response_create_send_failed', sessionToken: key, reason, pending: state.pendingResponseCreates.length });
+  if (!sent) {
+    state.activeResponseId = null;
+    queueSidebandResponseCreate(ws, key, event, 'send-failed');
+  }
+  return sent;
+}
+
+function flushSidebandResponseCreates(ws, sessionToken) {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const state = realtimeSidebandStateFor(key);
+  if (state.activeResponseId || ws?.readyState !== WebSocket.OPEN || !state.pendingResponseCreates.length) return false;
+  const event = state.pendingResponseCreates.shift();
+  state.lastResponseCreate = event;
+  state.activeResponseId = 'requested';
+  const sent = sendSidebandEvent(ws, event);
+  appendRealtimeLog({ kind: sent ? 'sideband_response_create_flushed' : 'sideband_response_create_flush_failed', sessionToken: key, pending: state.pendingResponseCreates.length });
+  if (!sent) {
+    state.activeResponseId = null;
+    state.pendingResponseCreates.unshift(event);
+  }
+  return sent;
 }
 
 function toolResultSpeechSeed(result) {
@@ -489,29 +589,35 @@ ${seed}`;
 }
 
 async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const state = realtimeSidebandStateFor(key);
   const name = event.name || event.tool_name || event.function?.name;
   const callId = event.call_id || event.callId || event.item_id || event.id;
   if (!callId) return;
+  if (state.handledCallIds.has(callId)) {
+    await appendRealtimeLog({ kind: 'sideband_function_duplicate_ignored', sessionToken: key, name, callId });
+    return;
+  }
+  state.handledCallIds.add(callId);
+  state.lastToolCallId = callId;
   let args = {};
   try { args = JSON.parse(event.arguments || event.output || '{}'); } catch {}
-  await appendRealtimeLog({ kind: 'sideband_function_requested', sessionToken: sanitizeRealtimeSessionToken(sessionToken), name, callId, args });
+  await appendRealtimeLog({ kind: 'sideband_function_requested', sessionToken: key, name, callId, args });
   const exact = (text) => `Say exactly this text and nothing else:\n${String(text || '').trim()}`;
   const outputAndSpeak = (output, { speak = true } = {}) => {
     sendSidebandEvent(ws, { type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } });
-    appendRealtimeLog({ kind: 'sideband_function_output_sent', sessionToken: sanitizeRealtimeSessionToken(sessionToken), name, callId, outputPreview: String(output || '').slice(0, 500) });
+    appendRealtimeLog({ kind: 'sideband_function_output_sent', sessionToken: key, name, callId, outputPreview: String(output || '').slice(0, 500) });
     if (speak) {
-      sendSidebandEvent(ws, { type: 'response.create', response: { instructions: exact(output) } });
-      appendRealtimeLog({ kind: 'sideband_response_create_sent', sessionToken: sanitizeRealtimeSessionToken(sessionToken), name, callId, spoken: String(output || '').slice(0, 500) });
+      requestSidebandResponseCreate(ws, key, { instructions: exact(output) }, name || 'tool-output');
     }
   };
   const outputJsonAndSpeakSummary = (result, { speak = true } = {}) => {
     const output = JSON.stringify(result);
     const spoken = toolResultSpeechSeed(result);
     sendSidebandEvent(ws, { type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output } });
-    appendRealtimeLog({ kind: 'sideband_function_output_sent', sessionToken: sanitizeRealtimeSessionToken(sessionToken), name, callId, ok: result?.ok, outputPreview: output.slice(0, 500) });
+    appendRealtimeLog({ kind: 'sideband_function_output_sent', sessionToken: key, name, callId, ok: result?.ok, outputPreview: output.slice(0, 500) });
     if (speak) {
-      sendSidebandEvent(ws, { type: 'response.create', response: { instructions: toolResultAnswerInstructions(result, spoken) } });
-      appendRealtimeLog({ kind: 'sideband_response_create_sent', sessionToken: sanitizeRealtimeSessionToken(sessionToken), name, callId, spoken: String(spoken || '').slice(0, 500), substantive: true });
+      requestSidebandResponseCreate(ws, key, { instructions: toolResultAnswerInstructions(result, spoken) }, name || 'tool-summary');
     }
   };
   if (name === 'wait_for_user') { outputAndSpeak('Waiting silently for the user.', { speak: false }); return; }
@@ -536,6 +642,63 @@ async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
     if (isRealtimeCancelled(sessionToken, turnId)) { outputAndSpeak('Stopped.'); return; }
     outputAndSpeak(result.ok ? result.reply : (result.cancelled ? 'Stopped.' : `OpenClaw bridge error: ${result.error || 'unknown error'}`));
   } finally { decrementRealtimeQueue(sessionToken); }
+}
+
+function normalizeSidebandToolCallEvent(event = {}) {
+  if (event.type === 'response.function_call_arguments.done') return event;
+  if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') {
+    return {
+      ...event,
+      name: event.item.name,
+      call_id: event.item.call_id || event.item.id,
+      arguments: event.item.arguments || event.arguments || '{}',
+    };
+  }
+  return null;
+}
+
+function activeResponseCollisionMessage(event = {}) {
+  const message = event?.error?.message || event?.message || '';
+  return String(message || '').toLowerCase().includes('already has an active response') ? message : '';
+}
+
+async function handleRealtimeSidebandEvent(ws, event, sessionToken) {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const state = realtimeSidebandStateFor(key);
+  const type = event?.type || '';
+
+  if (type === 'response.created') {
+    state.activeResponseId = event.response?.id || event.response_id || event.id || 'active';
+    await appendRealtimeLog({ kind: 'sideband_response_active', sessionToken: key, responseId: state.activeResponseId });
+    return;
+  }
+
+  if (type === 'response.done' || type === 'response.cancelled' || type === 'response.failed') {
+    const responseId = state.activeResponseId;
+    state.activeResponseId = null;
+    await appendRealtimeLog({ kind: 'sideband_response_done', sessionToken: key, responseId, pending: state.pendingResponseCreates.length, type });
+    flushSidebandResponseCreates(ws, key);
+    return;
+  }
+
+  if (type.includes('error')) {
+    const collision = activeResponseCollisionMessage(event);
+    state.lastError = event?.error?.message || event?.message || JSON.stringify(event).slice(0, 500);
+    if (collision) {
+      if (state.lastResponseCreate) queueSidebandResponseCreate(ws, key, state.lastResponseCreate, 'active-response-retry');
+      state.activeResponseId = state.activeResponseId || 'active';
+      await appendRealtimeLog({ kind: 'sideband_active_response_collision', sessionToken: key, pending: state.pendingResponseCreates.length });
+      return;
+    }
+    await appendRealtimeLog({ kind: 'sideband_error_event', sessionToken: key, error: state.lastError });
+    return;
+  }
+
+  const toolEvent = normalizeSidebandToolCallEvent(event);
+  if (toolEvent) {
+    state.activeResponseId = state.activeResponseId || event.response_id || event.response?.id || 'active';
+    await handleRealtimeSidebandToolCall(ws, toolEvent, key);
+  }
 }
 
 function realtimeCallIdFromLocation(location = '') {
@@ -567,10 +730,30 @@ async function startRealtimeSideband(location, sessionToken, apiKey = getOpenAIA
       ws.once('error', () => { clearTimeout(timer); resolve(false); });
       ws.once('close', () => { clearTimeout(timer); resolve(false); });
     });
-    ws.on('open', () => appendRealtimeLog({ kind: 'sideband_open', sessionToken: key, callIdPrefix: callId.slice(0, 8) }));
-    ws.on('message', (data) => { let event; try { event = JSON.parse(data.toString()); } catch { return; } if (event.type === 'response.function_call_arguments.done') handleRealtimeSidebandToolCall(ws, event, key).catch((err) => appendRealtimeLog({ kind: 'sideband_tool_error', sessionToken: key, error: err.message })); });
-    ws.on('close', (code, reason) => { if (realtimeSidebands.get(key) === ws) realtimeSidebands.delete(key); appendRealtimeLog({ kind: 'sideband_close', sessionToken: key, code, reason: String(reason || '') }); });
-    ws.on('error', (err) => { if (!opened && realtimeSidebands.get(key) === ws) realtimeSidebands.delete(key); appendRealtimeLog({ kind: 'sideband_error', sessionToken: key, error: err.message }); });
+    ws.on('open', () => {
+      const state = realtimeSidebandStateFor(key);
+      state.connectedAt = new Date().toISOString();
+      state.lastError = '';
+      appendRealtimeLog({ kind: 'sideband_open', sessionToken: key, callIdPrefix: callId.slice(0, 8) });
+    });
+    ws.on('message', (data) => {
+      let event;
+      try { event = JSON.parse(data.toString()); } catch { return; }
+      handleRealtimeSidebandEvent(ws, event, key).catch((err) => appendRealtimeLog({ kind: 'sideband_event_error', sessionToken: key, error: err.message }));
+    });
+    ws.on('close', (code, reason) => {
+      if (realtimeSidebands.get(key) === ws) realtimeSidebands.delete(key);
+      const state = realtimeSidebandStateFor(key);
+      state.lastCloseCode = code;
+      state.lastCloseReason = String(reason || '');
+      appendRealtimeLog({ kind: 'sideband_close', sessionToken: key, code, reason: String(reason || '') });
+    });
+    ws.on('error', (err) => {
+      if (!opened && realtimeSidebands.get(key) === ws) realtimeSidebands.delete(key);
+      const state = realtimeSidebandStateFor(key);
+      state.lastError = err.message;
+      appendRealtimeLog({ kind: 'sideband_error', sessionToken: key, error: err.message });
+    });
     const ready = await openPromise;
     if (!ready || ws.readyState !== WebSocket.OPEN) {
       if (realtimeSidebands.get(key) === ws) realtimeSidebands.delete(key);
@@ -605,9 +788,20 @@ function hasServerOwnedRealtimeTools(routeMode = '') {
   return isOpenClawRealtimeRoute(routeMode);
 }
 
+function realtimeCurrentContext() {
+  const now = new Date();
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time';
+  const formatted = new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'full',
+    timeStyle: 'short',
+    timeZone: timezone,
+  }).format(now);
+  return `\n# Current context\n- Current local date and time on this Mac: ${formatted} (${timezone}).\n`;
+}
+
 function realtimeInstructionsForRoute(routeMode = '') {
-  if (isOpenClawRealtimeRoute(routeMode)) return REALTIME_INSTRUCTIONS;
-  return REALTIME_DIRECT_INSTRUCTIONS;
+  const base = isOpenClawRealtimeRoute(routeMode) ? REALTIME_INSTRUCTIONS : REALTIME_DIRECT_INSTRUCTIONS;
+  return `${base.trim()}\n${realtimeCurrentContext()}`.trim();
 }
 
 function realtimeToolsForRoute(routeMode = '') {
