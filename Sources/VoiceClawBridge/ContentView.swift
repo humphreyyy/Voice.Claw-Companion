@@ -572,11 +572,18 @@ private struct StatusPanel: View {
 
                     if store.updateAvailable {
                         Button {
-                            store.openLatestRelease()
+                            store.openLatestDMG()
                         } label: {
-                            Label("Download Update", systemImage: "safari")
+                            Label("Download DMG", systemImage: "arrow.down.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
+
+                        Button {
+                            store.openLatestRelease()
+                        } label: {
+                            Label("Open Release", systemImage: "safari")
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
             }

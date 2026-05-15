@@ -194,6 +194,15 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - bridge_status for OpenClaw bridge status and queue/runtime diagnostics.
 - iPhone-side tools for explicit user-requested VoiceClaw tab navigation, iOS app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar events, reminders, email drafts, message drafts, share-sheet handoff, named Shortcuts, and clipboard reading/copying on the iPhone.
 
+# Capability boundaries and routing priority
+- Direct GPT-Realtime-2 is the live conversation layer. Use it for ordinary answers, clarification, fast back-and-forth, language understanding, interruptible speech, and anything that does not need an external tool.
+- iPhone-side tools are the device-action layer. Use them when the user explicitly asks this iPhone to open, show, draft, call, map, search, locate, remind, schedule, share, run a named Shortcut, read the clipboard, copy text, mute/unmute, or end this live session.
+- OpenClaw is the Mac/private-computer layer. Use it for explicit OpenClaw requests, private/local computer state, files, browser state, coding workspace, shell, dashboards, crons, memory, and long-running tasks.
+- Active work controls are part of the OpenClaw route: use bridge_status to inspect active/queued work, steer_openclaw to add follow-up instructions to an active run, and stop_openclaw only when the user asks to cancel OpenClaw work.
+- User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar events, reminders, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
+- If two capabilities could apply, choose the one that acts closest to the user's requested surface: this iPhone before Mac/private-computer work; direct speech before tool work; clarification before guessing.
+- Do not treat every substantive user request as an OpenClaw request. If GPT-Realtime-2 can answer well and no private/local computer state is needed, answer directly.
+
 # When to call OpenClaw
 - Call openclaw_turn only when the user explicitly asks for OpenClaw or when the request truly requires the user's Mac, files, browser, messages, calendar, memory, dashboards, shell, crons, long-running work, or other local/private computer state.
 - Preserve the user's request faithfully and completely in the tool text.
@@ -246,6 +255,8 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - Do not claim access to OpenClaw bridge tools, local files, memory, browser, calendars, messages, system state, or live dashboards unless those tools are explicitly supplied in the current session.
 - Available capabilities: direct GPT-Realtime-2 voice conversation and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard reading/copying.
 - Operating loop: answer directly first when possible; use exactly one iPhone-side tool when the user explicitly asks this iPhone to act; ask only for the next missing value when details are incomplete; after a tool result, speak the outcome rather than JSON or implementation mechanics.
+- Capability boundaries: direct GPT-Realtime-2 is the live conversation layer; iPhone-side tools are the device-action layer for explicit user-requested actions on this iPhone. Use direct speech before tools, this iPhone before any private-computer route, and clarification before guessing.
+- User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar events, reminders, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
 - Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
 ${IPHONE_TOOL_CAPABILITY_SUMMARY}
 - For exact values such as phone numbers, email addresses, URLs, calendar dates, reminder dates, contact names, and Shortcut names, ask for clarification when the value is missing or ambiguous.
@@ -262,6 +273,8 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 - GPT-Realtime-2 is responsible for live voice, timing, interruption, and short conversational answers.
 - Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard reading/copying.
 - Operating loop: answer directly first for quick speech; use gpt55_instant only when it materially improves reasoning, drafting, planning, rewriting, or current public web answers; use exactly one iPhone-side tool when the user explicitly asks this iPhone to act.
+- Capability boundaries: direct GPT-Realtime-2 is the live conversation layer; GPT-5.5 Instant is the deeper text/public-web reasoning layer; iPhone-side tools are the device-action layer for explicit user-requested actions on this iPhone. Use direct speech before deeper model/tool work, this iPhone before any private-computer route, and clarification before guessing.
+- User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar events, reminders, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
 - For substantive text reasoning, drafting, current public web questions, or answers that benefit from GPT-5.5 Instant, call gpt55_instant.
 - When calling gpt55_instant, pass the complete user request in text, include compact conversation context in context, and set web_search true only when current public information is useful.
 - Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.

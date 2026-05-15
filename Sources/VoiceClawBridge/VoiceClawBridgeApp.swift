@@ -74,6 +74,14 @@ private struct CompanionMenuBarView: View {
             Label("Check for Updates", systemImage: "arrow.down.circle")
         }
 
+        if store.updateAvailable {
+            Button {
+                store.openLatestDMG()
+            } label: {
+                Label("Download Update DMG", systemImage: "arrow.down.circle.fill")
+            }
+        }
+
         Divider()
 
         Label(store.status.title, systemImage: statusSymbol)

@@ -78,6 +78,7 @@ final class BridgeStore: ObservableObject {
     @Published var updateAvailable: Bool = false
     @Published var isCheckingForUpdates: Bool = false
     @Published var latestReleaseURL: URL? = URL(string: "https://github.com/bdjben/Voice.Claw-Companion/releases/latest")
+    @Published var latestDMGURL: URL?
     @Published var latestDMGName: String = ""
 
     private let runner = ProcessRunner()
@@ -226,6 +227,15 @@ final class BridgeStore: ObservableObject {
         }
     }
 
+    func openLatestDMG() {
+        if let latestDMGURL {
+            NSWorkspace.shared.open(latestDMGURL)
+            lastLog = "Opened the notarized Voice.Claw Companion DMG download."
+        } else {
+            openLatestRelease()
+        }
+    }
+
     func checkForUpdates(manual: Bool = true) async {
         guard !isCheckingForUpdates else { return }
 
@@ -249,7 +259,9 @@ final class BridgeStore: ObservableObject {
 
             let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
             latestReleaseURL = release.htmlURL
-            latestDMGName = release.preferredDMGAsset?.name ?? ""
+            let preferredAsset = release.preferredDMGAsset
+            latestDMGName = preferredAsset?.name ?? ""
+            latestDMGURL = preferredAsset?.browserDownloadURL
 
             guard let latestVersion = Self.normalizedVersion(release.tagName),
                   !latestVersion.isEmpty
@@ -275,7 +287,7 @@ final class BridgeStore: ObservableObject {
 
             if Self.compareVersions(latestVersion, currentVersion) == .orderedDescending {
                 updateAvailable = true
-                updateSummary = "Update \(release.tagName) is available. Download \(latestDMGName) from GitHub Releases."
+                updateSummary = "Update \(release.tagName) is available. Download the notarized DMG: \(latestDMGName)."
             } else {
                 updateAvailable = false
                 updateSummary = "Voice.Claw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName)."

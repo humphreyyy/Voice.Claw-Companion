@@ -33,6 +33,10 @@ const instant = extractTemplate('REALTIME_INSTANT_INSTRUCTIONS');
 
 for (const needle of [
   'Operating loop',
+  'Capability boundaries and routing priority',
+  'Direct GPT-Realtime-2 is the live conversation layer',
+  'iPhone-side tools are the device-action layer',
+  'Active work controls are part of the OpenClaw route',
   'Tool precision and confirmation',
   'Do not repeatedly call the same failed tool',
   'steer_openclaw instead of starting a second OpenClaw turn',
@@ -51,6 +55,8 @@ for (const [name, text] of [
   ['REALTIME_INSTANT_INSTRUCTIONS', instant],
 ]) {
   assertContains(name, text, 'Operating loop');
+  assertContains(name, text, 'Capability boundaries');
+  assertContains(name, text, 'iPhone-side tools are the device-action layer');
   assertContains(name, text, 'iPhone-side tools');
   assertContains(name, text, 'clipboard reading/copying');
   assertContains(name, text, 'Do not repeatedly call the same failed tool');
