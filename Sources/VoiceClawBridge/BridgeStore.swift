@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Foundation
 import Security
+import Sparkle
 
 enum CompanionRealtimeAuthMode: String, CaseIterable, Identifiable {
     case apiKey = "api-key"
@@ -93,6 +94,12 @@ final class BridgeStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(automaticUpdateChecksEnabled, forKey: DefaultsKeys.automaticUpdateChecksEnabled)
             configureAutomaticUpdateChecks()
+            applySparkleUpdatePreferences()
+        }
+    }
+    @Published var automaticUpdateInstallsEnabled: Bool = true {
+        didSet {
+            applySparkleUpdatePreferences()
         }
     }
     @Published var lastUpdateCheckDate: Date?
@@ -103,8 +110,10 @@ final class BridgeStore: ObservableObject {
     @Published var latestDMGDigest: String = ""
 
     private let runner = ProcessRunner()
+    private let sparkleUpdaterController: SPUStandardUpdaterController
     private lazy var projectRoot: URL = Self.resolveProjectRoot()
     private var automaticUpdateTask: Task<Void, Never>?
+    private var isSyncingSparkleUpdatePreferences = false
     private var suppressTransientSetupWarningUntil: Date?
     private static let automaticUpdateIntervalNanoseconds: UInt64 = 6 * 60 * 60 * 1_000_000_000
 
@@ -137,6 +146,7 @@ final class BridgeStore: ObservableObject {
     }
 
     init() {
+        sparkleUpdaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
         openAIAPIKey = CompanionKeychainStore.load(account: "openai.apiKey") ?? ""
         if UserDefaults.standard.object(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing) != nil {
             includeOpenAIAPIKeyInPairing = UserDefaults.standard.bool(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
@@ -151,7 +161,13 @@ final class BridgeStore: ObservableObject {
         }
         if UserDefaults.standard.object(forKey: DefaultsKeys.automaticUpdateChecksEnabled) != nil {
             automaticUpdateChecksEnabled = UserDefaults.standard.bool(forKey: DefaultsKeys.automaticUpdateChecksEnabled)
+        } else if UserDefaults.standard.object(forKey: "SUEnableAutomaticChecks") == nil {
+            sparkleUpdaterController.updater.automaticallyChecksForUpdates = true
         }
+        if UserDefaults.standard.object(forKey: "SUAutomaticallyUpdate") == nil {
+            sparkleUpdaterController.updater.automaticallyDownloadsUpdates = true
+        }
+        syncSparkleUpdatePreferences()
         Task {
             await loadSavedBridgeConfig()
             await refreshStatus()
@@ -266,6 +282,12 @@ final class BridgeStore: ObservableObject {
         }
     }
 
+    func installLatestUpdate() {
+        updateSummary = "Opening the VoiceClaw Companion updater. If a signed update is available, Sparkle can download and install it from inside the app."
+        sparkleUpdaterController.checkForUpdates(nil)
+        syncSparkleUpdatePreferences()
+    }
+
     func downloadLatestDMG() async {
         guard !isDownloadingUpdate else { return }
         guard let latestDMGURL else {
@@ -373,7 +395,7 @@ final class BridgeStore: ObservableObject {
 
             if Self.compareVersions(latestVersion, currentVersion) == .orderedDescending {
                 updateAvailable = true
-                updateSummary = "Update \(release.tagName) is available. Download the notarized DMG: \(latestDMGName). Automatic checks only read GitHub Releases; they do not change this Mac."
+                updateSummary = "Update \(release.tagName) is available. Use Install Update to let Sparkle download and install the signed release. Notarized DMG: \(latestDMGName)."
             } else {
                 updateAvailable = false
                 updateSummary = "VoiceClaw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName)."
@@ -397,6 +419,22 @@ final class BridgeStore: ObservableObject {
                 await self?.checkForUpdates(manual: false)
             }
         }
+    }
+
+    private func applySparkleUpdatePreferences() {
+        guard !isSyncingSparkleUpdatePreferences else { return }
+        sparkleUpdaterController.updater.automaticallyChecksForUpdates = automaticUpdateChecksEnabled
+        if sparkleUpdaterController.updater.allowsAutomaticUpdates {
+            sparkleUpdaterController.updater.automaticallyDownloadsUpdates = automaticUpdateInstallsEnabled
+        }
+        syncSparkleUpdatePreferences()
+    }
+
+    private func syncSparkleUpdatePreferences() {
+        isSyncingSparkleUpdatePreferences = true
+        automaticUpdateChecksEnabled = sparkleUpdaterController.updater.automaticallyChecksForUpdates
+        automaticUpdateInstallsEnabled = sparkleUpdaterController.updater.automaticallyDownloadsUpdates
+        isSyncingSparkleUpdatePreferences = false
     }
 
     func chooseFreshTestPort() async {

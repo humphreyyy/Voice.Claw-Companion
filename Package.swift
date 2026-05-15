@@ -9,7 +9,14 @@ let package = Package(
     products: [
         .executable(name: "VoiceClawBridge", targets: ["VoiceClawBridge"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+    ],
     targets: [
-        .executableTarget(name: "VoiceClawBridge"),
+        .executableTarget(
+            name: "VoiceClawBridge",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
+            ]),
     ]
 )

@@ -569,7 +569,8 @@ private struct StatusPanel: View {
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
-            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw reads GitHub Releases every few hours and offers only a notarized DMG; it does not install or mutate the Mac automatically." : "Automatic checks are off. Use Check Updates when you want to compare against the latest notarized GitHub Release.", symbol: "clock.arrow.circlepath")
+            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw checks for signed GitHub Release updates in the background." : "Automatic checks are off. The menu bar icon shows an update warning; use Check Updates when you want to compare against the latest release.", symbol: "clock.arrow.circlepath")
+            StatusRow(title: "Update Install", value: store.automaticUpdateInstallsEnabled ? "Automatic install is on. When Sparkle finds a signed update, it can download and install it in-app instead of making you open a DMG manually." : "Automatic install is off. VoiceClaw will still show available updates, but you decide when to install them.", symbol: store.automaticUpdateInstallsEnabled ? "arrow.down.app.fill" : "arrow.down.app")
 
             if let lastUpdateCheckDate = store.lastUpdateCheckDate {
                 StatusRow(title: "Updates Checked", value: lastUpdateCheckDate.formatted(date: .abbreviated, time: .standard), symbol: "calendar.badge.clock")
@@ -624,12 +625,11 @@ private struct StatusPanel: View {
 
                     if store.updateAvailable {
                         Button {
-                            Task { await store.downloadLatestDMG() }
+                            store.installLatestUpdate()
                         } label: {
-                            Label(store.isDownloadingUpdate ? "Downloading" : "Download and Open DMG", systemImage: "arrow.down.circle.fill")
+                            Label("Install Update", systemImage: "arrow.down.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(store.isDownloadingUpdate)
 
                         Button {
                             store.openLatestRelease()
@@ -644,6 +644,12 @@ private struct StatusPanel: View {
                     .toggleStyle(.checkbox)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle("Automatically download and install signed updates", isOn: $store.automaticUpdateInstallsEnabled)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .disabled(!store.automaticUpdateChecksEnabled)
             }
 
             DiagnosticsVersionFooter()

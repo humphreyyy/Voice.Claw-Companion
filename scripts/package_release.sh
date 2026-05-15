@@ -6,13 +6,16 @@ APP_NAME="VoiceClaw Companion"
 EXECUTABLE_NAME="VoiceClawBridge"
 DISPLAY_NAME="VoiceClaw Companion"
 BUNDLE_ID="ai.voiceclaw.bridge"
-VERSION="${VOICECLAW_BRIDGE_VERSION:-0.1.42}"
+VERSION="${VOICECLAW_BRIDGE_VERSION:-0.1.44}"
 BUILD_NUMBER="${VOICECLAW_BRIDGE_BUILD:-$(date -u +%Y%m%d%H%M)}"
+SPARKLE_FEED_URL="${VOICECLAW_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml}"
+SPARKLE_PUBLIC_ED_KEY="${VOICECLAW_SPARKLE_PUBLIC_ED_KEY:-8W2Hfu+vPDKDjcFHcr3daoCiOStBTyJNc1X+UPpyqGo=}"
 DIST_DIR="$ROOT_DIR/dist"
 RELEASE_DIR="$DIST_DIR/release"
 APP_DIR="$RELEASE_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
+FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 RUNTIME_DIR="$RESOURCES_DIR/BridgeRuntime"
 RUNTIME_SOURCE_DIR="$ROOT_DIR/BridgeRuntime"
@@ -24,9 +27,22 @@ cd "$ROOT_DIR"
 swift build -c release
 
 rm -rf "$RELEASE_DIR" "$ZIP_PATH" "$DMG_PATH"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$RUNTIME_DIR"
+mkdir -p "$MACOS_DIR" "$FRAMEWORKS_DIR" "$RESOURCES_DIR" "$RUNTIME_DIR"
 
 cp "$ROOT_DIR/.build/release/$EXECUTABLE_NAME" "$MACOS_DIR/$EXECUTABLE_NAME"
+
+SPARKLE_FRAMEWORK="$ROOT_DIR/.build/release/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  SPARKLE_FRAMEWORK="$ROOT_DIR/.build/arm64-apple-macosx/release/Sparkle.framework"
+fi
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  echo "Sparkle.framework was not found after swift build." >&2
+  exit 1
+fi
+rsync -a --delete "$SPARKLE_FRAMEWORK/" "$FRAMEWORKS_DIR/Sparkle.framework/"
+if ! otool -l "$MACOS_DIR/$EXECUTABLE_NAME" | grep -Fq "@executable_path/../Frameworks"; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/$EXECUTABLE_NAME"
+fi
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -61,6 +77,16 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <true/>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
+  <key>SUFeedURL</key>
+  <string>$SPARKLE_FEED_URL</string>
+  <key>SUPublicEDKey</key>
+  <string>$SPARKLE_PUBLIC_ED_KEY</string>
+  <key>SUScheduledCheckInterval</key>
+  <integer>21600</integer>
 </dict>
 </plist>
 PLIST
@@ -90,6 +116,7 @@ rsync -a --delete "$RUNTIME_SOURCE_DIR/" "$RUNTIME_DIR/"
 )
 
 if security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
   codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR"
 else
   echo "Developer ID identity not found; creating an ad-hoc signed app for local testing." >&2

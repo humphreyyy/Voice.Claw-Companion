@@ -23,7 +23,7 @@ VoiceClaw Companion is the macOS bridge app for VoiceClaw on iPhone and Apple Wa
 
 ## Install
 
-Download the latest DMG from GitHub Releases, open it, and drag **VoiceClaw Companion** into Applications.
+Download the latest DMG from GitHub Releases, open it, and drag **VoiceClaw Companion** into Applications. After the first install, the app can update itself from signed GitHub Release builds through Sparkle, so users do not have to manually download each new DMG.
 
 Open the app and click **Install and Start**. The companion will:
 
@@ -36,6 +36,10 @@ Open the app and click **Install and Start**. The companion will:
 Tailscale Serve is Tailscale's private HTTPS reverse proxy. It forwards a private Tailscale URL on the Mac to the local VoiceClaw bridge service. The default bridge port is `3191`; users should change it only if the port is already in use or they intentionally want a separate test bridge. **Fresh Test Port** chooses an unused high port without changing the Mac; the user still has to click **Install and Start** before anything is installed or published.
 
 The Pair iPhone screen includes an OpenAI API key field. **Include API Key in Setup QR** is on by default, so the QR code/setup JSON can put the user's own GPT-Realtime-2 key into the iPhone Keychain during pairing. Turn it off only when you want to enter the key manually on iPhone.
+
+## Updates
+
+VoiceClaw Companion checks GitHub Releases for signed updates. Automatic checks and automatic signed update installs are on by default. The Diagnostics screen and menu bar item show when updates are manual-only or when a newer build is available.
 
 ## Reset First-Run State
 
@@ -69,4 +73,10 @@ Package a GitHub release artifact:
 ./scripts/package_release.sh
 ```
 
-For public distribution, notarize and staple the generated DMG before uploading it to a GitHub Release.
+For public distribution, notarize and staple the generated DMG before uploading it to a GitHub Release. Then generate the Sparkle appcast for the notarized DMG:
+
+```sh
+./scripts/make_appcast.sh dist/VoiceClawCompanion-<version>-<build>.dmg
+```
+
+Commit and push `appcast.xml` after the matching GitHub Release asset is uploaded.

@@ -30,10 +30,20 @@ struct VoiceClawBridgeApp: App {
             }
         }
 
-        MenuBarExtra("VoiceClaw", systemImage: "waveform.circle.fill") {
+        MenuBarExtra("VoiceClaw", systemImage: menuBarSystemImage) {
             CompanionMenuBarView(store: store)
         }
         .menuBarExtraStyle(.menu)
+    }
+
+    private var menuBarSystemImage: String {
+        if store.updateAvailable {
+            return "arrow.down.circle.fill"
+        }
+        if !store.automaticUpdateChecksEnabled || !store.automaticUpdateInstallsEnabled {
+            return "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90"
+        }
+        return "waveform.circle.fill"
     }
 }
 
@@ -69,19 +79,19 @@ private struct CompanionMenuBarView: View {
         .disabled(store.pairingJSON.isEmpty)
 
         Button {
-            Task { await store.checkForUpdates() }
+            store.installLatestUpdate()
         } label: {
             Label("Check for Updates", systemImage: "arrow.down.circle")
         }
 
         if store.updateAvailable {
             Button {
-                store.openLatestDMG()
+                store.installLatestUpdate()
             } label: {
-                Label("Download \(store.latestReleaseTag.isEmpty ? "Update" : store.latestReleaseTag) DMG", systemImage: "arrow.down.circle.fill")
+                Label("Install \(store.latestReleaseTag.isEmpty ? "Update" : store.latestReleaseTag)", systemImage: "arrow.down.circle.fill")
             }
         } else {
-            Label("Updates \(store.automaticUpdateChecksEnabled ? "check automatically" : "manual only")", systemImage: "checkmark.seal")
+            Label(updateModeLabel, systemImage: updateModeSymbol)
         }
 
         Divider()
@@ -108,6 +118,23 @@ private struct CompanionMenuBarView: View {
         case .idle:
             "circle"
         }
+    }
+
+    private var updateModeLabel: String {
+        if !store.automaticUpdateChecksEnabled {
+            return "Updates are manual only"
+        }
+        if !store.automaticUpdateInstallsEnabled {
+            return "Updates check automatically; install manually"
+        }
+        return "Updates install automatically"
+    }
+
+    private var updateModeSymbol: String {
+        if store.automaticUpdateChecksEnabled, store.automaticUpdateInstallsEnabled {
+            return "checkmark.seal"
+        }
+        return "exclamationmark.triangle"
     }
 
     private func openMainWindow() {
