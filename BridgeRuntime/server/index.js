@@ -165,7 +165,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_draft_email opens an email draft only when the user asks to draft or email someone. It does not send email automatically.
 - iphone_draft_message opens a Messages draft only when the user asks to text or message someone. It does not read or send messages automatically.
 - iphone_share opens the iOS share sheet for specific text and/or a public URL, including user-requested handoff to Notes; the user chooses the destination.
-- iphone_run_shortcut opens a named existing Apple Shortcut only when the user explicitly asks to run that Shortcut. You cannot inspect the user's Shortcut list.
+- iphone_run_shortcut opens a named existing Apple Shortcut only when the user explicitly asks to run that Shortcut. This is the user-controlled route for custom iPhone workflows that public app APIs do not expose directly. You cannot inspect the user's Shortcut list.
 - iphone_read_clipboard reads text currently on the iPhone clipboard only after an explicit user request. iOS may show a paste permission prompt.
 - iphone_copy_text copies user-approved text to the iPhone clipboard.
 `;
@@ -234,6 +234,12 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - If the user asks to save text or a URL to Notes, use iphone_share and tell them to choose Notes in the share sheet.
 ${IPHONE_TOOL_CAPABILITY_SUMMARY}
 
+# User-extensible iPhone automation through Shortcuts
+- iphone_run_shortcut can run an existing Apple Shortcut by exact name and optional text input. This is the user-controlled route for custom iPhone workflows that public app APIs do not expose directly.
+- Use iphone_run_shortcut when the user says "run my Shortcut named X", "I have a Shortcut called X", or asks to pass text to a named Shortcut.
+- Do not guess Shortcut names. Do not claim you can inspect, list, create, edit, or understand a Shortcut unless the user tells you what it does.
+- If the user asks for an unsupported iPhone capability and no matching built-in tool exists, offer to run a named Shortcut if they have one.
+
 # Tool precision and confirmation
 - For exact values such as phone numbers, email addresses, URLs, calendar dates, reminder dates, contact names, and Shortcut names, preserve the user's wording carefully.
 - If an exact value is missing or ambiguous, ask for that value before using a tool.
@@ -297,12 +303,14 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - "Remind me tomorrow" -> use iphone_create_reminder.
 - "Save this as a note" -> use iphone_share and tell the user to choose Notes in the share sheet.
 - "Sync my Watch settings" -> use iphone_sync_watch_settings.
+- "Run my Shortcut named Start Focus" or "Pass this text to my Shortcut called File This" -> use iphone_run_shortcut with the exact Shortcut name and optional text input.
 - "Open that URL", "show me directions", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
 - If the user asks for Mac/private-computer work, explain that OpenClaw Bridge mode is needed for that specific action.
 - If audio is silence, background noise, side conversation, TV/music, speech not addressed to VoiceClaw, or likely echo of your own prior speech, call wait_for_user and do not respond conversationally.
 - User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar event creation, reminder creation, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
 - Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
 ${IPHONE_TOOL_CAPABILITY_SUMMARY}
+- User-extensible iPhone automation through Shortcuts: iphone_run_shortcut can run an existing Apple Shortcut by exact name and optional text input for custom iPhone workflows. Use it when the user names a Shortcut; do not guess Shortcut names or claim you can inspect, list, create, edit, or understand Shortcuts.
 - For exact values such as phone numbers, email addresses, URLs, calendar dates, reminder dates, contact names, and Shortcut names, ask for clarification when the value is missing or ambiguous.
 - Email and Messages tools open drafts only. The user sends them manually.
 - Do not repeatedly call the same failed tool with the same arguments. Ask for a correction, offer one retry when a transient failure is plausible, or offer an alternate route.
@@ -345,6 +353,7 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 - "Remind me tomorrow" -> use iphone_create_reminder.
 - "Save this as a note" -> use iphone_share and tell the user to choose Notes in the share sheet.
 - "Sync my Watch settings" -> use iphone_sync_watch_settings.
+- "Run my Shortcut named Start Focus" or "Pass this text to my Shortcut called File This" -> use iphone_run_shortcut with the exact Shortcut name and optional text input.
 - Explicit iPhone actions such as Maps, calls, drafts, reminders, Notes share-sheet handoff, clipboard, Shortcuts, VoiceClaw screens, or URLs -> use the matching iPhone-side tool.
 - Do not mention or simulate Mac/private-computer tools in this mode.
 - If audio is silence, background noise, side conversation, TV/music, speech not addressed to VoiceClaw, or likely echo of your own prior speech, call wait_for_user and do not respond conversationally.
@@ -353,6 +362,7 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 - When calling gpt55_instant, pass the complete user request in text, include compact conversation context in context, and set web_search true only when current public information is useful.
 - Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
 ${IPHONE_TOOL_CAPABILITY_SUMMARY}
+- User-extensible iPhone automation through Shortcuts: iphone_run_shortcut can run an existing Apple Shortcut by exact name and optional text input for custom iPhone workflows. Use it when the user names a Shortcut; do not guess Shortcut names or claim you can inspect, list, create, edit, or understand Shortcuts.
 - For exact values such as phone numbers, email addresses, URLs, calendar dates, reminder dates, contact names, and Shortcut names, ask for clarification when the value is missing or ambiguous.
 - Email and Messages tools open drafts only. The user sends them manually.
 - After gpt55_instant returns, speak its answer naturally as your answer. If it fails, briefly explain that GPT-5.5 Instant could not answer and either answer directly with GPT-Realtime-2 if possible or ask whether the user wants to try again.
@@ -716,7 +726,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_run_shortcut',
-    description: 'Run or open an existing Apple Shortcut by exact name on the user’s iPhone. Use only when the user explicitly asks to run a named Shortcut. This tool cannot list, inspect, create, edit, or explain Shortcuts.',
+    description: 'Run or open an existing Apple Shortcut by exact name on the user’s iPhone. Use only when the user explicitly asks to run a named Shortcut. This is the user-controlled route for custom iPhone workflows that public app APIs do not expose directly. This tool cannot list, inspect, create, edit, or explain Shortcuts.',
     parameters: {
       type: 'object',
       additionalProperties: false,
