@@ -162,7 +162,8 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_draft_message opens a Messages draft only when the user asks to text or message someone. It does not read or send messages automatically.
 - iphone_share opens the iOS share sheet for specific text and/or a public URL; the user chooses the destination.
 - iphone_run_shortcut opens a named existing Apple Shortcut only when the user explicitly asks to run that Shortcut. You cannot inspect the user's Shortcut list.
-- iphone_copy_text copies user-approved text to the iPhone clipboard. It cannot read the clipboard.
+- iphone_read_clipboard reads text currently on the iPhone clipboard only after an explicit user request. iOS may show a paste permission prompt.
+- iphone_copy_text copies user-approved text to the iPhone clipboard.
 `;
 
 const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
@@ -191,7 +192,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - steer_openclaw for follow-up instructions while OpenClaw is already working.
 - stop_openclaw to stop or cancel active OpenClaw work.
 - bridge_status for OpenClaw bridge status and queue/runtime diagnostics.
-- iPhone-side tools for explicit user-requested VoiceClaw tab navigation, iOS app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar events, reminders, email drafts, message drafts, share-sheet handoff, named Shortcuts, and clipboard copying on the iPhone.
+- iPhone-side tools for explicit user-requested VoiceClaw tab navigation, iOS app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar events, reminders, email drafts, message drafts, share-sheet handoff, named Shortcuts, and clipboard reading/copying on the iPhone.
 
 # When to call OpenClaw
 - Call openclaw_turn only when the user explicitly asks for OpenClaw or when the request truly requires the user's Mac, files, browser, messages, calendar, memory, dashboards, shell, crons, long-running work, or other local/private computer state.
@@ -203,7 +204,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - If OpenClaw returns a queue or active-work conflict, treat the user text as steering for the active work instead of creating another new OpenClaw request.
 
 # iPhone-side tools
-- Use the matching iPhone-side tool when the user explicitly asks for an action on this iPhone: VoiceClaw tab navigation, iOS app permission settings, microphone mute/unmute, live session ending, URL opening, web search, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar/reminder creation, email/message draft, share sheet, named Shortcut, or clipboard copy.
+- Use the matching iPhone-side tool when the user explicitly asks for an action on this iPhone: VoiceClaw tab navigation, iOS app permission settings, microphone mute/unmute, live session ending, URL opening, web search, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar/reminder creation, email/message draft, share sheet, named Shortcut, clipboard read, or clipboard copy.
 - Do not send iPhone-local actions to OpenClaw unless the user specifically asks for Mac/OpenClaw/private-computer handling.
 - iPhone-side tools are answered by the iPhone app, not by OpenClaw on the Mac.
 - iPhone-side tools do not grant Mac, file, browser automation, Notes, message reading, mail reading, shell, or private computer access unless a supplied tool explicitly says so.
@@ -214,7 +215,7 @@ ${IPHONE_TOOL_CAPABILITY_SUMMARY}
 - If an exact value is missing or ambiguous, ask for that value before using a tool.
 - If a contact search returns several plausible people, ask which one to use before phone, email, or message handoff.
 - If the user gives a clear complete request for a reversible handoff, such as opening Maps or opening a draft message, do not add an unnecessary confirmation step.
-- Calendar, reminder, email, message, call, and clipboard actions are write or handoff actions. Use them only for explicit user requests.
+- Calendar, reminder, email, message, call, and clipboard write actions are write or handoff actions. Use them only for explicit user requests.
 - Email and Messages tools open drafts only. The user sends them manually.
 
 # Tool-call speech discipline
@@ -243,7 +244,7 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - You are GPT-Realtime-2 in direct realtime intercom mode for User.
 - Use your native realtime audio, reasoning, and conversation capabilities fully.
 - Do not claim access to OpenClaw bridge tools, local files, memory, browser, calendars, messages, system state, or live dashboards unless those tools are explicitly supplied in the current session.
-- Available capabilities: direct GPT-Realtime-2 voice conversation and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard copying.
+- Available capabilities: direct GPT-Realtime-2 voice conversation and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard reading/copying.
 - Operating loop: answer directly first when possible; use exactly one iPhone-side tool when the user explicitly asks this iPhone to act; ask only for the next missing value when details are incomplete; after a tool result, speak the outcome rather than JSON or implementation mechanics.
 - Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
 ${IPHONE_TOOL_CAPABILITY_SUMMARY}
@@ -259,7 +260,7 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 # Role
 - You are VoiceClaw in GPT-5.5 Instant mode.
 - GPT-Realtime-2 is responsible for live voice, timing, interruption, and short conversational answers.
-- Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard copying.
+- Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard reading/copying.
 - Operating loop: answer directly first for quick speech; use gpt55_instant only when it materially improves reasoning, drafting, planning, rewriting, or current public web answers; use exactly one iPhone-side tool when the user explicitly asks this iPhone to act.
 - For substantive text reasoning, drafting, current public web questions, or answers that benefit from GPT-5.5 Instant, call gpt55_instant.
 - When calling gpt55_instant, pass the complete user request in text, include compact conversation context in context, and set web_search true only when current public information is useful.
@@ -584,8 +585,21 @@ const IPHONE_REALTIME_TOOLS = [
   },
   {
     type: 'function',
+    name: 'iphone_read_clipboard',
+    description: 'Read text currently on the iPhone clipboard. Use only when the user explicitly asks to read, summarize, use, or inspect what is on the clipboard. iOS may show a paste permission prompt.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        purpose: { type: 'string', description: 'Brief user-facing reason for reading the clipboard.' }
+      },
+      required: []
+    }
+  },
+  {
+    type: 'function',
     name: 'iphone_copy_text',
-    description: 'Copy text to the iPhone clipboard. Use only when the user explicitly asks to copy specific text. This tool cannot read the clipboard.',
+    description: 'Copy text to the iPhone clipboard. Use only when the user explicitly asks to copy specific text.',
     parameters: {
       type: 'object',
       additionalProperties: false,

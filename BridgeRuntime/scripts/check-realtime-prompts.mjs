@@ -52,6 +52,7 @@ for (const [name, text] of [
 ]) {
   assertContains(name, text, 'Operating loop');
   assertContains(name, text, 'iPhone-side tools');
+  assertContains(name, text, 'clipboard reading/copying');
   assertContains(name, text, 'Do not repeatedly call the same failed tool');
 }
 
