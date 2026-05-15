@@ -30,6 +30,7 @@ function assertOmits(name, text, needle) {
 const openClaw = extractTemplate('REALTIME_INSTRUCTIONS');
 const direct = extractTemplate('REALTIME_DIRECT_INSTRUCTIONS');
 const instant = extractTemplate('REALTIME_INSTANT_INSTRUCTIONS');
+const capabilityAwareness = extractTemplate('CAPABILITY_AWARENESS_INSTRUCTIONS');
 
 for (const needle of [
   'Operating loop',
@@ -58,6 +59,24 @@ for (const needle of [
   'bridge_status before starting another OpenClaw turn',
 ]) {
   assertContains('REALTIME_INSTRUCTIONS', openClaw, needle);
+}
+
+for (const needle of [
+  'Capability awareness as VoiceClaw grows',
+  'The active route and active tool list are authoritative',
+  'Do not under-use GPT-Realtime-2',
+  'Use iphone_status when the user asks about this iPhone',
+  'Use bridge_status when the user asks about OpenClaw queue',
+]) {
+  assertContains('CAPABILITY_AWARENESS_INSTRUCTIONS', capabilityAwareness, needle);
+}
+
+for (const [name, text] of [
+  ['REALTIME_INSTRUCTIONS', openClaw],
+  ['REALTIME_DIRECT_INSTRUCTIONS', direct],
+  ['REALTIME_INSTANT_INSTRUCTIONS', instant],
+]) {
+  assertContains(name, text, '${CAPABILITY_AWARENESS_INSTRUCTIONS}');
 }
 
 for (const needle of ['openclaw_turn', 'steer_openclaw', 'stop_openclaw', 'bridge_status']) {
