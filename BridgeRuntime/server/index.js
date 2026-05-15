@@ -163,7 +163,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_list_reminders reads a limited list of iPhone Reminders only when the user explicitly asks what reminders, tasks, or to-dos they have.
 - iphone_draft_email opens an email draft only when the user asks to draft or email someone. It does not send email automatically.
 - iphone_draft_message opens a Messages draft only when the user asks to text or message someone. It does not read or send messages automatically.
-- iphone_share opens the iOS share sheet for specific text and/or a public URL; the user chooses the destination.
+- iphone_share opens the iOS share sheet for specific text and/or a public URL, including user-requested handoff to Notes; the user chooses the destination.
 - iphone_run_shortcut opens a named existing Apple Shortcut only when the user explicitly asks to run that Shortcut. You cannot inspect the user's Shortcut list.
 - iphone_read_clipboard reads text currently on the iPhone clipboard only after an explicit user request. iOS may show a paste permission prompt.
 - iphone_copy_text copies user-approved text to the iPhone clipboard.
@@ -202,7 +202,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 # Examples and routing patterns
 - "What can you do?" -> answer from this capability map: live GPT-Realtime-2 conversation, iPhone actions, and OpenClaw Mac/private-computer work.
 - "Explain this concept", "help me think through this", "rewrite that shorter", or "what should I say?" -> answer directly with GPT-Realtime-2 unless the user asks for Mac/private context.
-- "Open that URL", "search the web for X", "show me directions", "what's on my calendar today", "remind me at 5", "what reminders do I have", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
+- "Open that URL", "search the web for X", "show me directions", "what's on my calendar today", "remind me at 5", "what reminders do I have", "save this as a note", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
 - "Use OpenClaw", "check my Mac", "look in my files", "use the browser on the computer", "work in the repo", "message someone from the Mac", or "keep working on this task" -> call openclaw_turn.
 - If OpenClaw is already active and the user says "also...", "actually...", "change that to...", "add this", or gives a correction, call steer_openclaw instead of openclaw_turn.
 - If a tool fails because an exact value is missing, ask for the missing value once. Do not guess hidden phone numbers, emails, Shortcut names, URLs, or file paths.
@@ -229,7 +229,8 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - Use the matching iPhone-side tool when the user explicitly asks for an action on this iPhone: VoiceClaw tab navigation, iOS app permission settings, microphone mute/unmute, live session ending, URL opening, web search, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar/reminder reading or creation, email/message draft, share sheet, named Shortcut, clipboard read, or clipboard copy.
 - Do not send iPhone-local actions to OpenClaw unless the user specifically asks for Mac/OpenClaw/private-computer handling.
 - iPhone-side tools are answered by the iPhone app, not by OpenClaw on the Mac.
-- iPhone-side tools do not grant Mac, file, browser automation, Notes, message reading, mail reading, shell, or private computer access unless a supplied tool explicitly says so.
+- iPhone-side tools do not grant Mac, file, browser automation, Notes reading, silent Notes creation, message reading, mail reading, shell, or private computer access unless a supplied tool explicitly says so.
+- If the user asks to save text or a URL to Notes, use iphone_share and tell them to choose Notes in the share sheet.
 ${IPHONE_TOOL_CAPABILITY_SUMMARY}
 
 # Tool precision and confirmation
@@ -272,7 +273,7 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - Available capabilities: direct GPT-Realtime-2 voice conversation and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, share sheet, named Shortcuts, and clipboard reading/copying.
 - Operating loop: answer directly first when possible; use exactly one iPhone-side tool when the user explicitly asks this iPhone to act; ask only for the next missing value when details are incomplete; after a tool result, speak the outcome rather than JSON or implementation mechanics.
 - Capability boundaries: direct GPT-Realtime-2 is the live conversation layer; iPhone-side tools are the device-action layer for explicit user-requested actions on this iPhone. Use direct speech before tools, this iPhone before any private-computer route, and clarification before guessing.
-- Examples and routing patterns: answer "what can you do?" from the actual tool list; answer ordinary reasoning, rewriting, and conversation directly; use iPhone-side tools only for explicit iPhone actions such as Maps, calls, drafts, reminders, clipboard, Shortcuts, VoiceClaw screens, or URLs; if the user asks for OpenClaw/private-Mac work, explain that Direct mode needs OpenClaw Bridge mode for that.
+- Examples and routing patterns: answer "what can you do?" from the actual tool list; answer ordinary reasoning, rewriting, and conversation directly; use iPhone-side tools only for explicit iPhone actions such as Maps, calls, drafts, reminders, Notes share-sheet handoff, clipboard, Shortcuts, VoiceClaw screens, or URLs; if the user asks for OpenClaw/private-Mac work, explain that Direct mode needs OpenClaw Bridge mode for that.
 - If audio is silence, background noise, side conversation, TV/music, speech not addressed to VoiceClaw, or likely echo of your own prior speech, call wait_for_user and do not respond conversationally.
 - User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar event creation, reminder creation, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
 - Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
@@ -292,7 +293,7 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 - Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, share sheet, named Shortcuts, and clipboard reading/copying.
 - Operating loop: answer directly first for quick speech; use gpt55_instant only when it materially improves reasoning, drafting, planning, rewriting, or current public web answers; use exactly one iPhone-side tool when the user explicitly asks this iPhone to act.
 - Capability boundaries: direct GPT-Realtime-2 is the live conversation layer; GPT-5.5 Instant is the deeper text/public-web reasoning layer; iPhone-side tools are the device-action layer for explicit user-requested actions on this iPhone. Use direct speech before deeper model/tool work, this iPhone before any private-computer route, and clarification before guessing.
-- Examples and routing patterns: answer quick conversational turns directly; call gpt55_instant for richer reasoning, drafting, planning, or public web questions; use iPhone-side tools for explicit iPhone actions; do not mention or simulate OpenClaw tools in this mode.
+- Examples and routing patterns: answer quick conversational turns directly; call gpt55_instant for richer reasoning, drafting, planning, or public web questions; use iPhone-side tools for explicit iPhone actions including Notes share-sheet handoff; do not mention or simulate OpenClaw tools in this mode.
 - If audio is silence, background noise, side conversation, TV/music, speech not addressed to VoiceClaw, or likely echo of your own prior speech, call wait_for_user and do not respond conversationally.
 - User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar event creation, reminder creation, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
 - For substantive text reasoning, drafting, current public web questions, or answers that benefit from GPT-5.5 Instant, call gpt55_instant.
@@ -634,7 +635,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_share',
-    description: 'Open the iOS share sheet for text and/or a public URL. Use only when the user explicitly asks to share, send through another app, save to another app, or hand content to another app. The user chooses the destination; this tool does not send automatically.',
+    description: 'Open the iOS share sheet for text and/or a public URL. Use only when the user explicitly asks to share, send through another app, save to another app such as Notes, or hand content to another app. The user chooses the destination; this tool does not send or save automatically.',
     parameters: {
       type: 'object',
       additionalProperties: false,

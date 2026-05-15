@@ -41,6 +41,7 @@ for (const needle of [
   'Tool precision and confirmation',
   'calendar/reminder reading or creation',
   'Calendar and reminder reads expose private iPhone data',
+  'choose Notes in the share sheet',
   'Do not repeatedly call the same failed tool',
   'wait_for_user',
   'Do not respond conversationally after wait_for_user',
@@ -67,6 +68,7 @@ for (const [name, text] of [
   assertContains(name, text, 'iPhone-side tools');
   assertContains(name, text, 'calendar event reading/creation');
   assertContains(name, text, 'reminder reading/creation');
+  assertContains(name, text, 'Notes share-sheet handoff');
   assertContains(name, text, 'clipboard reading/copying');
   assertContains(name, text, 'Do not repeatedly call the same failed tool');
 }
