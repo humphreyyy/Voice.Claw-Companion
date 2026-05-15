@@ -38,6 +38,7 @@ for (const needle of [
   'Direct GPT-Realtime-2 is the live conversation layer',
   'iPhone-side tools are the device-action layer',
   'Active work controls are part of the OpenClaw route',
+  'Apple Watch settings sync',
   'Tool precision and confirmation',
   'calendar/reminder reading or creation',
   'Calendar and reminder reads expose private iPhone data',
@@ -66,6 +67,7 @@ for (const [name, text] of [
   assertContains(name, text, 'iPhone-side tools are the device-action layer');
   assertContains(name, text, 'wait_for_user');
   assertContains(name, text, 'iPhone-side tools');
+  assertContains(name, text, 'iphone_sync_watch_settings');
   assertContains(name, text, 'calendar event reading/creation');
   assertContains(name, text, 'reminder reading/creation');
   assertContains(name, text, 'Notes share-sheet handoff');
@@ -74,5 +76,6 @@ for (const [name, text] of [
 }
 
 assertContains('REALTIME_INSTANT_INSTRUCTIONS', instant, 'gpt55_instant');
+assertContains('server/index.js', source, "name: 'iphone_sync_watch_settings'");
 assertContains('server/index.js', source, "name: 'iphone_list_calendar_events'");
 assertContains('server/index.js', source, "name: 'iphone_list_reminders'");
