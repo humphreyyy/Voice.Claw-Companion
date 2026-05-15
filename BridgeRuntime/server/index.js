@@ -4,11 +4,12 @@
 
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { readFile, stat, mkdir, appendFile, readdir } from 'node:fs/promises';
+import { readFile, stat, mkdir, appendFile, readdir, writeFile, unlink } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import WebSocket, { WebSocketServer } from 'ws';
 import { transcribe } from './asr.js';
 import { synthesize, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
@@ -16,6 +17,7 @@ import { generateReply, clearHistory, getProcessingOptions, resolveProcessingCon
 import {
   REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
   buildRealtimeAuthStatus,
+  createRealtimeClientSecret,
   realtimeAuthPreferences,
   resolveRealtimeBearer,
 } from './realtime-auth.js';
@@ -1528,6 +1530,11 @@ function realtimeToolsForRoute(routeMode = '') {
   return isOpenClawRealtimeRoute(routeMode) ? [...REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS] : IPHONE_REALTIME_TOOLS;
 }
 
+function watchRealtimeToolsForRoute(routeMode = '') {
+  if (routeMode === 'instant') return INSTANT_REALTIME_TOOLS;
+  return isOpenClawRealtimeRoute(routeMode) ? REALTIME_TOOLS : [];
+}
+
 async function appendRealtimeLog(event) {
   try {
     await mkdir(REALTIME_LOG_DIR, { recursive: true });
@@ -1614,6 +1621,252 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
     rememberRealtimeResult(key, { ok: false, error: 'OpenClaw turn failed', turnId: effectiveTurnId });
     return { ok: false, error: 'OpenClaw turn failed' };
   }
+}
+
+function watchRealtimeSessionConfig({ routeMode = 'openclaw', model = REALTIME_MODEL, voice = REALTIME_VOICE, sessionToken = '' } = {}) {
+  const options = {
+    sessionToken: sanitizeRealtimeSessionToken(sessionToken),
+    routeMode,
+    model: String(model || REALTIME_MODEL).trim() || REALTIME_MODEL,
+    voice: String(voice || REALTIME_VOICE).trim() || REALTIME_VOICE,
+    noiseReduction: 'near_field',
+    captions: true,
+    turnDetection: 'none',
+    realtimeReasoning: REALTIME_REASONING_EFFORT,
+    transcriptionDelay: 'low',
+    createdAt: Date.now(),
+  };
+  const session = {
+    type: 'realtime',
+    model: options.model,
+    reasoning: { effort: options.realtimeReasoning },
+    instructions: realtimeInstructionsForRoute(routeMode),
+    audio: buildRealtimeAudioConfig(options),
+  };
+  const tools = watchRealtimeToolsForRoute(routeMode);
+  session.tools = tools;
+  session.tool_choice = tools.length ? 'auto' : 'none';
+  return { options, session };
+}
+
+async function mintWatchRealtimeBearer({ req, session, apiKey }) {
+  const resolved = await resolveRealtimeBearer({ req, session, apiKey });
+  if (resolved.source === REALTIME_AUTH_MODE_OPENCLAW_OAUTH && resolved.bearer) {
+    return resolved;
+  }
+
+  if (apiKey) {
+    const clientSecret = await createRealtimeClientSecret({ authToken: apiKey, session });
+    return {
+      ...resolved,
+      bearer: clientSecret.value,
+      expiresAt: clientSecret.expiresAt,
+      source: resolved.source === REALTIME_AUTH_MODE_OPENCLAW_OAUTH ? resolved.source : 'api-key-client-secret',
+    };
+  }
+
+  return resolved;
+}
+
+async function m4aBufferToRealtimePCM(inputBuffer) {
+  const id = `voiceclaw-watch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const inputPath = join(tmpdir(), `${id}.m4a`);
+  await writeFile(inputPath, inputBuffer);
+  try {
+    return await new Promise((resolve, reject) => {
+      const child = spawn('ffmpeg', [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-i', inputPath,
+        '-f', 's16le',
+        '-acodec', 'pcm_s16le',
+        '-ac', '1',
+        '-ar', '24000',
+        'pipe:1',
+      ]);
+      const stdout = [];
+      const stderr = [];
+      child.stdout.on('data', (chunk) => stdout.push(chunk));
+      child.stderr.on('data', (chunk) => stderr.push(chunk));
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve(Buffer.concat(stdout));
+        } else {
+          reject(new Error(`ffmpeg audio conversion failed: ${Buffer.concat(stderr).toString('utf8').slice(0, 300)}`));
+        }
+      });
+    });
+  } finally {
+    unlink(inputPath).catch(() => {});
+  }
+}
+
+function realtimeUserMessage(text = '') {
+  return {
+    type: 'conversation.item.create',
+    item: {
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: String(text || '') }],
+    },
+  };
+}
+
+function watchRealtimeResponseCreate({ voice = REALTIME_VOICE, instructions = '' } = {}) {
+  const response = {
+    output_modalities: ['audio'],
+    audio: {
+      output: {
+        format: { type: 'audio/pcm', rate: 24000 },
+        voice: String(voice || REALTIME_VOICE),
+      },
+    },
+  };
+  if (instructions) response.instructions = instructions;
+  return { type: 'response.create', response };
+}
+
+async function runWatchRealtimeTurn({ req, payload }) {
+  const routeMode = realtimeRoutingMode({ ...req, url: `${BASE_PATH}/realtime/watch-turn?route=${encodeURIComponent(payload.routeMode || 'openclaw')}`, headers: { ...req.headers, 'x-openclaw-route': payload.routeMode || 'openclaw' } });
+  const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || req.headers['x-voice-session-token'] || `watch-${Date.now().toString(36)}`);
+  const model = String(payload.model || REALTIME_MODEL).trim() || REALTIME_MODEL;
+  const voice = String(payload.voice || REALTIME_VOICE).trim() || REALTIME_VOICE;
+  const text = String(payload.text || '').trim();
+  const audioBase64 = String(payload.audioBase64 || '').trim();
+  const audioContentType = String(payload.audioContentType || 'audio/m4a').trim();
+  if (!text && !audioBase64) throw new Error('Watch Realtime turn needs audio or text.');
+
+  const { session } = watchRealtimeSessionConfig({ routeMode, model, voice, sessionToken });
+  const apiKey = openAIKeyForRealtimeRequest(req);
+  const realtimeBearer = await resolveRealtimeBearer({ req, session, apiKey });
+  const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
+  const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${realtimeBearer.bearer}` } });
+  let opened = false;
+  const startedAt = Date.now();
+  const openedPromise = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('GPT-Realtime-2 Watch relay connection timed out.')), 15000);
+    ws.once('open', () => { opened = true; clearTimeout(timer); resolve(true); });
+    ws.once('error', (err) => { clearTimeout(timer); reject(err); });
+    ws.once('close', (code, reason) => {
+      if (!opened) {
+        clearTimeout(timer);
+        reject(new Error(`GPT-Realtime-2 Watch relay closed before start (${code} ${String(reason || '')}).`));
+      }
+    });
+  });
+
+  await openedPromise;
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  realtimeSidebandStateFor(key).activeResponseId = null;
+  const send = (event) => {
+    if (ws.readyState !== WebSocket.OPEN) throw new Error('GPT-Realtime-2 Watch relay is not open.');
+    ws.send(JSON.stringify(event));
+  };
+
+  send({ type: 'session.update', session });
+  if (text) {
+    send(realtimeUserMessage(text));
+  }
+  if (audioBase64) {
+    const audioBuffer = Buffer.from(audioBase64, 'base64');
+    const pcm = audioContentType.includes('pcm') ? audioBuffer : await m4aBufferToRealtimePCM(audioBuffer);
+    if (!pcm.length) throw new Error('Watch audio conversion produced no audio.');
+    for (let offset = 0; offset < pcm.length; offset += 96_000) {
+      send({ type: 'input_audio_buffer.append', audio: pcm.subarray(offset, offset + 96_000).toString('base64') });
+    }
+    send({ type: 'input_audio_buffer.commit' });
+  }
+  send(watchRealtimeResponseCreate({ voice, instructions: 'Answer naturally for Apple Watch. Use OpenClaw tools only when they are needed or explicitly requested.' }));
+
+  let userTranscript = '';
+  let assistantText = '';
+  const audioChunks = [];
+  const deadline = Date.now() + Number(process.env.WATCH_REALTIME_TURN_TIMEOUT_MS || 120000);
+
+  try {
+    while (Date.now() < deadline) {
+      const event = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('GPT-Realtime-2 Watch relay response timed out.')), Math.max(1000, deadline - Date.now()));
+        ws.once('message', (data) => {
+          clearTimeout(timer);
+          try { resolve(JSON.parse(data.toString())); } catch (err) { reject(err); }
+        });
+        ws.once('error', (err) => { clearTimeout(timer); reject(err); });
+        ws.once('close', (code, reason) => {
+          clearTimeout(timer);
+          reject(new Error(`GPT-Realtime-2 Watch relay closed (${code} ${String(reason || '')}).`));
+        });
+      });
+
+      if (event?.error) {
+        throw new Error(event.error.message || JSON.stringify(event.error));
+      }
+
+      await handleRealtimeSidebandEvent(ws, event, key);
+      const type = event?.type || '';
+      if (type === 'conversation.item.input_audio_transcription.completed' && event.transcript) {
+        userTranscript = String(event.transcript);
+      }
+      if ((type.includes('output_audio.delta') || type.includes('audio.delta')) && event.delta) {
+        const decoded = Buffer.from(String(event.delta), 'base64');
+        if (decoded.length) audioChunks.push(decoded);
+      }
+      if ((type.includes('output_audio_transcript.delta') || type.includes('audio_transcript.delta') || type.includes('output_text.delta')) && event.delta) {
+        assistantText += String(event.delta);
+      }
+      if (type === 'response.done') {
+        const toolEvents = normalizeSidebandToolCallEvents(event);
+        const extracted = extractRealtimeText(event);
+        if (!assistantText.trim() && extracted) assistantText = extracted;
+        if (!toolEvents.length && (assistantText.trim() || audioChunks.length || userTranscript.trim())) {
+          break;
+        }
+      }
+    }
+  } finally {
+    try { ws.close(); } catch {}
+  }
+
+  const reply = assistantText.trim() || 'GPT-Realtime-2 returned model audio.';
+  const audioData = Buffer.concat(audioChunks);
+  await appendRealtimeLog({
+    kind: 'watch_realtime_turn',
+    sessionToken: key,
+    routeMode,
+    authSource: realtimeBearer.source,
+    text: text || userTranscript,
+    replyPreview: reply.slice(0, 300),
+    audioBytes: audioData.length,
+    elapsedMs: Date.now() - startedAt,
+  });
+  return {
+    ok: true,
+    routeMode,
+    sessionToken: key,
+    authSource: realtimeBearer.source,
+    transcript: userTranscript.trim() || text,
+    reply,
+    audioBase64: audioData.length ? audioData.toString('base64') : '',
+    audioContentType: audioData.length ? 'audio/pcm;rate=24000' : '',
+    elapsedMs: Date.now() - startedAt,
+  };
+}
+
+function extractRealtimeText(event = {}) {
+  const parts = [];
+  const output = event?.response?.output;
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      const content = item?.content;
+      if (!Array.isArray(content)) continue;
+      for (const part of content) {
+        if (part?.text) parts.push(String(part.text));
+        if (part?.transcript) parts.push(String(part.transcript));
+      }
+    }
+  }
+  return parts.join('\n').trim();
 }
 
 async function readRequestBody(req, limitBytes = 2_000_000) {
@@ -1773,6 +2026,58 @@ const httpServer = createServer(async (req, res) => {
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-client-secret`) {
+      const body = await readRequestBody(req, 200_000).catch(() => '{}');
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      const routeMode = ['direct', 'instant', 'openclaw'].includes(String(payload.routeMode || '').toLowerCase())
+        ? String(payload.routeMode || '').toLowerCase()
+        : 'direct';
+      const { session } = watchRealtimeSessionConfig({
+        routeMode,
+        model: payload.model || REALTIME_MODEL,
+        voice: payload.voice || REALTIME_VOICE,
+        sessionToken: payload.sessionToken || req.headers['x-voice-session-token'] || '',
+      });
+      try {
+        const bearer = await mintWatchRealtimeBearer({
+          req,
+          session,
+          apiKey: openAIKeyForRealtimeRequest(req),
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          bearer: bearer.bearer,
+          expiresAt: bearer.expiresAt,
+          source: bearer.source,
+          authPreference: bearer.preferences?.mode,
+          fallbackToAPIKey: bearer.preferences?.fallbackToAPIKey,
+          oauthFallbackError: bearer.oauthError || '',
+        }));
+      } catch (error) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error), auth: realtimeAuthPreferences(req) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn`) {
+      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 12_000_000));
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const result = await runWatchRealtimeTurn({ req, payload });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        await appendRealtimeLog({ kind: 'watch_realtime_turn_error', error: error?.message || String(error) });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+      }
       return;
     }
 
