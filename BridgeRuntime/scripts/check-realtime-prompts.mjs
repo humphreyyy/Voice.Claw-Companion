@@ -76,6 +76,7 @@ for (const needle of [
   'Calendar and reminder reads expose private iPhone data',
   'selected media analysis',
   'camera photo analysis',
+  'clipboard image analysis',
   'WhatsApp handoffs',
   'choose Notes in the share sheet',
   'iOS system shortcuts',
@@ -148,6 +149,7 @@ for (const [name, text] of [
   assertContains(name, text, 'reminder reading/creation');
   assertContains(name, text, 'selected media analysis');
   assertContains(name, text, 'camera photo analysis');
+  assertContains(name, text, 'clipboard image analysis');
   assertContains(name, text, 'WhatsApp handoffs');
   assertContains(name, text, 'Notes share-sheet handoff');
   assertContains(name, text, 'clipboard reading/copying');
@@ -160,4 +162,5 @@ assertContains('server/index.js', source, "name: 'iphone_list_calendar_events'")
 assertContains('server/index.js', source, "name: 'iphone_list_reminders'");
 assertContains('server/index.js', source, "name: 'iphone_analyze_selected_media'");
 assertContains('server/index.js', source, "name: 'iphone_capture_photo_for_analysis'");
+assertContains('server/index.js', source, "name: 'iphone_analyze_clipboard_image'");
 assertContains('server/index.js', source, "name: 'iphone_open_whatsapp'");
