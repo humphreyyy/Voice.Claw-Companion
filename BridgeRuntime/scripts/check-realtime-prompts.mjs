@@ -39,6 +39,8 @@ for (const needle of [
   'iPhone-side tools are the device-action layer',
   'Active work controls are part of the OpenClaw route',
   'Tool precision and confirmation',
+  'calendar/reminder reading or creation',
+  'Calendar and reminder reads expose private iPhone data',
   'Do not repeatedly call the same failed tool',
   'wait_for_user',
   'Do not respond conversationally after wait_for_user',
@@ -63,8 +65,12 @@ for (const [name, text] of [
   assertContains(name, text, 'iPhone-side tools are the device-action layer');
   assertContains(name, text, 'wait_for_user');
   assertContains(name, text, 'iPhone-side tools');
+  assertContains(name, text, 'calendar event reading/creation');
+  assertContains(name, text, 'reminder reading/creation');
   assertContains(name, text, 'clipboard reading/copying');
   assertContains(name, text, 'Do not repeatedly call the same failed tool');
 }
 
 assertContains('REALTIME_INSTANT_INSTRUCTIONS', instant, 'gpt55_instant');
+assertContains('server/index.js', source, "name: 'iphone_list_calendar_events'");
+assertContains('server/index.js', source, "name: 'iphone_list_reminders'");
