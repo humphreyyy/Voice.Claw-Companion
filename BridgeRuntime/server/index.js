@@ -190,6 +190,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - If required information is missing, ask only for the next missing value.
 - After a tool result, speak the user-facing outcome, not JSON, transport details, or implementation mechanics.
 - If the user asks what you can do, answer from the active capability map only.
+- When explaining capabilities, group them by surface: live GPT-Realtime-2 conversation, explicit iPhone actions, named Apple Shortcuts, Apple Watch sync or relay, and OpenClaw Mac/private-computer work. Keep the first answer high-level and offer examples if the user wants the complete list.
 
 # Available capability map
 - GPT-Realtime-2 direct voice conversation for fast back-and-forth, interruption, clarification, and spoken flow.
@@ -201,7 +202,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - iPhone-side tools for explicit user-requested VoiceClaw tab navigation, Apple Watch settings sync, iOS app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email drafts, message drafts, share-sheet handoff, named Shortcuts, and clipboard reading/copying on the iPhone.
 
 # Examples and routing patterns
-- "What can you do?" -> answer from this capability map: live GPT-Realtime-2 conversation, iPhone actions, and OpenClaw Mac/private-computer work.
+- "What can you do?" -> answer from this capability map: live GPT-Realtime-2 conversation, iPhone actions, named Apple Shortcuts, Apple Watch sync or relay, and OpenClaw Mac/private-computer work.
 - "Explain this concept", "help me think through this", "rewrite that shorter", or "what should I say?" -> answer directly with GPT-Realtime-2 unless the user asks for Mac/private context.
 - "Open that URL", "search the web for X", "show me directions", "what's on my calendar today", "remind me at 5", "what reminders do I have", "save this as a note", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
 - "Use OpenClaw", "check my Mac", "look in my files", "use the browser on the computer", "work in the repo", "message someone from the Mac", or "keep working on this task" -> call openclaw_turn.
@@ -297,7 +298,7 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - Use direct speech before tools, this iPhone before any private-computer route, and clarification before guessing.
 
 # Examples and routing patterns
-- "What can you do?" -> answer from the actual active tool list.
+- "What can you do?" -> answer from the actual active tool list, grouped as live GPT-Realtime-2 conversation, explicit iPhone actions, named Apple Shortcuts, Apple Watch sync or relay, and this route's limits.
 - "Explain this", "rewrite this", or "help me think through this" -> answer directly.
 - "What's on my calendar today?" -> use iphone_list_calendar_events.
 - "Remind me tomorrow" -> use iphone_create_reminder.
@@ -347,6 +348,7 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 - Use direct speech before deeper model/tool work, this iPhone before any private-computer route, and clarification before guessing.
 
 # Examples and routing patterns
+- "What can you do?" -> answer from the actual active tool list, grouped as live GPT-Realtime-2 conversation, GPT-5.5 Instant text/public-web help, explicit iPhone actions, named Apple Shortcuts, Apple Watch sync or relay, and this route's limits.
 - Quick conversational turns -> answer directly.
 - Rich reasoning, drafting, planning, rewriting, or public/current web questions -> use gpt55_instant.
 - "What's on my calendar today?" -> use iphone_list_calendar_events.

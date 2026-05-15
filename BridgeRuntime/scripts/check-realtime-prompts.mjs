@@ -44,6 +44,8 @@ for (const needle of [
   'Calendar and reminder reads expose private iPhone data',
   'choose Notes in the share sheet',
   'User-extensible iPhone automation through Shortcuts',
+  'When explaining capabilities',
+  'named Apple Shortcuts',
   'custom iPhone workflows',
   'Do not repeatedly call the same failed tool',
   'wait_for_user',
@@ -71,6 +73,7 @@ for (const [name, text] of [
   assertContains(name, text, 'iPhone-side tools');
   assertContains(name, text, 'iphone_sync_watch_settings');
   assertContains(name, text, 'iphone_run_shortcut');
+  assertContains(name, text, 'named Apple Shortcuts');
   assertContains(name, text, 'custom iPhone workflows');
   assertContains(name, text, 'calendar event reading/creation');
   assertContains(name, text, 'reminder reading/creation');
