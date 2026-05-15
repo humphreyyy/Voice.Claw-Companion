@@ -31,6 +31,7 @@ enum CompanionRealtimeAuthMode: String, CaseIterable, Identifiable {
 final class BridgeStore: ObservableObject {
     private enum DefaultsKeys {
         static let includeOpenAIAPIKeyInPairing = "voiceclaw.includeOpenAIAPIKeyInPairing"
+        static let watchPublicBridgeURL = "voiceclaw.watchPublicBridgeURL"
         static let realtimeAuthMode = "voiceclaw.realtimeAuthMode"
         static let realtimeAuthFallbackToAPIKey = "voiceclaw.realtimeAuthFallbackToAPIKey"
         static let automaticUpdateChecksEnabled = "voiceclaw.automaticUpdateChecksEnabled"
@@ -47,6 +48,12 @@ final class BridgeStore: ObservableObject {
     @Published var includeOpenAIAPIKeyInPairing: Bool = true {
         didSet {
             UserDefaults.standard.set(includeOpenAIAPIKeyInPairing, forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
+            refreshPairingPayloadSecrets()
+        }
+    }
+    @Published var watchPublicBridgeURL: String = "" {
+        didSet {
+            UserDefaults.standard.set(watchPublicBridgeURL, forKey: DefaultsKeys.watchPublicBridgeURL)
             refreshPairingPayloadSecrets()
         }
     }
@@ -128,6 +135,7 @@ final class BridgeStore: ObservableObject {
         if UserDefaults.standard.object(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing) != nil {
             includeOpenAIAPIKeyInPairing = UserDefaults.standard.bool(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
         }
+        watchPublicBridgeURL = UserDefaults.standard.string(forKey: DefaultsKeys.watchPublicBridgeURL) ?? ""
         if let savedMode = UserDefaults.standard.string(forKey: DefaultsKeys.realtimeAuthMode),
            let mode = CompanionRealtimeAuthMode(rawValue: savedMode) {
             realtimeAuthMode = mode
@@ -447,6 +455,12 @@ final class BridgeStore: ObservableObject {
         updated["RealtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
         updated["InstantModel"] = updated["InstantModel"] as? String ?? "gpt-5-chat-latest"
         updated["InstantWebSearch"] = updated["InstantWebSearch"] as? Bool ?? true
+        let trimmedWatchBridgeURL = watchPublicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedWatchBridgeURL.isEmpty {
+            updated.removeValue(forKey: "WatchPublicBridgeURL")
+        } else {
+            updated["WatchPublicBridgeURL"] = trimmedWatchBridgeURL
+        }
 
         guard let data = try? JSONSerialization.data(withJSONObject: updated, options: [.prettyPrinted]),
               let json = String(data: data, encoding: .utf8)
@@ -631,6 +645,7 @@ final class BridgeStore: ObservableObject {
             "InstantWebSearch": true,
             "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
             "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? true,
+            "WatchPublicBridgeURL": "",
         ]
     }
 

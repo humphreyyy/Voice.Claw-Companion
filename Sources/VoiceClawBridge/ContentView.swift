@@ -417,6 +417,19 @@ private struct PairingPanel: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+
+                GridRow {
+                    FieldLabel("Watch Public Bridge")
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("https://...", text: $store.watchPublicBridgeURL)
+                            .textFieldStyle(.roundedBorder)
+
+                        Text("Optional. Use this only for an intentionally public HTTPS/Funnel OpenClaw bridge that Apple Watch can reach over cellular. Leave it blank for the private iPhone Relay path.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
 
             HStack(alignment: .top, spacing: 18) {

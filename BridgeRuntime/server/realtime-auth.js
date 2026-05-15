@@ -136,12 +136,12 @@ export async function createRealtimeClientSecret({ authToken, session }) {
 
   if (!response.ok) {
     const detail = payload?.error?.message || payload?.message || body || `HTTP ${response.status}`;
-    throw new Error(`OpenAI Realtime client secret failed: ${detail}`);
+    throw new Error(`GPT-Realtime-2 client secret failed: ${detail}`);
   }
 
   const clientSecret = payload?.value || payload?.client_secret?.value;
   if (!clientSecret) {
-    throw new Error('OpenAI Realtime client secret response did not include a value.');
+    throw new Error('GPT-Realtime-2 client secret response did not include a value.');
   }
 
   return {
