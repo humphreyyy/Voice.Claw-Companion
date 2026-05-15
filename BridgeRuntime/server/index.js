@@ -166,7 +166,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_draft_email opens an email draft only when the user asks to draft or email someone. It does not send email automatically.
 - iphone_draft_message opens a Messages draft only when the user asks to text or message someone. It does not read or send messages automatically.
 - iphone_share opens the iOS share sheet for specific text and/or a public URL, including user-requested handoff to Notes; the user chooses the destination.
-- iphone_analyze_selected_media opens the iOS photo/video picker after an explicit user request, analyzes one user-selected photo, screenshot, or video thumbnail with GPT-5.5 Instant vision, and returns the result. It does not silently read the camera roll, live screen, other apps, or WhatsApp.
+- iphone_analyze_selected_media opens the iOS photo/video picker after an explicit user request, analyzes one user-selected photo, screenshot, or sampled video frame set with GPT-5.5 Instant vision, and returns the result. It does not silently read the camera roll, live screen, other apps, or WhatsApp.
 - iphone_capture_photo_for_analysis opens the iPhone camera after an explicit user request, lets the user take one photo, analyzes that photo with GPT-5.5 Instant vision, and returns the result. It does not silently capture camera images or video.
 - iphone_analyze_clipboard_image reads one image currently on the iPhone clipboard after an explicit user request, then analyzes it with GPT-5.5 Instant vision. This is the fastest user-controlled route for screenshot analysis. It does not read the live screen or other apps.
 - iphone_open_whatsapp opens a WhatsApp or WhatsApp Business handoff for a specific phone number, optional draft message, or user-provided WhatsApp call link. It cannot silently send messages, read WhatsApp, answer calls, or guarantee that WhatsApp Business rather than WhatsApp handles a universal link.
@@ -758,7 +758,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_analyze_selected_media',
-    description: 'Open the iOS photo/video picker so the user can explicitly choose one photo, screenshot, or video, then analyze it with GPT-5.5 Instant vision. Use only when the user asks VoiceClaw to look at, read, analyze, describe, summarize, or reason about selected media. Video support analyzes a representative thumbnail and metadata, not the full movie. This tool cannot silently read the camera roll, live screen, other apps, or WhatsApp.',
+    description: 'Open the iOS photo/video picker so the user can explicitly choose one photo, screenshot, or video, then analyze it with GPT-5.5 Instant vision. Use only when the user asks VoiceClaw to look at, read, analyze, describe, summarize, or reason about selected media. Video support analyzes sampled still frames and basic media context, not every frame or the video audio. This tool cannot silently read the camera roll, live screen, other apps, or WhatsApp.',
     parameters: {
       type: 'object',
       additionalProperties: false,
