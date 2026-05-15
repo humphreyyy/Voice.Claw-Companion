@@ -162,8 +162,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - steer_openclaw for follow-up instructions while OpenClaw is already working.
 - stop_openclaw to stop or cancel active OpenClaw work.
 - bridge_status for OpenClaw bridge status and queue/runtime diagnostics.
-- iphone_status for iPhone app and audio/session diagnostics.
-- iphone_open_url for explicitly requested web navigation on the iPhone.
+- iPhone-side tools for explicit user-requested VoiceClaw tab navigation, iOS app permission settings, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar events, reminders, email drafts, message drafts, share-sheet handoff, named Shortcuts, and clipboard copying on the iPhone.
 
 # When to call OpenClaw
 - Call openclaw_turn only when the user explicitly asks for OpenClaw or when the request truly requires the user's Mac, files, browser, messages, calendar, memory, dashboards, shell, crons, long-running work, or other local/private computer state.
@@ -172,10 +171,10 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - Do not invent tool results. Never claim you checked tools, files, memory, calendar, messages, or system state unless openclaw_turn returned that result.
 
 # iPhone-side tools
-- Use iphone_status when the user asks about this iPhone, VoiceClaw app version, battery, audio route, locale, timezone, GPT-Realtime-2 route, voice settings, or current VoiceClaw session setup.
-- Use iphone_open_url only when the user explicitly asks to open a website, article, search page, map, or web link on the iPhone. Do not open URLs silently.
+- Use the matching iPhone-side tool when the user explicitly asks for an action on this iPhone: VoiceClaw tab navigation, iOS app permission settings, URL opening, web search, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar/reminder creation, email/message draft, share sheet, named Shortcut, or clipboard copy.
+- Do not send iPhone-local actions to OpenClaw unless the user specifically asks for Mac/OpenClaw/private-computer handling.
 - iPhone-side tools are answered by the iPhone app, not by OpenClaw on the Mac.
-- iPhone-side tools do not grant Mac, file, browser, calendar, mail, message, shell, or private computer access unless a future tool explicitly says so.
+- iPhone-side tools do not grant Mac, file, browser automation, Notes, message reading, mail reading, shell, or private computer access unless a supplied tool explicitly says so.
 
 # Tool-call speech discipline
 - When doing something, do it. Do not narrate mechanics.
@@ -202,9 +201,8 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - You are GPT-Realtime-2 in direct realtime intercom mode for User.
 - Use your native realtime audio, reasoning, and conversation capabilities fully.
 - Do not claim access to OpenClaw bridge tools, local files, memory, browser, calendars, messages, system state, or live dashboards unless those tools are explicitly supplied in the current session.
-- Available capabilities: direct GPT-Realtime-2 voice conversation, iphone_status for iPhone app/audio/session diagnostics, and iphone_open_url for explicitly requested web navigation.
-- Use iphone_status when the user asks about this iPhone, VoiceClaw app version, battery, audio route, locale, timezone, selected GPT-Realtime-2 route, or current VoiceClaw session setup.
-- Use iphone_open_url only when the user explicitly asks to open a website, article, search page, map, or web link on the iPhone.
+- Available capabilities: direct GPT-Realtime-2 voice conversation and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard copying.
+- Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
 - If the user asks for OpenClaw-backed work/current system facts, say briefly that Direct mode needs the OpenClaw Bridge mode for that and continue helpfully with what you can answer directly.
 - Keep spoken replies concise, natural, and high-agency. Do not narrate process; give a brief useful completion note when an action finishes.
 - If audio is unclear or sounds like your own previous speech echoing back, ask briefly for clarification instead of guessing.
@@ -214,10 +212,10 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 # Role
 - You are VoiceClaw in GPT-5.5 Instant mode.
 - GPT-Realtime-2 is responsible for live voice, timing, interruption, and short conversational answers.
-- Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, iphone_status for iPhone app/audio/session diagnostics, and iphone_open_url for explicitly requested web navigation.
+- Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard copying.
 - For substantive text reasoning, drafting, current public web questions, or answers that benefit from GPT-5.5 Instant, call gpt55_instant.
 - When calling gpt55_instant, pass the complete user request in text, include compact conversation context in context, and set web_search true only when current public information is useful.
-- Use iphone_open_url only when the user explicitly asks to open a website, article, search page, map, or web link on the iPhone.
+- Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
 - Do not call or mention OpenClaw tools in this mode. Do not claim access to the user's Mac, local files, browser, calendar, mail, messages, shell, or private computer state.
 - Keep spoken replies concise, natural, and useful.
 - If audio is unclear or sounds like your own previous speech echoing back, ask briefly for clarification instead of guessing.
@@ -304,6 +302,32 @@ const IPHONE_REALTIME_TOOLS = [
   },
   {
     type: 'function',
+    name: 'iphone_open_voiceclaw_tab',
+    description: 'Open the Live, Settings, or Diagnostics tab inside the VoiceClaw app. Use only when the user explicitly asks to show or switch to a VoiceClaw screen.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        destination: { type: 'string', enum: ['live', 'settings', 'diagnostics'], description: 'VoiceClaw tab to show.' }
+      },
+      required: ['destination']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_open_app_settings',
+    description: 'Open the iOS Settings page for VoiceClaw so the user can change permissions such as microphone, camera, location, contacts, calendar, or reminders. Use only when the user asks to change/fix app permissions or open system settings for this app.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        reason: { type: 'string', description: 'Brief reason the user asked to open iOS settings.' }
+      },
+      required: []
+    }
+  },
+  {
+    type: 'function',
     name: 'iphone_open_url',
     description: "Open a public http or https URL on the user's iPhone in their default browser. Use only when the user explicitly asks to open a website, article, search page, map, or web link. Do not use for private Mac/browser access.",
     parameters: {
@@ -314,6 +338,181 @@ const IPHONE_REALTIME_TOOLS = [
         reason: { type: 'string', description: 'Brief reason the user asked to open this URL.' }
       },
       required: ['url']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_search_web',
+    description: 'Open a public web search results page on the user’s iPhone. Use only when the user explicitly asks to search the web or open search results, not when they want GPT-Realtime-2 or GPT-5.5 Instant to answer aloud.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'The web search query.' }
+      },
+      required: ['query']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_open_maps',
+    description: 'Open Apple Maps on the user’s iPhone for a place search or directions. Use only when the user explicitly asks for a map, place lookup, route, navigation, or directions on this iPhone.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        mode: { type: 'string', enum: ['search', 'directions'], description: 'Use search for place lookup; directions when the user asks how to get somewhere.' },
+        query: { type: 'string', description: 'Place or address to search for. For directions this can be the destination when destination is absent.' },
+        destination: { type: 'string', description: 'Destination place or address for directions.' },
+        origin: { type: 'string', description: 'Optional origin. Omit to let Maps use current location.' },
+        transport: { type: 'string', enum: ['driving', 'walking', 'transit'], description: 'Optional directions mode.' }
+      },
+      required: ['mode']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_current_location',
+    description: "Request the iPhone's current location once and return coordinates, approximate accuracy, and timestamp. Use only when the user explicitly asks where they are, asks for nearby/location-aware help, or asks to use their current location.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        purpose: { type: 'string', description: 'Brief user-facing reason for requesting location.' }
+      },
+      required: []
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_lookup_contact',
+    description: "Search the user's iPhone Contacts for matching people or organizations. Use only when the user explicitly asks to find contact info, call/email someone by name, or fill recipient details for a requested action.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'Name, organization, email, or phone fragment to search for.' },
+        limit: { type: 'number', description: 'Maximum matches to return. Defaults to 5 and is capped at 10.' }
+      },
+      required: ['query']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_start_phone_call',
+    description: 'Open the iPhone phone-call handoff for a specific phone number. Use only when the user explicitly asks to call someone. If the user names a person without giving a number, look up the contact first.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        phone_number: { type: 'string', description: 'The phone number to call. Use a phone number returned by iphone_lookup_contact when available.' },
+        label: { type: 'string', description: 'Optional person or place label for the call.' }
+      },
+      required: ['phone_number']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_create_calendar_event',
+    description: "Create an event in the user's default iPhone calendar. Use only when the user explicitly asks to add, create, schedule, or put an event on the calendar.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        title: { type: 'string' },
+        start_iso8601: { type: 'string', description: 'Event start time as an ISO 8601 date-time with timezone.' },
+        end_iso8601: { type: 'string', description: 'Optional event end time as an ISO 8601 date-time with timezone.' },
+        duration_minutes: { type: 'number', description: 'Optional duration when end_iso8601 is not supplied. Defaults to 30.' },
+        location: { type: 'string' },
+        notes: { type: 'string' }
+      },
+      required: ['title', 'start_iso8601']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_create_reminder',
+    description: "Create a reminder in the user's default iPhone reminders list. Use only when the user explicitly asks to add a reminder or remind them.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        title: { type: 'string' },
+        due_iso8601: { type: 'string', description: 'Optional due date/time as an ISO 8601 date-time with timezone.' },
+        notes: { type: 'string' }
+      },
+      required: ['title']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_draft_email',
+    description: 'Open an email draft on the user’s iPhone. Use only when the user explicitly asks to draft or email someone. This opens a draft and never sends email automatically.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        to: { type: 'array', items: { type: 'string' }, description: 'Recipient email addresses.' },
+        subject: { type: 'string' },
+        body: { type: 'string' }
+      },
+      required: ['to']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_draft_message',
+    description: 'Open a Messages draft on the user’s iPhone. Use only when the user explicitly asks to text or message someone. This opens a draft and never sends a message automatically.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        recipients: { type: 'array', items: { type: 'string' }, description: 'Phone numbers or message recipients.' },
+        body: { type: 'string', description: 'Optional draft message body.' }
+      },
+      required: ['recipients']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_share',
+    description: 'Open the iOS share sheet for text and/or a public URL. Use only when the user explicitly asks to share, send through another app, save to another app, or hand content to another app. The user chooses the destination; this tool does not send automatically.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        text: { type: 'string', description: 'Optional text to share.' },
+        url: { type: 'string', description: 'Optional public http or https URL to share.' },
+        subject: { type: 'string', description: 'Optional subject for share targets that support it.' }
+      },
+      required: []
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_run_shortcut',
+    description: 'Run or open an existing Apple Shortcut by exact name on the user’s iPhone. Use only when the user explicitly asks to run a named Shortcut. This tool cannot list, inspect, create, edit, or explain Shortcuts.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'Exact name of the existing Shortcut to run.' },
+        input_text: { type: 'string', description: 'Optional text input to pass to the Shortcut.' }
+      },
+      required: ['name']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_copy_text',
+    description: 'Copy text to the iPhone clipboard. Use only when the user explicitly asks to copy specific text. This tool cannot read the clipboard.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        text: { type: 'string', description: 'The exact text to copy.' }
+      },
+      required: ['text']
     }
   }
 ];
