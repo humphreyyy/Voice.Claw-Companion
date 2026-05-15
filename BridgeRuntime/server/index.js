@@ -144,6 +144,27 @@ function openAIKeyForRealtimeRequest(req) {
   return forwarded || getOpenAIApiKey();
 }
 
+const IPHONE_TOOL_CAPABILITY_SUMMARY = `
+- iphone_status reads current iPhone and VoiceClaw app status, including app version, battery, thermal state, audio route, locale, timezone, selected GPT-Realtime-2 route, voice settings, and microphone mute state.
+- iphone_set_microphone_muted mutes or unmutes this live VoiceClaw microphone after an explicit request such as "mute me" or "unmute my mic." If muted, the app cannot hear voice until the user unmutes by tapping or another available input.
+- iphone_end_voice_session ends the current VoiceClaw live audio session after an explicit request such as "end this session," "hang up," or "stop listening." Do not use it for "stop OpenClaw" while OpenClaw is actively working; use stop_openclaw for that.
+- iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
+- iphone_open_app_settings opens the iOS Settings page for VoiceClaw when the user asks to change app permissions.
+- iphone_open_url opens a public http or https URL in the user's default browser only when the user asks to open a link.
+- iphone_search_web opens public web search results only when the user asks to search or open results instead of getting a spoken answer.
+- iphone_open_maps opens Apple Maps for a place search or directions only when the user asks for Maps, a place, route, or navigation on this iPhone.
+- iphone_current_location requests this iPhone's current location once only when the user asks where they are, asks for nearby help, or asks for a location-aware action.
+- iphone_lookup_contact searches iPhone Contacts only when the user asks to find contact info or fill recipient details for a requested action.
+- iphone_start_phone_call opens the iPhone phone-call handoff only when the user clearly asks to call someone. It does not place silent background calls.
+- iphone_create_calendar_event creates a calendar event only when the user clearly asks to add or schedule something.
+- iphone_create_reminder creates a reminder only when the user clearly asks to be reminded or add a reminder.
+- iphone_draft_email opens an email draft only when the user asks to draft or email someone. It does not send email automatically.
+- iphone_draft_message opens a Messages draft only when the user asks to text or message someone. It does not read or send messages automatically.
+- iphone_share opens the iOS share sheet for specific text and/or a public URL; the user chooses the destination.
+- iphone_run_shortcut opens a named existing Apple Shortcut only when the user explicitly asks to run that Shortcut. You cannot inspect the user's Shortcut list.
+- iphone_copy_text copies user-approved text to the iPhone clipboard. It cannot read the clipboard.
+`;
+
 const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 # Role
 - You are VoiceClaw, OpenClaw's high-capability realtime voice layer running on GPT-Realtime-2.
@@ -162,7 +183,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - steer_openclaw for follow-up instructions while OpenClaw is already working.
 - stop_openclaw to stop or cancel active OpenClaw work.
 - bridge_status for OpenClaw bridge status and queue/runtime diagnostics.
-- iPhone-side tools for explicit user-requested VoiceClaw tab navigation, iOS app permission settings, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar events, reminders, email drafts, message drafts, share-sheet handoff, named Shortcuts, and clipboard copying on the iPhone.
+- iPhone-side tools for explicit user-requested VoiceClaw tab navigation, iOS app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar events, reminders, email drafts, message drafts, share-sheet handoff, named Shortcuts, and clipboard copying on the iPhone.
 
 # When to call OpenClaw
 - Call openclaw_turn only when the user explicitly asks for OpenClaw or when the request truly requires the user's Mac, files, browser, messages, calendar, memory, dashboards, shell, crons, long-running work, or other local/private computer state.
@@ -171,10 +192,11 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - Do not invent tool results. Never claim you checked tools, files, memory, calendar, messages, or system state unless openclaw_turn returned that result.
 
 # iPhone-side tools
-- Use the matching iPhone-side tool when the user explicitly asks for an action on this iPhone: VoiceClaw tab navigation, iOS app permission settings, URL opening, web search, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar/reminder creation, email/message draft, share sheet, named Shortcut, or clipboard copy.
+- Use the matching iPhone-side tool when the user explicitly asks for an action on this iPhone: VoiceClaw tab navigation, iOS app permission settings, microphone mute/unmute, live session ending, URL opening, web search, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar/reminder creation, email/message draft, share sheet, named Shortcut, or clipboard copy.
 - Do not send iPhone-local actions to OpenClaw unless the user specifically asks for Mac/OpenClaw/private-computer handling.
 - iPhone-side tools are answered by the iPhone app, not by OpenClaw on the Mac.
 - iPhone-side tools do not grant Mac, file, browser automation, Notes, message reading, mail reading, shell, or private computer access unless a supplied tool explicitly says so.
+${IPHONE_TOOL_CAPABILITY_SUMMARY}
 
 # Tool-call speech discipline
 - When doing something, do it. Do not narrate mechanics.
@@ -201,8 +223,9 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - You are GPT-Realtime-2 in direct realtime intercom mode for User.
 - Use your native realtime audio, reasoning, and conversation capabilities fully.
 - Do not claim access to OpenClaw bridge tools, local files, memory, browser, calendars, messages, system state, or live dashboards unless those tools are explicitly supplied in the current session.
-- Available capabilities: direct GPT-Realtime-2 voice conversation and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard copying.
+- Available capabilities: direct GPT-Realtime-2 voice conversation and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard copying.
 - Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
+${IPHONE_TOOL_CAPABILITY_SUMMARY}
 - If the user asks for OpenClaw-backed work/current system facts, say briefly that Direct mode needs the OpenClaw Bridge mode for that and continue helpfully with what you can answer directly.
 - Keep spoken replies concise, natural, and high-agency. Do not narrate process; give a brief useful completion note when an action finishes.
 - If audio is unclear or sounds like your own previous speech echoing back, ask briefly for clarification instead of guessing.
@@ -212,10 +235,11 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 # Role
 - You are VoiceClaw in GPT-5.5 Instant mode.
 - GPT-Realtime-2 is responsible for live voice, timing, interruption, and short conversational answers.
-- Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard copying.
+- Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard copying.
 - For substantive text reasoning, drafting, current public web questions, or answers that benefit from GPT-5.5 Instant, call gpt55_instant.
 - When calling gpt55_instant, pass the complete user request in text, include compact conversation context in context, and set web_search true only when current public information is useful.
 - Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
+${IPHONE_TOOL_CAPABILITY_SUMMARY}
 - Do not call or mention OpenClaw tools in this mode. Do not claim access to the user's Mac, local files, browser, calendar, mail, messages, shell, or private computer state.
 - Keep spoken replies concise, natural, and useful.
 - If audio is unclear or sounds like your own previous speech echoing back, ask briefly for clarification instead of guessing.
@@ -231,7 +255,7 @@ const REALTIME_TOOLS = [
       additionalProperties: false,
       properties: {
         text: { type: 'string', description: 'The exact user request to route through OpenClaw.' },
-        urgency: { type: 'string', enum: ['low', 'normal', 'high'], description: 'How urgent the request seems.' }
+        urgency: { type: 'string', enum: ['normal', 'interrupt', 'background'], description: 'Use normal by default, interrupt for urgent foreground work, and background for low-urgency long-running work.' }
       },
       required: ['text']
     }
@@ -245,7 +269,7 @@ const REALTIME_TOOLS = [
       additionalProperties: false,
       properties: {
         text: { type: 'string', description: 'The new steering instruction to inject into the active OpenClaw run.' },
-        urgency: { type: 'string', enum: ['low', 'normal', 'high'], description: 'How urgent this steering update is.' }
+        urgency: { type: 'string', enum: ['normal', 'interrupt', 'background'], description: 'Use normal by default, interrupt for urgent corrections, and background for low-urgency additions.' }
       },
       required: ['text']
     }
@@ -296,6 +320,33 @@ const IPHONE_REALTIME_TOOLS = [
           enum: ['brief', 'full'],
           description: 'Use full for troubleshooting; brief for ordinary questions.'
         }
+      },
+      required: []
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_set_microphone_muted',
+    description: 'Mute or unmute this live VoiceClaw session microphone. Use only when the user explicitly asks to mute/unmute this iPhone microphone or VoiceClaw listening. Muting stops VoiceClaw from hearing voice until the user unmutes by tapping or another available input.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        muted: { type: 'boolean', description: 'True to mute the live microphone; false to unmute it.' },
+        reason: { type: 'string', description: 'Brief reason the user requested the mute change.' }
+      },
+      required: ['muted']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_end_voice_session',
+    description: 'End the current VoiceClaw live audio session. Use only when the user explicitly asks VoiceClaw to end the session, hang up, disconnect, or stop listening. Do not use to cancel active OpenClaw work; use stop_openclaw for that.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        reason: { type: 'string', description: 'Brief reason the user asked to end the live session.' }
       },
       required: []
     }
@@ -1372,12 +1423,9 @@ const httpServer = createServer(async (req, res) => {
         instructions: realtimeInstructionsForRoute(routeMode),
         audio: buildRealtimeAudioConfig(options),
       };
-      if (routeMode !== 'direct') {
-        realtimeSession.tools = realtimeToolsForRoute(routeMode);
-        realtimeSession.tool_choice = 'auto';
-      } else {
-        realtimeSession.tool_choice = 'none';
-      }
+      const tools = realtimeToolsForRoute(routeMode);
+      realtimeSession.tools = tools;
+      realtimeSession.tool_choice = tools.length ? 'auto' : 'none';
       fd.set('session', JSON.stringify(realtimeSession));
 
       let realtimeBearer;
