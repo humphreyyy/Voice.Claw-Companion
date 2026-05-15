@@ -873,6 +873,7 @@ function bridgeStatusSnapshot(sessionToken = '') {
   const sidebandDiagnostics = realtimeSidebandStates.get(key) || null;
   const sessionConfig = realtimeSessionConfigs.get(key) || null;
   return {
+    generatedAt: new Date().toISOString(),
     active: !!current,
     turnId: current?.turnId || null,
     activeForMs: current ? Date.now() - current.startedAt : 0,
@@ -1455,7 +1456,7 @@ const httpServer = createServer(async (req, res) => {
 
       const sessionToken = req.headers['x-voice-session-token'] || `browser-${Date.now().toString(36)}`;
       const options = realtimeRequestOptions(req, routeMode, sessionToken);
-      realtimeSessionConfigs.set(options.sessionToken, options);
+      realtimeSessionConfigs.set(options.sessionToken, { ...options, sessionStartedAt: new Date().toISOString() });
       const sdpOffer = await readRequestBody(req);
       const fd = new FormData();
       fd.set('sdp', sdpOffer);
@@ -1479,6 +1480,17 @@ const httpServer = createServer(async (req, res) => {
           apiKey,
         });
       } catch (error) {
+        realtimeSessionConfigs.set(options.sessionToken, {
+          ...options,
+          sessionStartedAt: new Date().toISOString(),
+          authSource: 'unavailable',
+          authPreferenceSource: realtimeAuthPreferences(req).source,
+          realtimeAuthPreference: realtimeAuthPreferences(req).mode,
+          fallbackToAPIKey: realtimeAuthPreferences(req).fallbackToAPIKey,
+          oauthFallbackError: error?.message || String(error),
+          upstreamOK: false,
+          upstreamStatus: 503,
+        });
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: error?.message || String(error), auth: realtimeAuthPreferences(req) }));
         return;
@@ -1496,6 +1508,19 @@ const httpServer = createServer(async (req, res) => {
       const body = await upstream.text();
       const location = upstream.headers.get('location') || upstream.headers.get('Location') || '';
       const sidebandStarted = hasServerOwnedRealtimeTools(routeMode) && upstream.ok && location ? await startRealtimeSideband(location, sessionToken, realtimeBearer.sidebandBearer || realtimeBearer.bearer) : false;
+      realtimeSessionConfigs.set(options.sessionToken, {
+        ...options,
+        sessionStartedAt: new Date().toISOString(),
+        authSource: realtimeBearer.source,
+        authPreferenceSource: realtimeBearer.preferences.source,
+        realtimeAuthPreference: realtimeBearer.preferences.mode,
+        fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey,
+        oauthFallbackError: realtimeBearer.oauthError || '',
+        upstreamOK: upstream.ok,
+        upstreamStatus: upstream.status,
+        sidebandLocationHeader: !!location,
+        sidebandStarted,
+      });
       if (upstream.ok) await appendRealtimeLog({ kind: 'realtime_session_created', sessionToken: sanitizeRealtimeSessionToken(sessionToken), routeMode, sidebandLocationHeader: !!location, sidebandStarted, authSource: realtimeBearer.source, authPreferenceSource: realtimeBearer.preferences.source, fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey, oauthFallbackError: realtimeBearer.oauthError || '', options: { model: options.model, voice: options.voice, noiseReduction: options.noiseReduction, captions: options.captions, turnDetection: options.turnDetection, realtimeReasoning: options.realtimeReasoning, transcriptionDelay: options.transcriptionDelay } });
       const headers = { 'Content-Type': upstream.ok ? 'application/sdp' : 'text/plain' };
       if (location) headers['X-OpenAI-Realtime-Location'] = 'present';
