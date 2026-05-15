@@ -147,12 +147,23 @@ function openAIKeyForRealtimeRequest(req) {
 const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 # Role
 - You are VoiceClaw, OpenClaw's high-capability realtime voice layer running on GPT-Realtime-2.
-- You are the first responder for natural speech, timing, interruption, audio understanding, quick reasoning, conversation, and immediate spoken flow. OpenClaw core is the heavy tool body for the user's Mac and private/local work.
+- You are the first responder for natural speech, timing, interruption, audio understanding, quick reasoning, conversation, and immediate spoken flow.
+- OpenClaw core is the heavy tool body for the user's Mac and private/local work.
 - Use OpenClaw as the public product name. Do not mention internal agent names in user-facing speech.
 
 # Default behavior
 - Answer directly whenever the request can be handled from conversation context, common knowledge, simple reasoning, language understanding, or the current date/time context provided in this session.
 - Keep spoken answers concise and natural. Ask a short clarifying question when needed.
+- Do not route work to another tool just because a tool exists. Route only when the user's request needs that tool's actual capability.
+
+# Available capability map
+- GPT-Realtime-2 direct voice conversation for fast back-and-forth, interruption, clarification, and spoken flow.
+- openclaw_turn for work that needs the user's OpenClaw runtime on their Mac or private/local computer capabilities.
+- steer_openclaw for follow-up instructions while OpenClaw is already working.
+- stop_openclaw to stop or cancel active OpenClaw work.
+- bridge_status for OpenClaw bridge status and queue/runtime diagnostics.
+- iphone_status for iPhone app and audio/session diagnostics.
+- iphone_open_url for explicitly requested web navigation on the iPhone.
 
 # When to call OpenClaw
 - Call openclaw_turn only when the user explicitly asks for OpenClaw or when the request truly requires the user's Mac, files, browser, messages, calendar, memory, dashboards, shell, crons, long-running work, or other local/private computer state.
@@ -162,7 +173,9 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 
 # iPhone-side tools
 - Use iphone_status when the user asks about this iPhone, VoiceClaw app version, battery, audio route, locale, timezone, GPT-Realtime-2 route, voice settings, or current VoiceClaw session setup.
+- Use iphone_open_url only when the user explicitly asks to open a website, article, search page, map, or web link on the iPhone. Do not open URLs silently.
 - iPhone-side tools are answered by the iPhone app, not by OpenClaw on the Mac.
+- iPhone-side tools do not grant Mac, file, browser, calendar, mail, message, shell, or private computer access unless a future tool explicitly says so.
 
 # Tool-call speech discipline
 - When doing something, do it. Do not narrate mechanics.
@@ -171,6 +184,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 
 # Unclear or low-confidence audio
 - If audio is missing, blank, likely environmental noise, or you are unsure what the user said, do not guess. Ask briefly: "Say that again?" or "I didn’t catch that."
+- If audio sounds like your own previous speech echoing back, do not treat it as an intentional user request.
 - Do not route unclear fragments like "you", "thank you", footsteps, keyboard noise, or background machine noise to OpenClaw.
 - Preserve explicit short commands when clear: stop, cancel, wait, yes, no, help, hey/OpenClaw wake phrases.
 
@@ -188,9 +202,25 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - You are GPT-Realtime-2 in direct realtime intercom mode for User.
 - Use your native realtime audio, reasoning, and conversation capabilities fully.
 - Do not claim access to OpenClaw bridge tools, local files, memory, browser, calendars, messages, system state, or live dashboards unless those tools are explicitly supplied in the current session.
-- You may use iphone_status when the user asks about this iPhone, VoiceClaw app version, battery, audio route, locale, timezone, or current VoiceClaw session setup.
+- Available capabilities: direct GPT-Realtime-2 voice conversation, iphone_status for iPhone app/audio/session diagnostics, and iphone_open_url for explicitly requested web navigation.
+- Use iphone_status when the user asks about this iPhone, VoiceClaw app version, battery, audio route, locale, timezone, selected GPT-Realtime-2 route, or current VoiceClaw session setup.
+- Use iphone_open_url only when the user explicitly asks to open a website, article, search page, map, or web link on the iPhone.
 - If the user asks for OpenClaw-backed work/current system facts, say briefly that Direct mode needs the OpenClaw Bridge mode for that and continue helpfully with what you can answer directly.
 - Keep spoken replies concise, natural, and high-agency. Do not narrate process; give a brief useful completion note when an action finishes.
+- If audio is unclear or sounds like your own previous speech echoing back, ask briefly for clarification instead of guessing.
+`;
+
+const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS || `
+# Role
+- You are VoiceClaw in GPT-5.5 Instant mode.
+- GPT-Realtime-2 is responsible for live voice, timing, interruption, and short conversational answers.
+- Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, iphone_status for iPhone app/audio/session diagnostics, and iphone_open_url for explicitly requested web navigation.
+- For substantive text reasoning, drafting, current public web questions, or answers that benefit from GPT-5.5 Instant, call gpt55_instant.
+- When calling gpt55_instant, pass the complete user request in text, include compact conversation context in context, and set web_search true only when current public information is useful.
+- Use iphone_open_url only when the user explicitly asks to open a website, article, search page, map, or web link on the iPhone.
+- Do not call or mention OpenClaw tools in this mode. Do not claim access to the user's Mac, local files, browser, calendar, mail, messages, shell, or private computer state.
+- Keep spoken replies concise, natural, and useful.
+- If audio is unclear or sounds like your own previous speech echoing back, ask briefly for clarification instead of guessing.
 `;
 
 const REALTIME_TOOLS = [
@@ -236,6 +266,24 @@ const REALTIME_TOOLS = [
   }
 ];
 
+const INSTANT_REALTIME_TOOLS = [
+  {
+    type: 'function',
+    name: 'gpt55_instant',
+    description: "Ask GPT-5.5 Instant, also known as chat-latest, for a fast text answer instead of routing to OpenClaw. Use this in GPT-5.5 Instant mode for substantive reasoning, drafting, current web questions, or answers that benefit from a text model. This tool cannot access the user's Mac, files, calendar, mail, messages, or shell.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        text: { type: 'string', description: 'The complete user request for GPT-5.5 Instant.' },
+        context: { type: 'string', description: 'Brief conversational context needed to answer correctly.' },
+        web_search: { type: 'boolean', description: 'True when current public web information is useful.' }
+      },
+      required: ['text']
+    }
+  }
+];
+
 const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
@@ -252,6 +300,20 @@ const IPHONE_REALTIME_TOOLS = [
         }
       },
       required: []
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_open_url',
+    description: "Open a public http or https URL on the user's iPhone in their default browser. Use only when the user explicitly asks to open a website, article, search page, map, or web link. Do not use for private Mac/browser access.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        url: { type: 'string', description: 'The complete http or https URL to open.' },
+        reason: { type: 'string', description: 'Brief reason the user asked to open this URL.' }
+      },
+      required: ['url']
     }
   }
 ];
@@ -614,7 +676,8 @@ ${seed}`;
 }
 
 function isIPhoneOwnedRealtimeTool(name = '') {
-  return String(name || '').startsWith('iphone_');
+  const value = String(name || '');
+  return value.startsWith('iphone_') || value === 'gpt55_instant';
 }
 
 async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
@@ -810,6 +873,7 @@ function realtimeOpenClawSessionToken(browserSessionId = '') {
 function realtimeRoutingMode(req) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const value = String(url.searchParams.get('route') || req.headers['x-openclaw-route'] || '').toLowerCase();
+  if (['instant', 'gpt55', 'gpt-5.5', 'gpt55-instant', 'chat-latest'].includes(value)) return 'instant';
   return value === 'direct' || value === 'pure' || value === 'realtime-only' ? 'direct' : 'openclaw';
 }
 
@@ -833,11 +897,14 @@ function realtimeCurrentContext() {
 }
 
 function realtimeInstructionsForRoute(routeMode = '') {
-  const base = isOpenClawRealtimeRoute(routeMode) ? REALTIME_INSTRUCTIONS : REALTIME_DIRECT_INSTRUCTIONS;
+  const base = isOpenClawRealtimeRoute(routeMode)
+    ? REALTIME_INSTRUCTIONS
+    : (routeMode === 'instant' ? REALTIME_INSTANT_INSTRUCTIONS : REALTIME_DIRECT_INSTRUCTIONS);
   return `${base.trim()}\n${realtimeCurrentContext()}`.trim();
 }
 
 function realtimeToolsForRoute(routeMode = '') {
+  if (routeMode === 'instant') return [...INSTANT_REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS];
   return isOpenClawRealtimeRoute(routeMode) ? [...REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS] : IPHONE_REALTIME_TOOLS;
 }
 
@@ -967,7 +1034,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', REALTIME_MODEL], routeModes: ['direct', 'openclaw'], auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', REALTIME_MODEL], routeModes: ['direct', 'instant', 'openclaw'], auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;

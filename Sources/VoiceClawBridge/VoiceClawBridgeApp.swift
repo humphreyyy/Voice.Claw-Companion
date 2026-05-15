@@ -22,6 +22,11 @@ struct VoiceClawBridgeApp: App {
                 }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(store.pairingJSON.isEmpty)
+
+                Button("Check for Updates") {
+                    Task { await store.checkForUpdates() }
+                }
+                .keyboardShortcut("u", modifiers: [.command, .shift])
             }
         }
 
@@ -62,6 +67,12 @@ private struct CompanionMenuBarView: View {
             Label("Copy iPhone Setup", systemImage: "doc.on.doc")
         }
         .disabled(store.pairingJSON.isEmpty)
+
+        Button {
+            Task { await store.checkForUpdates() }
+        } label: {
+            Label("Check for Updates", systemImage: "arrow.down.circle")
+        }
 
         Divider()
 

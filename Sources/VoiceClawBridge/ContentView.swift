@@ -521,6 +521,7 @@ private struct StatusPanel: View {
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off")", symbol: "key.horizontal")
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
+            StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
 
             if let lastRefreshDate = store.lastRefreshDate {
                 StatusRow(title: "Last Checked", value: lastRefreshDate.formatted(date: .abbreviated, time: .standard), symbol: "clock")
@@ -536,27 +537,48 @@ private struct StatusPanel: View {
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
 
-            HStack(spacing: 10) {
-                Button {
-                    Task { await store.refreshStatus() }
-                } label: {
-                    Label("Check Again", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await store.refreshStatus() }
+                    } label: {
+                        Label("Check Again", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
 
-                Button {
-                    store.openNodeInstallPage()
-                } label: {
-                    Label("Get Node.js", systemImage: "terminal")
-                }
-                .buttonStyle(.bordered)
+                    Button {
+                        store.openNodeInstallPage()
+                    } label: {
+                        Label("Get Node.js", systemImage: "terminal")
+                    }
+                    .buttonStyle(.bordered)
 
-                Button {
-                    store.openOpenClawFolder()
-                } label: {
-                    Label("Open OpenClaw Folder", systemImage: "folder")
+                    Button {
+                        store.openOpenClawFolder()
+                    } label: {
+                        Label("Open OpenClaw Folder", systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
+
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await store.checkForUpdates() }
+                    } label: {
+                        Label(store.isCheckingForUpdates ? "Checking" : "Check Updates", systemImage: "arrow.down.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.isCheckingForUpdates)
+
+                    if store.updateAvailable {
+                        Button {
+                            store.openLatestRelease()
+                        } label: {
+                            Label("Download Update", systemImage: "safari")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
             }
 
             DiagnosticsVersionFooter()

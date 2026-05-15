@@ -74,6 +74,11 @@ final class BridgeStore: ObservableObject {
     @Published var lastRefreshDate: Date?
     @Published var setupAdvice: String = "Click Install and Start to install the bridge and configure Tailscale Serve for this port."
     @Published var canResetTailscaleMapping: Bool = false
+    @Published var updateSummary: String = "Updates have not been checked."
+    @Published var updateAvailable: Bool = false
+    @Published var isCheckingForUpdates: Bool = false
+    @Published var latestReleaseURL: URL? = URL(string: "https://github.com/bdjben/Voice.Claw-Companion/releases/latest")
+    @Published var latestDMGName: String = ""
 
     private let runner = ProcessRunner()
     private lazy var projectRoot: URL = Self.resolveProjectRoot()
@@ -121,6 +126,7 @@ final class BridgeStore: ObservableObject {
         Task {
             await loadSavedBridgeConfig()
             await refreshStatus()
+            await checkForUpdates(manual: false)
         }
     }
 
@@ -210,6 +216,74 @@ final class BridgeStore: ObservableObject {
 
     func openOpenClawFolder() {
         NSWorkspace.shared.open(URL(fileURLWithPath: normalizedOpenClawPath, isDirectory: true))
+    }
+
+    func openLatestRelease() {
+        if let latestReleaseURL {
+            NSWorkspace.shared.open(latestReleaseURL)
+        } else if let releasesURL = URL(string: "https://github.com/bdjben/Voice.Claw-Companion/releases") {
+            NSWorkspace.shared.open(releasesURL)
+        }
+    }
+
+    func checkForUpdates(manual: Bool = true) async {
+        guard !isCheckingForUpdates else { return }
+
+        isCheckingForUpdates = true
+        if manual {
+            updateSummary = "Checking GitHub Releases for a notarized Voice.Claw Companion update..."
+        }
+        defer { isCheckingForUpdates = false }
+
+        do {
+            var request = URLRequest(url: URL(string: "https://api.github.com/repos/bdjben/Voice.Claw-Companion/releases/latest")!)
+            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.setValue("VoiceClawCompanion", forHTTPHeaderField: "User-Agent")
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode)
+            else {
+                throw BridgeProcessError(message: "GitHub returned an unexpected response.")
+            }
+
+            let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+            latestReleaseURL = release.htmlURL
+            latestDMGName = release.preferredDMGAsset?.name ?? ""
+
+            guard let latestVersion = Self.normalizedVersion(release.tagName),
+                  !latestVersion.isEmpty
+            else {
+                updateAvailable = false
+                updateSummary = "Latest release found, but its version could not be read. Open GitHub Releases to verify the newest notarized DMG."
+                return
+            }
+
+            guard release.preferredDMGAsset != nil else {
+                updateAvailable = false
+                updateSummary = "Latest release is \(release.tagName), but no DMG download is attached yet. Wait for a notarized DMG before updating."
+                return
+            }
+
+            guard let currentVersion = Self.currentCompanionVersion,
+                  !currentVersion.isEmpty
+            else {
+                updateAvailable = true
+                updateSummary = "Latest release is \(release.tagName) with \(latestDMGName). This build's version is unavailable, so open GitHub Releases to compare."
+                return
+            }
+
+            if Self.compareVersions(latestVersion, currentVersion) == .orderedDescending {
+                updateAvailable = true
+                updateSummary = "Update \(release.tagName) is available. Download \(latestDMGName) from GitHub Releases."
+            } else {
+                updateAvailable = false
+                updateSummary = "Voice.Claw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName)."
+            }
+        } catch {
+            updateAvailable = false
+            updateSummary = "Could not check GitHub Releases: \(error.localizedDescription)"
+        }
     }
 
     func chooseFreshTestPort() async {
@@ -327,6 +401,8 @@ final class BridgeStore: ObservableObject {
         }
         updated["RealtimeAuthMode"] = realtimeAuthMode.rawValue
         updated["RealtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
+        updated["InstantModel"] = updated["InstantModel"] as? String ?? "gpt-5-chat-latest"
+        updated["InstantWebSearch"] = updated["InstantWebSearch"] as? Bool ?? true
 
         guard let data = try? JSONSerialization.data(withJSONObject: updated, options: [.prettyPrinted]),
               let json = String(data: data, encoding: .utf8)
@@ -467,6 +543,37 @@ final class BridgeStore: ObservableObject {
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
     }
 
+    private static var currentCompanionVersion: String? {
+        let value = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        return normalizedVersion(value ?? "")
+    }
+
+    private static func normalizedVersion(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let noPrefix = trimmed.hasPrefix("v") ? String(trimmed.dropFirst()) : trimmed
+        let version = noPrefix
+            .split(separator: "-", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init) ?? noPrefix
+        return version.allSatisfy { $0.isNumber || $0 == "." } ? version : nil
+    }
+
+    private static func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        let left = lhs.split(separator: ".").map { Int($0) ?? 0 }
+        let right = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        let count = max(left.count, right.count)
+
+        for index in 0..<count {
+            let a = index < left.count ? left[index] : 0
+            let b = index < right.count ? right[index] : 0
+            if a < b { return .orderedAscending }
+            if a > b { return .orderedDescending }
+        }
+
+        return .orderedSame
+    }
+
     private static func pairingPayload(from config: [String: Any]) -> [String: Any] {
         [
             "VoiceClawSetupVersion": 1,
@@ -476,6 +583,8 @@ final class BridgeStore: ObservableObject {
             "OpenClawGatewayToken": config["gatewayToken"] as? String ?? "",
             "RouteMode": "openclaw-bridge",
             "RealtimeModel": "gpt-realtime-2",
+            "InstantModel": "gpt-5-chat-latest",
+            "InstantWebSearch": true,
             "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
             "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? true,
         ]
@@ -507,6 +616,35 @@ final class BridgeStore: ObservableObject {
         else { return json }
 
         return string
+    }
+}
+
+private struct GitHubRelease: Decodable {
+    let tagName: String
+    let htmlURL: URL
+    let assets: [Asset]
+
+    var preferredDMGAsset: Asset? {
+        assets.first { asset in
+            let lowercased = asset.name.lowercased()
+            return lowercased.hasSuffix(".dmg") && !lowercased.contains("unnotarized")
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case htmlURL = "html_url"
+        case assets
+    }
+
+    struct Asset: Decodable {
+        let name: String
+        let browserDownloadURL: URL?
+
+        enum CodingKeys: String, CodingKey {
+            case name
+            case browserDownloadURL = "browser_download_url"
+        }
     }
 }
 
