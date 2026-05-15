@@ -11,7 +11,7 @@ async function refreshStatus() {
     statusText.textContent = 'Ready';
     chip.textContent = 'Bridge Ready';
     chip.classList.add('ok');
-    detail.textContent = `Listening on ${payload.bindHost}:${payload.port}. Pair your iPhone from the VoiceClaw Bridge app to use this private OpenClaw handoff.`;
+    detail.textContent = `Listening on ${payload.bindHost}:${payload.port}. Pair your iPhone from VoiceClaw Companion to use this private OpenClaw handoff.`;
   } catch (error) {
     statusText.textContent = 'Needs Attention';
     chip.textContent = 'Bridge Check Failed';

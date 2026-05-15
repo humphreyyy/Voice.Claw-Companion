@@ -77,6 +77,7 @@ final class BridgeStore: ObservableObject {
     @Published var tailscaleSummary: String = "Not checked"
     @Published var localBridgeSummary: String = "Not checked"
     @Published var realtimeRuntimeSummary: String = "Realtime runtime not checked."
+    @Published var realtimeAuthStatusSummary: String = "OpenAI auth status not checked."
     @Published var pairingJSON: String = ""
     @Published var pairingPreview: String = ""
     @Published var pairingURL: String = ""
@@ -104,6 +105,7 @@ final class BridgeStore: ObservableObject {
     private let runner = ProcessRunner()
     private lazy var projectRoot: URL = Self.resolveProjectRoot()
     private var automaticUpdateTask: Task<Void, Never>?
+    private var suppressTransientSetupWarningUntil: Date?
     private static let automaticUpdateIntervalNanoseconds: UInt64 = 6 * 60 * 60 * 1_000_000_000
 
     enum BridgeStatus: Equatable {
@@ -120,7 +122,7 @@ final class BridgeStore: ObservableObject {
             case let .working(message):
                 message
             case .ready:
-                "Bridge Ready"
+                "Companion Ready"
             case let .warning(message):
                 message
             case let .failed(message):
@@ -172,7 +174,7 @@ final class BridgeStore: ObservableObject {
             return
         }
 
-        status = .working("Setting Up Bridge")
+        status = .working("Setting Up Companion")
         lastLog = ""
 
         do {
@@ -196,6 +198,7 @@ final class BridgeStore: ObservableObject {
             updatePairingPayload(from: trimmed)
             lastLog = "Setup completed. Copy or scan the iPhone setup payload."
             status = .ready
+            suppressTransientSetupWarningUntil = Date().addingTimeInterval(10)
             await refreshStatus()
         } catch {
             lastLog = Self.userFacingSetupError(error)
@@ -257,7 +260,7 @@ final class BridgeStore: ObservableObject {
     func openLatestDMG() {
         if let latestDMGURL {
             NSWorkspace.shared.open(latestDMGURL)
-            lastLog = "Opened the notarized Voice.Claw Companion DMG download."
+            lastLog = "Opened the notarized VoiceClaw Companion DMG download."
         } else {
             openLatestRelease()
         }
@@ -272,7 +275,7 @@ final class BridgeStore: ObservableObject {
         }
 
         isDownloadingUpdate = true
-        updateSummary = "Downloading notarized Voice.Claw Companion DMG..."
+        updateSummary = "Downloading notarized VoiceClaw Companion DMG..."
         defer { isDownloadingUpdate = false }
 
         do {
@@ -283,7 +286,7 @@ final class BridgeStore: ObservableObject {
                 throw BridgeProcessError(message: "GitHub did not return the DMG download.")
             }
 
-            let fileName = latestDMGName.isEmpty ? "VoiceClawBridge-\(latestReleaseTag.isEmpty ? "latest" : latestReleaseTag).dmg" : latestDMGName
+            let fileName = latestDMGName.isEmpty ? "VoiceClawCompanion-\(latestReleaseTag.isEmpty ? "latest" : latestReleaseTag).dmg" : latestDMGName
             let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
                 ?? URL(fileURLWithPath: "\(NSHomeDirectory())/Downloads", isDirectory: true)
             let destination = downloads.appendingPathComponent(fileName, isDirectory: false)
@@ -308,7 +311,7 @@ final class BridgeStore: ObservableObject {
                 lastLog = "Downloaded \(fileName) to Downloads. No release digest was available to verify."
             }
 
-            updateSummary = "Downloaded \(fileName) to Downloads and opened it. Drag VoiceClaw Bridge to Applications to update."
+            updateSummary = "Downloaded \(fileName) to Downloads and opened it. Drag VoiceClaw Companion to Applications to update."
             NSWorkspace.shared.open(destination)
         } catch {
             updateSummary = "Could not download the update: \(error.localizedDescription)"
@@ -322,7 +325,7 @@ final class BridgeStore: ObservableObject {
         isCheckingForUpdates = true
         lastUpdateCheckDate = Date()
         if manual {
-            updateSummary = "Checking GitHub Releases for a notarized Voice.Claw Companion update..."
+                updateSummary = "Checking GitHub Releases for a notarized VoiceClaw Companion update..."
         }
         defer { isCheckingForUpdates = false }
 
@@ -373,7 +376,7 @@ final class BridgeStore: ObservableObject {
                 updateSummary = "Update \(release.tagName) is available. Download the notarized DMG: \(latestDMGName). Automatic checks only read GitHub Releases; they do not change this Mac."
             } else {
                 updateAvailable = false
-                updateSummary = "Voice.Claw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName)."
+                updateSummary = "VoiceClaw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName)."
             }
         } catch {
             updateAvailable = false
@@ -434,10 +437,10 @@ final class BridgeStore: ObservableObject {
             pairingPreview = ""
             pairingURL = ""
             if removeTailscaleMapping {
-                let networkSummary = resetResponse?.tailscaleReset?.summary ?? "No matching Voice.Claw Tailscale Serve mapping needed removal."
-                lastLog = "Reset complete. Voice.Claw removed its LaunchAgent and local bridge config. \(networkSummary) Tailscale itself, OpenClaw, and Node.js were not changed."
+                let networkSummary = resetResponse?.tailscaleReset?.summary ?? "No matching VoiceClaw Tailscale Serve mapping needed removal."
+                lastLog = "Reset complete. VoiceClaw removed its LaunchAgent and local bridge config. \(networkSummary) Tailscale itself, OpenClaw, and Node.js were not changed."
             } else {
-                lastLog = "Reset complete. Voice.Claw removed its LaunchAgent and local bridge config only. Tailscale, OpenClaw, Node.js, and tailnet settings were not changed."
+                lastLog = "Reset complete. VoiceClaw removed its LaunchAgent and local bridge config only. Tailscale, OpenClaw, Node.js, and tailnet settings were not changed."
             }
             status = .idle
             await refreshStatus()
@@ -561,8 +564,13 @@ final class BridgeStore: ObservableObject {
             guard !status.isWorking else { return }
             if diagnostics.local.state == "running", diagnostics.tailscale.state == "voiceclaw_mapping" {
                 status = .ready
+                suppressTransientSetupWarningUntil = nil
             } else if diagnostics.tailscale.state == "stale_voiceclaw_mapping" || diagnostics.tailscale.state == "occupied_by_other_mapping" || (diagnostics.savedConfigExists && diagnostics.tailscale.state == "not_available") {
-                status = .warning("Bridge Needs Attention")
+                if let suppressUntil = suppressTransientSetupWarningUntil, Date() < suppressUntil {
+                    status = .ready
+                } else {
+                    status = .warning("Companion Needs Attention")
+                }
             } else if case .ready = status {
                 status = .idle
             } else if case .warning = status {
@@ -572,6 +580,7 @@ final class BridgeStore: ObservableObject {
             localBridgeSummary = "Diagnostics could not run."
             tailscaleSummary = Self.userFacingSetupError(error)
             realtimeRuntimeSummary = "Realtime runtime status could not be read because bridge diagnostics failed."
+            realtimeAuthStatusSummary = "OpenAI auth status could not be read because bridge diagnostics failed."
             setupAdvice = "Install Node.js and Tailscale if needed, then click Install and Start."
             canResetTailscaleMapping = false
             if !status.isWorking {
@@ -585,6 +594,7 @@ final class BridgeStore: ObservableObject {
               let url = URL(string: "http://127.0.0.1:\(portValue)/realtime/status")
         else {
             realtimeRuntimeSummary = "Choose a valid bridge port to read Realtime runtime status."
+            realtimeAuthStatusSummary = "Choose a valid bridge port to read OpenAI auth status."
             return
         }
 
@@ -603,8 +613,42 @@ final class BridgeStore: ObservableObject {
             }
 
             realtimeRuntimeSummary = Self.realtimeRuntimeSummary(from: object)
+            await refreshRealtimeAuthStatus(portValue: portValue)
         } catch {
             realtimeRuntimeSummary = "Realtime runtime is not reachable on the local bridge yet."
+            await refreshRealtimeAuthStatus(portValue: portValue)
+        }
+    }
+
+    private func refreshRealtimeAuthStatus(portValue: Int) async {
+        var components = URLComponents(string: "http://127.0.0.1:\(portValue)/realtime/auth/status")
+        components?.queryItems = [
+            URLQueryItem(name: "probe", value: realtimeAuthMode == .openClawOAuth ? "1" : "0"),
+            URLQueryItem(name: "model", value: "gpt-realtime-2"),
+            URLQueryItem(name: "voice", value: "marin"),
+        ]
+        guard let url = components?.url else {
+            realtimeAuthStatusSummary = "Choose a valid bridge port to read OpenAI auth status."
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = realtimeAuthMode == .openClawOAuth ? 12 : 3
+        applyBridgeAuthHeaders(to: &request)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                realtimeAuthStatusSummary = "OpenAI auth endpoint did not return a readable status."
+                return
+            }
+
+            realtimeAuthStatusSummary = Self.realtimeAuthStatusSummary(from: object)
+        } catch {
+            realtimeAuthStatusSummary = "OpenAI auth status is not reachable on the local companion bridge yet."
         }
     }
 
@@ -649,7 +693,7 @@ final class BridgeStore: ObservableObject {
             }
         } catch {}
 
-        throw BridgeProcessError(message: "Node.js is not installed or is not available to apps launched from Finder. Install Node.js, reopen Voice.Claw Companion, then click Install and Start again.")
+        throw BridgeProcessError(message: "Node.js is not installed or is not available to apps launched from Finder. Install Node.js, reopen VoiceClaw Companion, then click Install and Start again.")
     }
 
     private static func userFacingSetupError(_ error: Error) -> String {
@@ -657,12 +701,12 @@ final class BridgeStore: ObservableObject {
         let lower = raw.lowercased()
 
         if lower.contains("node") && (lower.contains("no such file") || lower.contains("not installed") || lower.contains("not found")) {
-            return "Node.js is required to run the local bridge, but Voice.Claw Companion could not find it. Install Node.js, reopen the companion app, then click Install and Start again."
+            return "Node.js is required to run the local bridge, but VoiceClaw Companion could not find it. Install Node.js, reopen the companion app, then click Install and Start again."
         }
 
         if lower.contains("tailscale") {
             let detail = raw.isEmpty ? "" : "\n\nTailscale detail: \(raw)"
-            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local Voice.Claw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the iPhone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoice.Claw looks for the Tailscale command in the standard macOS install locations and only changes Tailscale Serve when you click Install and Start; Check Again is read-only.\(detail)"
+            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local VoiceClaw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the iPhone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoiceClaw looks for the Tailscale command in the standard macOS install locations and only changes Tailscale Serve when you click Install and Start; Check Again is read-only.\(detail)"
         }
 
         if lower.contains("openclaw config was not found") || lower.contains("openclaw.json") {
@@ -670,7 +714,7 @@ final class BridgeStore: ObservableObject {
         }
 
         if lower.contains("launchctl") || lower.contains("bootstrap") || lower.contains("launch agent") {
-            return "macOS could not install or start the Voice.Claw LaunchAgent. Make sure this user account can write to ~/Library/LaunchAgents, then try Install and Start again."
+            return "macOS could not install or start the VoiceClaw LaunchAgent. Make sure this user account can write to ~/Library/LaunchAgents, then try Install and Start again."
         }
 
         if raw.isEmpty {
@@ -770,6 +814,36 @@ final class BridgeStore: ObservableObject {
         }
 
         return "Sideband disabled, auth \(auth), OpenClaw active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), iPhone fallback handles OpenClaw tools."
+    }
+
+    private static func realtimeAuthStatusSummary(from object: [String: Any]) -> String {
+        let mode = object["mode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue
+        let source = object["effectiveSource"] as? String ?? "unknown"
+        let fallback = object["fallbackToAPIKey"] as? Bool ?? true
+        let apiKeyAvailable = object["apiKeyAvailable"] as? Bool ?? false
+        let oauth = object["openClawOAuth"] as? [String: Any]
+        let oauthChecked = oauth?["checked"] as? Bool ?? false
+        let oauthAvailable = oauth?["available"] as? Bool ?? false
+        let probe = oauth?["clientSecretProbe"] as? String
+        let oauthError = oauth?["error"] as? String
+
+        if mode != CompanionRealtimeAuthMode.openClawOAuth.rawValue, !oauthChecked {
+            return "API-key mode is selected from \(source). OpenAI API key available: \(apiKeyAvailable ? "yes" : "no"). Select OpenClaw OAuth and click Check Again to test Subscription (OAuth) login."
+        }
+
+        if oauthAvailable {
+            if probe == "passed" {
+                return "OpenClaw OAuth is ready: the Companion found the OpenClaw login and minted a GPT-Realtime-2 client secret. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+            }
+
+            return "OpenClaw OAuth profile is available. Select OpenClaw OAuth and click Check Again to run the GPT-Realtime-2 client-secret test. API-key fallback \(fallback ? "on" : "off")."
+        }
+
+        if let oauthError, !oauthError.isEmpty {
+            return "OpenClaw OAuth is not ready: \(oauthError) Then click Check Again. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+        }
+
+        return "OpenClaw OAuth has not been checked yet. Select OpenClaw OAuth and click Check Again to test Subscription (OAuth) login. API-key fallback \(fallback ? "on" : "off")."
     }
 
     private static func integerText(_ value: Any?) -> String? {

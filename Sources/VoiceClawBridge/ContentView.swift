@@ -19,12 +19,6 @@ struct ContentView: View {
                     }
                     .help("Re-check the local bridge and Tailscale Serve status. The app also checks automatically after setup and at launch.")
 
-                    Button {
-                        Task { await store.setupBridge() }
-                    } label: {
-                        Label("Install and Start", systemImage: "bolt.horizontal.circle.fill")
-                    }
-                    .disabled(store.status.isWorking)
                 }
             }
         }
@@ -117,7 +111,7 @@ private struct SidebarView: View {
             }
             .padding(12)
         }
-        .navigationTitle("Voice.Claw")
+        .navigationTitle("VoiceClaw Companion")
     }
 
     private var statusColor: Color {
@@ -189,9 +183,9 @@ private struct HeroPanel: View {
                 .frame(width: 86, height: 86)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Voice.Claw Companion")
+                Text("VoiceClaw Companion")
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
-                Text("Install the private Mac bridge that lets VoiceClaw on iPhone reach OpenClaw on this Mac through Tailscale.")
+                Text("Install and manage the private Mac companion that lets VoiceClaw on iPhone reach OpenClaw on this Mac through Tailscale.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -199,16 +193,53 @@ private struct HeroPanel: View {
 
             Spacer(minLength: 24)
 
-            Button {
-                Task { await store.setupBridge() }
-            } label: {
-                Label(store.status.isWorking ? "Working" : "Set Up Bridge", systemImage: "bolt.horizontal.circle.fill")
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(store.status.isWorking)
+            StatusPill(status: store.status)
         }
         .panelStyle()
+    }
+}
+
+private struct StatusPill: View {
+    let status: BridgeStore.BridgeStatus
+
+    var body: some View {
+        Label(status.title, systemImage: symbol)
+            .font(.headline)
+            .foregroundStyle(color)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(color.opacity(0.14), in: Capsule())
+            .overlay(Capsule().stroke(color.opacity(0.30)))
+    }
+
+    private var symbol: String {
+        switch status {
+        case .idle:
+            "circle"
+        case .working:
+            "hourglass"
+        case .ready:
+            "checkmark.circle.fill"
+        case .warning:
+            "exclamationmark.triangle.fill"
+        case .failed:
+            "xmark.octagon.fill"
+        }
+    }
+
+    private var color: Color {
+        switch status {
+        case .idle:
+            .secondary
+        case .working:
+            .yellow
+        case .ready:
+            .green
+        case .warning:
+            .orange
+        case .failed:
+            .red
+        }
     }
 }
 
@@ -313,8 +344,8 @@ private struct SetupPanel: View {
                 }
             }
 
-            InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates Voice.Claw's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. The Check Again buttons only read status.")
-            InfoCallout(symbol: "arrow.counterclockwise", title: "Testing First-Run Setup", bodyText: "Reset First-Run State removes only Voice.Claw's LaunchAgent and local bridge config. Use Reset App + Tailscale Mapping only when Diagnostics says the selected port is a Voice.Claw mapping; it will refuse to touch other Serve mappings.")
+            InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates VoiceClaw's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. Check Again only reads status.")
+            InfoCallout(symbol: "arrow.counterclockwise", title: "Testing First-Run Setup", bodyText: "Reset First-Run State removes only VoiceClaw's LaunchAgent and local bridge config. Use Reset App + Tailscale Mapping only when Diagnostics says the selected port is a VoiceClaw mapping; it will refuse to touch other Serve mappings.")
             InfoCallout(symbol: "lightbulb", title: "Recommended Next Step", bodyText: store.setupAdvice)
 
             HStack(spacing: 10) {
@@ -349,12 +380,12 @@ private struct SetupPanel: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(store.status.isWorking || !store.canResetTailscaleMapping)
-                .help(store.canResetTailscaleMapping ? "Remove Voice.Claw's local state and the selected Tailscale Serve mapping." : "Available only when Diagnostics identifies the selected port as a Voice.Claw Tailscale Serve mapping.")
+                .help(store.canResetTailscaleMapping ? "Remove VoiceClaw's local state and the selected Tailscale Serve mapping." : "Available only when Diagnostics identifies the selected port as a VoiceClaw Tailscale Serve mapping.")
             }
         }
         .panelStyle()
         .confirmationDialog(
-            "Remove the selected Voice.Claw Tailscale Serve mapping?",
+            "Remove the selected VoiceClaw Tailscale Serve mapping?",
             isPresented: $showingNetworkResetConfirmation,
             titleVisibility: .visible
         ) {
@@ -363,7 +394,7 @@ private struct SetupPanel: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes Voice.Claw's LaunchAgent and local bridge config, then removes only the selected Tailscale Serve port if it maps exactly to the Voice.Claw bridge. Tailscale, OpenClaw, and Node.js remain installed.")
+            Text("This removes VoiceClaw's LaunchAgent and local bridge config, then removes only the selected Tailscale Serve port if it maps exactly to the VoiceClaw bridge. Tailscale, OpenClaw, and Node.js remain installed.")
         }
     }
 }
@@ -373,7 +404,7 @@ private struct PairingPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Pair iPhone", subtitle: "Scan this QR code in VoiceClaw Settings. The setup payload includes this Mac's preferred GPT-Realtime-2 auth mode; the iPhone can still override it later.", symbol: "qrcode")
+            PanelHeader(title: "Pair iPhone", subtitle: "Scan this QR code in VoiceClaw Settings. It can include an OpenAI API key and/or Subscription (OAuth) login preference; the iPhone can still override it later.", symbol: "qrcode")
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
                 GridRow {
@@ -391,11 +422,11 @@ private struct PairingPanel: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Toggle("Fall back to API key if OpenClaw OAuth fails", isOn: $store.realtimeAuthFallbackToAPIKey)
+                        Toggle("Fall back to OpenAI API key if OpenClaw OAuth fails", isOn: $store.realtimeAuthFallbackToAPIKey)
                             .toggleStyle(.checkbox)
                             .disabled(store.realtimeAuthMode != .openClawOAuth)
 
-                        Text("When the iPhone sends its own setting, the iPhone wins. Fallback uses the iPhone's API key if it was included in pairing or entered on the phone; otherwise the bridge can only use an API key already available to its local environment.")
+                        Text("When the iPhone sends its own setting, the iPhone wins. Fallback uses the iPhone's OpenAI API key if it was included in pairing or entered on the phone; otherwise the companion can only use an API key already available to its local environment.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -431,6 +462,8 @@ private struct PairingPanel: View {
                     }
                 }
             }
+
+            InfoCallout(symbol: "key.radiowaves.forward", title: "OpenAI Auth Status", bodyText: store.realtimeAuthStatusSummary)
 
             HStack(alignment: .top, spacing: 18) {
                 QRCodeView(value: store.pairingURL.isEmpty ? store.pairingJSON : store.pairingURL)
@@ -480,12 +513,12 @@ private struct TailscalePanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Tailscale", subtitle: "Voice.Claw uses Tailscale Serve so the iPhone can reach this Mac on your private network.", symbol: "network")
+            PanelHeader(title: "Tailscale", subtitle: "VoiceClaw uses Tailscale Serve so the iPhone can reach this Mac on your private network.", symbol: "network")
 
-            InfoCallout(symbol: "network.badge.shield.half.filled", title: "What Tailscale Serve Is", bodyText: "Tailscale Serve is a private HTTPS reverse proxy: it takes a Tailscale URL on this Mac and forwards it to the local Voice.Claw bridge running on 127.0.0.1. It is private to devices in your tailnet, not a public internet link.")
-            InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the Voice.Claw bridge service on this Mac. With the default, the iPhone connects to a URL ending in :3191. If you choose another free port, run Install and Start again and pair the iPhone with the new QR code.")
-            InfoCallout(symbol: "lock", title: "What Must Be Allowed", bodyText: "Tailscale must be installed and signed in, and HTTPS certificates must be enabled for your tailnet. If you are not the tailnet owner or admin, ask that person to enable HTTPS certificates. Voice.Claw configures Serve only when you click Install and Start; Check Again is read-only.")
-            InfoCallout(symbol: "trash.slash", title: "Why Voice.Claw Does Not Use Serve Reset", bodyText: "Tailscale's full Serve reset clears every Serve mapping on this Mac. Voice.Claw only offers a guarded cleanup for the selected port, and only when the mapping looks exactly like Voice.Claw's own bridge.")
+            InfoCallout(symbol: "network.badge.shield.half.filled", title: "What Tailscale Serve Is", bodyText: "Tailscale Serve is a private HTTPS reverse proxy: it takes a Tailscale URL on this Mac and forwards it to the local VoiceClaw bridge running on 127.0.0.1. It is private to devices in your tailnet, not a public internet link.")
+            InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the VoiceClaw bridge service on this Mac. With the default, the iPhone connects to a URL ending in :3191. If you choose another free port, run Install and Start again and pair the iPhone with the new QR code.")
+            InfoCallout(symbol: "lock", title: "What Must Be Allowed", bodyText: "Tailscale must be installed and signed in, and HTTPS certificates must be enabled for your tailnet. If you are not the tailnet owner or admin, ask that person to enable HTTPS certificates. VoiceClaw configures Serve only when you click Install and Start; Check Again is read-only.")
+            InfoCallout(symbol: "trash.slash", title: "Why VoiceClaw Does Not Use Serve Reset", bodyText: "Tailscale's full Serve reset clears every Serve mapping on this Mac. VoiceClaw only offers a guarded cleanup for the selected port, and only when the mapping looks exactly like VoiceClaw's own bridge.")
 
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
 
@@ -533,10 +566,10 @@ private struct StatusPanel: View {
             StatusRow(title: "Local Bridge", value: store.localBridgeSummary, symbol: "server.rack")
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
             StatusRow(title: "Realtime Runtime", value: store.realtimeRuntimeSummary, symbol: "waveform.path.ecg")
-            StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off")", symbol: "key.horizontal")
+            StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
-            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. Voice.Claw reads GitHub Releases every few hours and offers only a notarized DMG; it does not install or mutate the Mac automatically." : "Automatic checks are off. Use Check Updates when you want to compare against the latest notarized GitHub Release.", symbol: "clock.arrow.circlepath")
+            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw reads GitHub Releases every few hours and offers only a notarized DMG; it does not install or mutate the Mac automatically." : "Automatic checks are off. Use Check Updates when you want to compare against the latest notarized GitHub Release.", symbol: "clock.arrow.circlepath")
 
             if let lastUpdateCheckDate = store.lastUpdateCheckDate {
                 StatusRow(title: "Updates Checked", value: lastUpdateCheckDate.formatted(date: .abbreviated, time: .standard), symbol: "calendar.badge.clock")
@@ -712,13 +745,13 @@ private struct DiagnosticsVersionFooter: View {
 
         switch (version?.isEmpty == false ? version : nil, build?.isEmpty == false ? build : nil) {
         case let (.some(version), .some(build)):
-            return "Voice.Claw Companion \(version) (\(build))"
+            return "VoiceClaw Companion \(version) (\(build))"
         case let (.some(version), .none):
-            return "Voice.Claw Companion \(version)"
+            return "VoiceClaw Companion \(version)"
         case let (.none, .some(build)):
-            return "Voice.Claw Companion build \(build)"
+            return "VoiceClaw Companion build \(build)"
         case (.none, .none):
-            return "Voice.Claw Companion version unavailable"
+            return "VoiceClaw Companion version unavailable"
         }
     }
 

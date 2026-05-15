@@ -6,12 +6,12 @@ struct VoiceClawBridgeApp: App {
     @StateObject private var store = BridgeStore()
 
     var body: some Scene {
-        WindowGroup("VoiceClaw Bridge", id: "main") {
+        WindowGroup("VoiceClaw Companion", id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 920, minHeight: 660)
         }
         .commands {
-            CommandMenu("Bridge") {
+            CommandMenu("Companion") {
                 Button("Refresh Status") {
                     Task { await store.refreshStatus() }
                 }
@@ -30,7 +30,7 @@ struct VoiceClawBridgeApp: App {
             }
         }
 
-        MenuBarExtra("Voice.Claw", systemImage: "waveform.circle.fill") {
+        MenuBarExtra("VoiceClaw", systemImage: "waveform.circle.fill") {
             CompanionMenuBarView(store: store)
         }
         .menuBarExtraStyle(.menu)
@@ -52,7 +52,7 @@ private struct CompanionMenuBarView: View {
         Button {
             openMainWindow()
         } label: {
-            Label("Show Voice.Claw", systemImage: "macwindow")
+            Label("Show VoiceClaw Companion", systemImage: "macwindow")
         }
 
         Button {
@@ -90,7 +90,7 @@ private struct CompanionMenuBarView: View {
 
         Divider()
 
-        Button("Quit Voice.Claw") {
+        Button("Quit VoiceClaw Companion") {
             NSApp.terminate(nil)
         }
     }

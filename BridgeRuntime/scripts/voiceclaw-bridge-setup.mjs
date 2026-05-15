@@ -66,7 +66,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`VoiceClaw Bridge setup
+  console.log(`VoiceClaw Companion setup
 
 Usage:
   node scripts/voiceclaw-bridge-setup.mjs [options]
@@ -75,7 +75,7 @@ Options:
   --install-launch-agent     Install ~/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist
   --start                    Start or restart the launch agent after installing it
   --configure-tailscale      Run tailscale serve for the configured bridge port
-  --reset                    Stop Voice.Claw LaunchAgent and remove Voice.Claw bridge config
+  --reset                    Stop VoiceClaw's LaunchAgent and remove VoiceClaw companion config
   --reset-tailscale-port     With --reset, also remove the selected Tailscale Serve port only if it is safely identified as Voice.Claw
   --diagnose                 Print read-only local bridge and Tailscale Serve diagnostics
   --suggest-port             Print a fresh unused test port without changing system state
@@ -153,7 +153,7 @@ async function resolveTailscalePath() {
     if (resolved) return resolved;
   } catch {}
 
-  throw new Error('Tailscale CLI was not found. Install Tailscale, sign in, then reopen Voice.Claw Companion.');
+  throw new Error('Tailscale CLI was not found. Install Tailscale, sign in, then reopen VoiceClaw Companion.');
 }
 
 async function detectTailscaleDNSName() {
@@ -496,7 +496,7 @@ function buildPairingPayload(config) {
 }
 
 function printSummary(config, pairingPayload, actions) {
-  console.log('VoiceClaw Bridge setup ready.');
+  console.log('VoiceClaw Companion setup ready.');
   console.log(`Config: ${CONFIG_FILE}`);
   console.log(`LaunchAgent: ${LAUNCH_AGENT_FILE}`);
   console.log(`Bridge URL: ${config.tailscaleBaseURL || '(Tailscale DNS unavailable)'}`);
@@ -534,7 +534,7 @@ async function main() {
       console.log(JSON.stringify({ ok: true, reset: true, ...result }, null, 2));
     } else {
       const suffix = result.tailscaleReset?.removed ? ` Removed Tailscale Serve port ${resetPort}.` : ' Tailscale, OpenClaw, and Node.js were not modified.';
-      console.log(`Voice.Claw bridge state reset.${suffix}`);
+      console.log(`VoiceClaw companion state reset.${suffix}`);
     }
     return;
   }

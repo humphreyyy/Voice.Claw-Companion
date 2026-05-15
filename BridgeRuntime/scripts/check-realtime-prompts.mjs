@@ -164,3 +164,6 @@ assertContains('server/index.js', source, "name: 'iphone_analyze_selected_media'
 assertContains('server/index.js', source, "name: 'iphone_capture_photo_for_analysis'");
 assertContains('server/index.js', source, "name: 'iphone_analyze_clipboard_image'");
 assertContains('server/index.js', source, "name: 'iphone_open_whatsapp'");
+assertContains('server/index.js', source, 'function normalizeSidebandToolCallEvents');
+assertContains('server/index.js', source, "event.type !== 'response.done'");
+assertContains('server/index.js', source, 'functionCalls: toolEvents.length');

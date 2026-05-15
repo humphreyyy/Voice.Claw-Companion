@@ -2,10 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="VoiceClawBridge"
-DISPLAY_NAME="VoiceClaw Bridge"
+APP_NAME="VoiceClaw Companion"
+EXECUTABLE_NAME="VoiceClawBridge"
+DISPLAY_NAME="VoiceClaw Companion"
 BUNDLE_ID="ai.voiceclaw.bridge"
-VERSION="${VOICECLAW_BRIDGE_VERSION:-0.1.40}"
+VERSION="${VOICECLAW_BRIDGE_VERSION:-0.1.42}"
 BUILD_NUMBER="${VOICECLAW_BRIDGE_BUILD:-$(date -u +%Y%m%d%H%M)}"
 DIST_DIR="$ROOT_DIR/dist"
 RELEASE_DIR="$DIST_DIR/release"
@@ -15,8 +16,8 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 RUNTIME_DIR="$RESOURCES_DIR/BridgeRuntime"
 RUNTIME_SOURCE_DIR="$ROOT_DIR/BridgeRuntime"
-ZIP_PATH="$DIST_DIR/$APP_NAME-$VERSION-$BUILD_NUMBER.zip"
-DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION-$BUILD_NUMBER.dmg"
+ZIP_PATH="$DIST_DIR/VoiceClawCompanion-$VERSION-$BUILD_NUMBER.zip"
+DMG_PATH="$DIST_DIR/VoiceClawCompanion-$VERSION-$BUILD_NUMBER.dmg"
 SIGN_IDENTITY="${DEVELOPER_ID_APPLICATION:-Developer ID Application: Benjamin Badejo (6VFF5BZWJU)}"
 
 cd "$ROOT_DIR"
@@ -25,7 +26,7 @@ swift build -c release
 rm -rf "$RELEASE_DIR" "$ZIP_PATH" "$DMG_PATH"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$RUNTIME_DIR"
 
-cp "$ROOT_DIR/.build/release/$APP_NAME" "$MACOS_DIR/$APP_NAME"
+cp "$ROOT_DIR/.build/release/$EXECUTABLE_NAME" "$MACOS_DIR/$EXECUTABLE_NAME"
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -37,7 +38,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key>
   <string>$DISPLAY_NAME</string>
   <key>CFBundleExecutable</key>
-  <string>$APP_NAME</string>
+  <string>$EXECUTABLE_NAME</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleIconName</key>

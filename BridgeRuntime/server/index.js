@@ -120,9 +120,9 @@ function requireBridgeAuth(req, res) {
 
   res.writeHead(401, {
     'Content-Type': 'application/json',
-    'WWW-Authenticate': 'Bearer realm="VoiceClaw Bridge"',
+    'WWW-Authenticate': 'Bearer realm="VoiceClaw Companion"',
   });
-  res.end(JSON.stringify({ ok: false, error: 'VoiceClaw Bridge authorization required' }));
+  res.end(JSON.stringify({ ok: false, error: 'VoiceClaw Companion authorization required' }));
   return false;
 }
 
@@ -1348,6 +1348,21 @@ function normalizeSidebandToolCallEvent(event = {}) {
   return null;
 }
 
+function normalizeSidebandToolCallEvents(event = {}) {
+  const single = normalizeSidebandToolCallEvent(event);
+  if (single) return [single];
+  if (event.type !== 'response.done' || !Array.isArray(event.response?.output)) return [];
+  return event.response.output
+    .filter((item) => item?.type === 'function_call')
+    .map((item) => ({
+      ...event,
+      name: item.name,
+      call_id: item.call_id || item.id,
+      arguments: item.arguments || '{}',
+    }))
+    .filter((item) => item.name && item.call_id);
+}
+
 function activeResponseCollisionMessage(event = {}) {
   const message = event?.error?.message || event?.message || '';
   return String(message || '').toLowerCase().includes('already has an active response') ? message : '';
@@ -1366,10 +1381,14 @@ async function handleRealtimeSidebandEvent(ws, event, sessionToken) {
   }
 
   if (type === 'response.done' || type === 'response.cancelled' || type === 'response.failed') {
+    const toolEvents = normalizeSidebandToolCallEvents(event);
     clearSidebandResponseRetry(key);
     const responseId = state.activeResponseId;
     state.activeResponseId = null;
-    await appendRealtimeLog({ kind: 'sideband_response_done', sessionToken: key, responseId, pending: state.pendingResponseCreates.length, type });
+    await appendRealtimeLog({ kind: 'sideband_response_done', sessionToken: key, responseId, pending: state.pendingResponseCreates.length, type, functionCalls: toolEvents.length });
+    for (const toolEvent of toolEvents) {
+      await handleRealtimeSidebandToolCall(ws, toolEvent, key);
+    }
     flushSidebandResponseCreates(ws, key);
     return;
   }
@@ -1389,10 +1408,12 @@ async function handleRealtimeSidebandEvent(ws, event, sessionToken) {
     return;
   }
 
-  const toolEvent = normalizeSidebandToolCallEvent(event);
-  if (toolEvent) {
+  const toolEvents = normalizeSidebandToolCallEvents(event);
+  if (toolEvents.length) {
     state.activeResponseId = state.activeResponseId || event.response_id || event.response?.id || 'active';
-    await handleRealtimeSidebandToolCall(ws, toolEvent, key);
+    for (const toolEvent of toolEvents) {
+      await handleRealtimeSidebandToolCall(ws, toolEvent, key);
+    }
   }
 }
 
@@ -1627,7 +1648,7 @@ const httpServer = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
-        product: 'VoiceClaw Bridge',
+        product: 'VoiceClaw Companion',
         auth: bridgeAuthSummary(),
         wsPath: `${BASE_PATH}/ws` || '/ws',
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
