@@ -147,7 +147,7 @@ function openAIKeyForRealtimeRequest(req) {
 const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_status reads current iPhone and VoiceClaw app status, including app version, battery, thermal state, audio route, locale, timezone, selected GPT-Realtime-2 route, voice settings, and microphone mute state.
 - iphone_set_microphone_muted mutes or unmutes this live VoiceClaw microphone after an explicit request such as "mute me" or "unmute my mic." If muted, the app cannot hear voice until the user unmutes by tapping or another available input.
-- iphone_end_voice_session ends the current VoiceClaw live audio session after an explicit request such as "end this session," "hang up," or "stop listening." Do not use it for "stop OpenClaw" while OpenClaw is actively working; use stop_openclaw for that.
+- iphone_end_voice_session ends the current VoiceClaw live audio session after an explicit request such as "end this session," "hang up," or "stop listening." Do not use it to cancel unrelated Mac/OpenClaw work.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
 - iphone_open_app_settings opens the iOS Settings page for VoiceClaw when the user asks to change app permissions.
 - iphone_open_url opens a public http or https URL in the user's default browser only when the user asks to open a link.
@@ -341,7 +341,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_end_voice_session',
-    description: 'End the current VoiceClaw live audio session. Use only when the user explicitly asks VoiceClaw to end the session, hang up, disconnect, or stop listening. Do not use to cancel active OpenClaw work; use stop_openclaw for that.',
+    description: 'End the current VoiceClaw live audio session. Use only when the user explicitly asks VoiceClaw to end the session, hang up, disconnect, or stop listening. Do not use to cancel unrelated Mac/OpenClaw work.',
     parameters: {
       type: 'object',
       additionalProperties: false,
