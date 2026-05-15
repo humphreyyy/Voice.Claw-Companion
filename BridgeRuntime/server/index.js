@@ -145,6 +145,7 @@ function openAIKeyForRealtimeRequest(req) {
 }
 
 const IPHONE_TOOL_CAPABILITY_SUMMARY = `
+- wait_for_user keeps the session listening without a spoken reply when the latest audio is silence, background noise, TV/music, side conversation, speech not addressed to VoiceClaw, or likely echo of VoiceClaw's own previous speech.
 - iphone_status reads current iPhone and VoiceClaw app status, including app version, battery, thermal state, audio route, locale, timezone, selected GPT-Realtime-2 route, voice settings, and microphone mute state.
 - iphone_set_microphone_muted mutes or unmutes this live VoiceClaw microphone after an explicit request such as "mute me" or "unmute my mic." If muted, the app cannot hear voice until the user unmutes by tapping or another available input.
 - iphone_end_voice_session ends the current VoiceClaw live audio session after an explicit request such as "end this session," "hang up," or "stop listening." Do not use it to cancel unrelated Mac/OpenClaw work.
@@ -182,12 +183,14 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - Listen for the user's actual intent, not just keywords.
 - Decide the smallest capable surface: direct GPT-Realtime-2 answer, one iPhone-side tool, or one OpenClaw tool.
 - Act immediately when the needed tool and arguments are clear.
+- If the latest audio is silence, background noise, side conversation, TV/music, or likely your own previous speech echoing back, call wait_for_user and stay quiet.
 - If required information is missing, ask only for the next missing value.
 - After a tool result, speak the user-facing outcome, not JSON, transport details, or implementation mechanics.
 - If the user asks what you can do, answer from the active capability map only.
 
 # Available capability map
 - GPT-Realtime-2 direct voice conversation for fast back-and-forth, interruption, clarification, and spoken flow.
+- wait_for_user for silence, background audio, side conversations, speech not addressed to VoiceClaw, or likely echo of your own prior speech.
 - openclaw_turn for work that needs the user's OpenClaw runtime on their Mac or private/local computer capabilities.
 - steer_openclaw for follow-up instructions while OpenClaw is already working.
 - stop_openclaw to stop or cancel active OpenClaw work.
@@ -232,10 +235,12 @@ ${IPHONE_TOOL_CAPABILITY_SUMMARY}
 - After a successful tool action, give a brief useful completion note. Do not overexplain implementation details unless asked.
 - Explain if the user asked for an explanation, the tool failed, or there is a real blocker/choice.
 - Do not repeatedly call the same failed tool with the same arguments. Ask for a correction, offer one retry when a transient failure is plausible, or offer an alternate route.
+- Use only the tools explicitly provided in this session's tool list. Do not invent, assume, or simulate tools.
+- Do not respond conversationally after wait_for_user.
 
 # Unclear or low-confidence audio
-- If audio is missing, blank, likely environmental noise, or you are unsure what the user said, do not guess. Ask briefly: "Say that again?" or "I didn’t catch that."
-- If audio sounds like your own previous speech echoing back, do not treat it as an intentional user request.
+- If audio is missing, blank, environmental noise, a side conversation, TV/music, or likely your own previous speech echoing back, call wait_for_user and say nothing.
+- If the user is clearly addressing VoiceClaw but the words are partial or unintelligible, ask briefly: "Say that again?" or "I didn’t catch that."
 - Do not route unclear fragments like "you", "thank you", footsteps, keyboard noise, or background machine noise to OpenClaw.
 - Preserve explicit short commands when clear: stop, cancel, wait, yes, no, help, hey/OpenClaw wake phrases.
 
@@ -256,6 +261,7 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 - Available capabilities: direct GPT-Realtime-2 voice conversation and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard reading/copying.
 - Operating loop: answer directly first when possible; use exactly one iPhone-side tool when the user explicitly asks this iPhone to act; ask only for the next missing value when details are incomplete; after a tool result, speak the outcome rather than JSON or implementation mechanics.
 - Capability boundaries: direct GPT-Realtime-2 is the live conversation layer; iPhone-side tools are the device-action layer for explicit user-requested actions on this iPhone. Use direct speech before tools, this iPhone before any private-computer route, and clarification before guessing.
+- If audio is silence, background noise, side conversation, TV/music, speech not addressed to VoiceClaw, or likely echo of your own prior speech, call wait_for_user and do not respond conversationally.
 - User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar events, reminders, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
 - Use the matching iPhone-side tool when the user explicitly asks this iPhone to do one of those actions. Do not invent private app access.
 ${IPHONE_TOOL_CAPABILITY_SUMMARY}
@@ -274,6 +280,7 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 - Available capabilities: direct GPT-Realtime-2 voice conversation, gpt55_instant for richer text answers, and iPhone-side tools for explicit user-requested VoiceClaw tab navigation, app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar events, reminders, email/message drafts, share sheet, named Shortcuts, and clipboard reading/copying.
 - Operating loop: answer directly first for quick speech; use gpt55_instant only when it materially improves reasoning, drafting, planning, rewriting, or current public web answers; use exactly one iPhone-side tool when the user explicitly asks this iPhone to act.
 - Capability boundaries: direct GPT-Realtime-2 is the live conversation layer; GPT-5.5 Instant is the deeper text/public-web reasoning layer; iPhone-side tools are the device-action layer for explicit user-requested actions on this iPhone. Use direct speech before deeper model/tool work, this iPhone before any private-computer route, and clarification before guessing.
+- If audio is silence, background noise, side conversation, TV/music, speech not addressed to VoiceClaw, or likely echo of your own prior speech, call wait_for_user and do not respond conversationally.
 - User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar events, reminders, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
 - For substantive text reasoning, drafting, current public web questions, or answers that benefit from GPT-5.5 Instant, call gpt55_instant.
 - When calling gpt55_instant, pass the complete user request in text, include compact conversation context in context, and set web_search true only when current public information is useful.
@@ -350,6 +357,17 @@ const INSTANT_REALTIME_TOOLS = [
 ];
 
 const IPHONE_REALTIME_TOOLS = [
+  {
+    type: 'function',
+    name: 'wait_for_user',
+    description: "Call this when the latest audio does not need a spoken response, such as silence, background noise, TV or music, side conversation, speech not addressed to VoiceClaw, or likely echo of VoiceClaw's own previous speech. This keeps the session listening without speaking.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+      required: []
+    }
+  },
   {
     type: 'function',
     name: 'iphone_status',
@@ -984,7 +1002,7 @@ ${seed}`;
 
 function isIPhoneOwnedRealtimeTool(name = '') {
   const value = String(name || '');
-  return value.startsWith('iphone_') || value === 'gpt55_instant';
+  return value.startsWith('iphone_') || value === 'gpt55_instant' || value === 'wait_for_user';
 }
 
 async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {

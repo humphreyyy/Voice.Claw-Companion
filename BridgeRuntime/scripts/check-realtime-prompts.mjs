@@ -39,6 +39,8 @@ for (const needle of [
   'Active work controls are part of the OpenClaw route',
   'Tool precision and confirmation',
   'Do not repeatedly call the same failed tool',
+  'wait_for_user',
+  'Do not respond conversationally after wait_for_user',
   'steer_openclaw instead of starting a second OpenClaw turn',
   'bridge_status before starting another OpenClaw turn',
 ]) {
@@ -57,6 +59,7 @@ for (const [name, text] of [
   assertContains(name, text, 'Operating loop');
   assertContains(name, text, 'Capability boundaries');
   assertContains(name, text, 'iPhone-side tools are the device-action layer');
+  assertContains(name, text, 'wait_for_user');
   assertContains(name, text, 'iPhone-side tools');
   assertContains(name, text, 'clipboard reading/copying');
   assertContains(name, text, 'Do not repeatedly call the same failed tool');
