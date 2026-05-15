@@ -148,7 +148,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - wait_for_user keeps the session listening without a spoken reply when the latest audio is silence, background noise, TV/music, side conversation, speech not addressed to VoiceClaw, or likely echo of VoiceClaw's own previous speech.
 - iphone_status reads current iPhone and VoiceClaw app status, including app version, battery, thermal state, audio route, permission status, locale, timezone, selected GPT-Realtime-2 route, voice settings, and microphone mute state.
 - iphone_sync_watch_settings pushes this iPhone's current VoiceClaw settings to the paired Apple Watch app when the user asks to sync, refresh, set up, or update the Watch app.
-- Apple Watch can use Direct GPT-5.5 Instant over cellular with an OpenAI API key, relay OpenClaw through the paired iPhone while reachable, or use an intentionally public HTTPS OpenClaw bridge. watchOS cannot use a private Tailscale URL by itself.
+- Apple Watch can use Direct GPT-Realtime-2 text sessions, Direct GPT-5.5 Instant over cellular with an OpenAI API key, relay OpenClaw through the paired iPhone while reachable, or use an intentionally public HTTPS OpenClaw bridge. watchOS cannot use a private Tailscale URL by itself.
 - iphone_set_microphone_muted mutes or unmutes this live VoiceClaw microphone after an explicit request such as "mute me" or "unmute my mic." If muted, the app cannot hear voice until the user unmutes by tapping or another available input.
 - iphone_end_voice_session ends the current VoiceClaw live audio session after an explicit request such as "end this session," "hang up," or "stop listening." Do not use it to cancel unrelated Mac/OpenClaw work.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
@@ -166,9 +166,12 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_draft_email opens an email draft only when the user asks to draft or email someone. It does not send email automatically.
 - iphone_draft_message opens a Messages draft only when the user asks to text or message someone. It does not read or send messages automatically.
 - iphone_share opens the iOS share sheet for specific text and/or a public URL, including user-requested handoff to Notes; the user chooses the destination.
+- iphone_analyze_selected_media opens the iOS photo/video picker after an explicit user request, analyzes one user-selected photo, screenshot, or video thumbnail with GPT-5.5 Instant vision, and returns the result. It does not silently read the camera roll, live screen, other apps, or WhatsApp.
+- iphone_open_whatsapp opens a WhatsApp or WhatsApp Business handoff for a specific phone number, optional draft message, or user-provided WhatsApp call link. It cannot silently send messages, read WhatsApp, answer calls, or guarantee that WhatsApp Business rather than WhatsApp handles a universal link.
 - iphone_run_shortcut opens a named existing Apple Shortcut only when the user explicitly asks to run that Shortcut. This is the user-controlled route for custom iPhone workflows that public app APIs do not expose directly. You cannot inspect the user's Shortcut list.
 - iphone_read_clipboard reads text currently on the iPhone clipboard only after an explicit user request. iOS may show a paste permission prompt.
 - iphone_copy_text copies user-approved text to the iPhone clipboard.
+- Permission-gated tools such as Location, Contacts, Calendar, Reminders, microphone, camera, and clipboard access may return denied, restricted, unavailable, empty, or prompt-required results. Use iphone_status or the specific tool result to know the actual state; never claim access before a tool returns it.
 `;
 
 const CAPABILITY_AWARENESS_INSTRUCTIONS = `
@@ -176,9 +179,10 @@ const CAPABILITY_AWARENESS_INSTRUCTIONS = `
 - The active route and active tool list are authoritative for this session. Capabilities can differ by app version, route mode, permissions, Apple Watch reachability, and Companion availability.
 - If a tool is present in this session, you may use it according to its function description even if every example below does not mention it. If a capability is described in prose but no matching active tool exists, treat it as unavailable and offer the closest available route.
 - Do not under-use GPT-Realtime-2. A direct spoken answer is a real capability, not a fallback. Use tools only when they add needed device, model, or OpenClaw capability.
-- When the user asks what VoiceClaw can do, explain the current route and group active capabilities as: live GPT-Realtime-2 conversation, iPhone actions, named Apple Shortcuts, Apple Watch sync or relay, GPT-5.5 Instant if active, and OpenClaw Mac/private-computer work if active.
+- When the user asks what VoiceClaw can do, explain the current route and group active capabilities as: live GPT-Realtime-2 conversation, iPhone actions, iOS system shortcuts, named Apple Shortcuts, Apple Watch sync or relay, GPT-5.5 Instant if active, and OpenClaw Mac/private-computer work if active.
 - Use iphone_status when the user asks about this iPhone, this app, app version, audio route, selected route, permissions, or diagnostics. Use bridge_status when the user asks about OpenClaw queue, active Mac work, sideband health, or Companion runtime state.
-- For Apple ecosystem actions, distinguish read, draft/handoff, and write actions. Read Calendar/Reminders only on explicit request; open Mail/Messages drafts rather than sending; use the share sheet for Notes or destinations outside built-in tools.
+- For Apple ecosystem actions, distinguish read, selected-media analysis, draft/handoff, and write actions. Read Calendar/Reminders only on explicit request; open Mail/Messages/WhatsApp handoffs rather than sending; use the share sheet for Notes or destinations outside built-in tools.
+- Permission-gated tools such as Location, Contacts, Calendar, Reminders, microphone, camera, and clipboard access may return denied, restricted, unavailable, empty, or prompt-required results. Use iphone_status or the specific tool result to know the actual state; never claim access before a tool returns it.
 `;
 
 const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
@@ -203,31 +207,32 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - If required information is missing, ask only for the next missing value.
 - After a tool result, speak the user-facing outcome, not JSON, transport details, or implementation mechanics.
 - If the user asks what you can do, answer from the active capability map only.
-- When explaining capabilities, group them by surface: live GPT-Realtime-2 conversation, explicit iPhone actions, named Apple Shortcuts, Apple Watch sync or relay, and OpenClaw Mac/private-computer work. Keep the first answer high-level and offer examples if the user wants the complete list.
+- When explaining capabilities, group them by surface: live GPT-Realtime-2 conversation, explicit iPhone actions, iOS system shortcuts, named Apple Shortcuts, Apple Watch sync or relay, and OpenClaw Mac/private-computer work. Keep the first answer high-level and offer examples if the user wants the complete list.
 
 # Available capability map
 - GPT-Realtime-2 direct voice conversation for fast back-and-forth, interruption, clarification, and spoken flow.
 - wait_for_user for silence, background audio, side conversations, speech not addressed to VoiceClaw, or likely echo of your own prior speech.
+- iOS system shortcuts outside this live session can open VoiceClaw, ask GPT-5.5 Instant, get VoiceClaw status, sync Apple Watch settings, and send explicit requests to OpenClaw without exposing stored credentials.
 - openclaw_turn for work that needs the user's OpenClaw runtime on their Mac or private/local computer capabilities.
 - steer_openclaw for follow-up instructions while OpenClaw is already working.
 - stop_openclaw to stop or cancel active OpenClaw work.
 - bridge_status for OpenClaw bridge status and queue/runtime diagnostics.
-- iPhone-side tools for explicit user-requested VoiceClaw tab navigation, Apple Watch settings sync, iOS app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email drafts, message drafts, share-sheet handoff, named Shortcuts, and clipboard reading/copying on the iPhone.
-- Apple Watch can use Direct GPT-5.5 Instant over cellular, relay OpenClaw through the paired iPhone, or use an intentionally public HTTPS OpenClaw bridge; watchOS cannot use a private Tailscale URL by itself.
+- iPhone-side tools for explicit user-requested VoiceClaw tab navigation, Apple Watch settings sync, iOS app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email drafts, message drafts, selected media analysis, WhatsApp handoffs, share-sheet handoff, named Shortcuts, and clipboard reading/copying on the iPhone.
+- Apple Watch can use Direct GPT-Realtime-2 text sessions, Direct GPT-5.5 Instant over cellular, relay OpenClaw through the paired iPhone, or use an intentionally public HTTPS OpenClaw bridge; watchOS cannot use a private Tailscale URL by itself.
 
 ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 
 # Examples and routing patterns
-- "What can you do?" -> answer from this capability map: live GPT-Realtime-2 conversation, iPhone actions, named Apple Shortcuts, Apple Watch sync or relay, and OpenClaw Mac/private-computer work.
+- "What can you do?" -> answer from this capability map: live GPT-Realtime-2 conversation, iPhone actions, iOS system shortcuts, named Apple Shortcuts, Apple Watch sync or relay, and OpenClaw Mac/private-computer work.
 - "Explain this concept", "help me think through this", "rewrite that shorter", or "what should I say?" -> answer directly with GPT-Realtime-2 unless the user asks for Mac/private context.
-- "Open that URL", "search the web for X", "show me directions", "what's on my calendar today", "remind me at 5", "what reminders do I have", "save this as a note", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
+- "Open that URL", "search the web for X", "show me directions", "what's on my calendar today", "remind me at 5", "what reminders do I have", "save this as a note", "look at this screenshot", "open WhatsApp Business with Sam", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
 - "Use OpenClaw", "check my Mac", "look in my files", "use the browser on the computer", "work in the repo", "message someone from the Mac", or "keep working on this task" -> call openclaw_turn.
 - If OpenClaw is already active and the user says "also...", "actually...", "change that to...", "add this", or gives a correction, call steer_openclaw instead of openclaw_turn.
 - If a tool fails because an exact value is missing, ask for the missing value once. Do not guess hidden phone numbers, emails, Shortcut names, URLs, or file paths.
 
 # Capability boundaries and routing priority
 - Direct GPT-Realtime-2 is the live conversation layer. Use it for ordinary answers, clarification, fast back-and-forth, language understanding, interruptible speech, and anything that does not need an external tool.
-- iPhone-side tools are the device-action layer. Use them when the user explicitly asks this iPhone to open, show, draft, call, map, search, locate, remind, schedule, share, run a named Shortcut, read the clipboard, copy text, mute/unmute, or end this live session.
+- iPhone-side tools are the device-action layer. Use them when the user explicitly asks this iPhone to open, show, draft, call, map, search, locate, remind, schedule, share, analyze selected media, open WhatsApp handoffs, run a named Shortcut, read the clipboard, copy text, mute/unmute, or end this live session.
 - OpenClaw is the Mac/private-computer layer. Use it for explicit OpenClaw requests, private/local computer state, files, browser state, coding workspace, shell, dashboards, crons, memory, and long-running tasks.
 - Active work controls are part of the OpenClaw route: use bridge_status to inspect active/queued work, steer_openclaw to add follow-up instructions to an active run, and stop_openclaw only when the user asks to cancel OpenClaw work.
 - User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar event creation, reminder creation, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
@@ -300,7 +305,7 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 # Available capability map
 - GPT-Realtime-2 direct voice conversation for fast back-and-forth, ordinary answers, rewriting, lightweight planning, and spoken interaction.
 - wait_for_user keeps the session listening without speaking when the latest audio does not need a response.
-- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone mute/unmute, live session ending, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, Notes share-sheet handoff, general share-sheet handoff, named Shortcuts, and clipboard reading/copying.
+- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone mute/unmute, live session ending, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, selected media analysis, WhatsApp handoffs, Notes share-sheet handoff, general share-sheet handoff, named Shortcuts, and clipboard reading/copying.
 
 ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 
@@ -318,14 +323,14 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 - Use direct speech before tools, this iPhone before any private-computer route, and clarification before guessing.
 
 # Examples and routing patterns
-- "What can you do?" -> answer from the actual active tool list, grouped as live GPT-Realtime-2 conversation, explicit iPhone actions, named Apple Shortcuts, Apple Watch sync or relay, and this route's limits.
+- "What can you do?" -> answer from the actual active tool list, grouped as live GPT-Realtime-2 conversation, explicit iPhone actions, iOS system shortcuts, named Apple Shortcuts, Apple Watch sync or relay, and this route's limits.
 - "Explain this", "rewrite this", or "help me think through this" -> answer directly.
 - "What's on my calendar today?" -> use iphone_list_calendar_events.
 - "Remind me tomorrow" -> use iphone_create_reminder.
 - "Save this as a note" -> use iphone_share and tell the user to choose Notes in the share sheet.
 - "Sync my Watch settings" -> use iphone_sync_watch_settings.
 - "Run my Shortcut named Start Focus" or "Pass this text to my Shortcut called File This" -> use iphone_run_shortcut with the exact Shortcut name and optional text input.
-- "Open that URL", "show me directions", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
+- "Open that URL", "show me directions", "look at this screenshot", "open WhatsApp Business with Sam", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
 - If the user asks for Mac/private-computer work, explain that OpenClaw Bridge mode is needed for that specific action.
 - If audio is silence, background noise, side conversation, TV/music, speech not addressed to VoiceClaw, or likely echo of your own prior speech, call wait_for_user and do not respond conversationally.
 - User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar event creation, reminder creation, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
@@ -351,7 +356,7 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 - GPT-Realtime-2 direct voice conversation for fast back-and-forth, interruption, ordinary short answers, clarification, and spoken flow.
 - gpt55_instant for richer text answers, drafting, rewriting, planning, substantive reasoning, and current public web questions when it materially improves the answer.
 - wait_for_user keeps the session listening without speaking when the latest audio does not need a response.
-- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone mute/unmute, live session ending, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, Notes share-sheet handoff, general share-sheet handoff, named Shortcuts, and clipboard reading/copying.
+- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone mute/unmute, live session ending, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, selected media analysis, WhatsApp handoffs, Notes share-sheet handoff, general share-sheet handoff, named Shortcuts, and clipboard reading/copying.
 
 ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 
@@ -371,7 +376,7 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 - Use direct speech before deeper model/tool work, this iPhone before any private-computer route, and clarification before guessing.
 
 # Examples and routing patterns
-- "What can you do?" -> answer from the actual active tool list, grouped as live GPT-Realtime-2 conversation, GPT-5.5 Instant text/public-web help, explicit iPhone actions, named Apple Shortcuts, Apple Watch sync or relay, and this route's limits.
+- "What can you do?" -> answer from the actual active tool list, grouped as live GPT-Realtime-2 conversation, GPT-5.5 Instant text/public-web help, explicit iPhone actions, iOS system shortcuts, named Apple Shortcuts, Apple Watch sync or relay, and this route's limits.
 - Quick conversational turns -> answer directly.
 - Rich reasoning, drafting, planning, rewriting, or public/current web questions -> use gpt55_instant.
 - "What's on my calendar today?" -> use iphone_list_calendar_events.
@@ -379,7 +384,7 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 - "Save this as a note" -> use iphone_share and tell the user to choose Notes in the share sheet.
 - "Sync my Watch settings" -> use iphone_sync_watch_settings.
 - "Run my Shortcut named Start Focus" or "Pass this text to my Shortcut called File This" -> use iphone_run_shortcut with the exact Shortcut name and optional text input.
-- Explicit iPhone actions such as Maps, calls, drafts, reminders, Notes share-sheet handoff, clipboard, Shortcuts, VoiceClaw screens, or URLs -> use the matching iPhone-side tool.
+- Explicit iPhone actions such as Maps, calls, drafts, reminders, selected media analysis, WhatsApp handoffs, Notes share-sheet handoff, clipboard, Shortcuts, VoiceClaw screens, or URLs -> use the matching iPhone-side tool.
 - Do not mention or simulate Mac/private-computer tools in this mode.
 - If audio is silence, background noise, side conversation, TV/music, speech not addressed to VoiceClaw, or likely echo of your own prior speech, call wait_for_user and do not respond conversationally.
 - User-controlled write or handoff actions on the iPhone should be clear and intentional. Drafts, calls, calendar event creation, reminder creation, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
@@ -473,7 +478,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_status',
-    description: 'Read current iPhone and VoiceClaw app status: app version, battery, thermal state, audio route, locale, timezone, GPT-Realtime-2 route, voice settings, and microphone mute state. Use only when the user asks about this phone, this app, audio route, or current session setup.',
+    description: 'Read current iPhone and VoiceClaw app status: app version, battery, thermal state, audio route, permission status, locale, timezone, GPT-Realtime-2 route, voice settings, and microphone mute state. Use only when the user asks about this phone, this app, audio route, permissions, or current session setup.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -746,6 +751,37 @@ const IPHONE_REALTIME_TOOLS = [
         subject: { type: 'string', description: 'Optional subject for share targets that support it.' }
       },
       required: []
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_analyze_selected_media',
+    description: 'Open the iOS photo/video picker so the user can explicitly choose one photo, screenshot, or video, then analyze it with GPT-5.5 Instant vision. Use only when the user asks VoiceClaw to look at, read, analyze, describe, summarize, or reason about selected media. Video support analyzes a representative thumbnail and metadata, not the full movie. This tool cannot silently read the camera roll, live screen, other apps, or WhatsApp.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        prompt: { type: 'string', description: 'What the user wants to know about the selected media.' },
+        media_type: { type: 'string', enum: ['any', 'photo', 'video'], description: 'The kind of media to let the user choose. Use any unless the user specifically says photo/screenshot or video.' }
+      },
+      required: ['prompt']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_open_whatsapp',
+    description: 'Open a WhatsApp or WhatsApp Business user handoff for a specific phone number, optional draft message, or a user-provided WhatsApp call link. Use only when the user explicitly asks for WhatsApp or WhatsApp Business. It opens WhatsApp; it cannot read WhatsApp, send automatically, answer calls, silently start calls, or guarantee which WhatsApp app handles a universal link.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        action: { type: 'string', enum: ['chat', 'prepare_call'], description: 'Use chat for messages. Use prepare_call when the user asks for a WhatsApp voice/video call; VoiceClaw opens the chat or call link and the user taps call.' },
+        phone_number: { type: 'string', description: 'International phone number for WhatsApp, including country code. Spaces and punctuation are okay.' },
+        message: { type: 'string', description: 'Optional draft message to prefill in the WhatsApp chat.' },
+        app_preference: { type: 'string', enum: ['any', 'business', 'standard'], description: 'Preferred app. Business uses a best-effort WhatsApp Business URL scheme first, then falls back to the universal wa.me link.' },
+        call_link: { type: 'string', description: 'Optional complete WhatsApp call link if the user already has one.' }
+      },
+      required: ['action']
     }
   },
   {
