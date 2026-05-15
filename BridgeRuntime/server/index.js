@@ -148,7 +148,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - wait_for_user keeps the session listening without a spoken reply when the latest audio is silence, background noise, TV/music, side conversation, speech not addressed to VoiceClaw, or likely echo of VoiceClaw's own previous speech.
 - iphone_status reads current iPhone and VoiceClaw app status, including app version, battery, thermal state, audio route, permission status, locale, timezone, selected GPT-Realtime-2 route, voice settings, and microphone mute state.
 - iphone_sync_watch_settings pushes this iPhone's current VoiceClaw settings to the paired Apple Watch app when the user asks to sync, refresh, set up, or update the Watch app.
-- Apple Watch can use Direct GPT-Realtime-2 text sessions, Direct GPT-5.5 Instant over cellular with an OpenAI API key, relay OpenClaw through the paired iPhone while reachable, or use an intentionally public HTTPS OpenClaw bridge. watchOS cannot use a private Tailscale URL by itself.
+- Apple Watch can use Direct GPT-Realtime-2 audio requests, Direct GPT-5.5 Instant over cellular with an OpenAI API key, relay OpenClaw through the paired iPhone while reachable, or use an intentionally public HTTPS OpenClaw bridge. watchOS cannot use a private Tailscale URL by itself.
 - iphone_set_microphone_muted mutes or unmutes this live VoiceClaw microphone after an explicit request such as "mute me" or "unmute my mic." If muted, the app cannot hear voice until the user unmutes by tapping or another available input.
 - iphone_end_voice_session ends the current VoiceClaw live audio session after an explicit request such as "end this session," "hang up," or "stop listening." Do not use it to cancel unrelated Mac/OpenClaw work.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
@@ -218,7 +218,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - stop_openclaw to stop or cancel active OpenClaw work.
 - bridge_status for OpenClaw bridge status and queue/runtime diagnostics.
 - iPhone-side tools for explicit user-requested VoiceClaw tab navigation, Apple Watch settings sync, iOS app permission settings, microphone mute/unmute, live session ending, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email drafts, message drafts, selected media analysis, WhatsApp handoffs, share-sheet handoff, named Shortcuts, and clipboard reading/copying on the iPhone.
-- Apple Watch can use Direct GPT-Realtime-2 text sessions, Direct GPT-5.5 Instant over cellular, relay OpenClaw through the paired iPhone, or use an intentionally public HTTPS OpenClaw bridge; watchOS cannot use a private Tailscale URL by itself.
+- Apple Watch can use Direct GPT-Realtime-2 audio requests, Direct GPT-5.5 Instant over cellular, relay OpenClaw through the paired iPhone, or use an intentionally public HTTPS OpenClaw bridge; watchOS cannot use a private Tailscale URL by itself.
 
 ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 
