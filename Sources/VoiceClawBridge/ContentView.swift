@@ -401,6 +401,7 @@ private struct SetupPanel: View {
 
 private struct PairingPanel: View {
     @ObservedObject var store: BridgeStore
+    @State private var showingLargeQRCode = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -466,10 +467,24 @@ private struct PairingPanel: View {
             InfoCallout(symbol: "key.radiowaves.forward", title: "OpenAI Auth Status", bodyText: store.realtimeAuthStatusSummary)
 
             HStack(alignment: .top, spacing: 18) {
-                QRCodeView(value: store.pairingURL.isEmpty ? store.pairingJSON : store.pairingURL)
-                    .frame(width: 180, height: 180)
-                    .background(.white, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+                Button {
+                    showingLargeQRCode = true
+                } label: {
+                    VStack(spacing: 8) {
+                        QRCodeView(value: setupCodeValue)
+                            .frame(width: 180, height: 180)
+                            .background(.white, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+
+                        Label("Click to enlarge", systemImage: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(setupCodeValue.isEmpty)
+                .help("Open a larger QR code for scanning from iPhone.")
 
                 VStack(alignment: .leading, spacing: 12) {
                     Text(store.bridgeURL.isEmpty ? "Run setup to generate a Tailscale URL." : store.bridgeURL)
@@ -505,6 +520,49 @@ private struct PairingPanel: View {
             }
         }
         .panelStyle()
+        .sheet(isPresented: $showingLargeQRCode) {
+            LargeQRCodeSheet(value: setupCodeValue, bridgeURL: store.bridgeURL) {
+                showingLargeQRCode = false
+            }
+        }
+    }
+
+    private var setupCodeValue: String {
+        store.pairingURL.isEmpty ? store.pairingJSON : store.pairingURL
+    }
+}
+
+private struct LargeQRCodeSheet: View {
+    let value: String
+    let bridgeURL: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Scan Setup Code")
+                        .font(.title2.weight(.semibold))
+                    Text(bridgeURL.isEmpty ? "Open VoiceClaw Settings on iPhone and scan this code." : bridgeURL)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                Spacer()
+
+                Button("Done", action: dismiss)
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            QRCodeView(value: value)
+                .frame(width: 420, height: 420)
+                .background(.white, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary))
+                .shadow(color: .black.opacity(0.10), radius: 18, y: 8)
+        }
+        .padding(28)
+        .frame(minWidth: 520, minHeight: 560)
+        .background(.regularMaterial)
     }
 }
 

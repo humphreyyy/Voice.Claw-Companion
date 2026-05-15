@@ -3,6 +3,23 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.45</title>
+            <pubDate>Sat, 16 May 2026 02:11:59 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202605152310</sparkle:version>
+            <sparkle:shortVersionString>0.1.45</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.45</h2>
+<ul>
+  <li>Makes the Pair iPhone QR code clickable.</li>
+  <li>Opens a larger scan-friendly QR window with the current bridge URL.</li>
+  <li>Keeps the setup payload unchanged; this only improves scan ergonomics.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.45/VoiceClawCompanion-0.1.45-202605152310.dmg" length="2956655" type="application/octet-stream" sparkle:edSignature="qEQyxhbURUW7BWoiaqjpNQiMZPhuHQbZrgH8R8tF3fAOGZcClDJwBRqwgX//3wcMn2FDRcyy08QDPGVTmp6GCQ=="/>
+        </item>
+        <item>
             <title>0.1.44</title>
             <pubDate>Sat, 16 May 2026 02:08:10 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>

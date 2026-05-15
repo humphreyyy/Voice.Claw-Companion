@@ -48,13 +48,16 @@ if [[ -f "$ROOT_DIR/appcast.xml" ]]; then
 fi
 
 NOTES_HTML="$TMP_DIR/${DMG_NAME%.dmg}.html"
-cat > "$NOTES_HTML" <<HTML
+if [[ -n "${VOICECLAW_SPARKLE_RELEASE_NOTES_HTML:-}" ]]; then
+  printf '%s\n' "$VOICECLAW_SPARKLE_RELEASE_NOTES_HTML" > "$NOTES_HTML"
+else
+  cat > "$NOTES_HTML" <<HTML
 <h2>VoiceClaw Companion ${VERSION}</h2>
 <ul>
-  <li>Adds in-app Sparkle updates so users can install signed GitHub Release builds without manually downloading a DMG.</li>
-  <li>Adds automatic update checks, automatic signed update install controls, and menu bar status indicators when updates are manual or available.</li>
+  <li>Includes the latest VoiceClaw Companion improvements.</li>
 </ul>
 HTML
+fi
 
 DOWNLOAD_URL_PREFIX="${VOICECLAW_SPARKLE_DOWNLOAD_URL_PREFIX:-https://github.com/bdjben/Voice.Claw-Companion/releases/download/v${VERSION}/}"
 
