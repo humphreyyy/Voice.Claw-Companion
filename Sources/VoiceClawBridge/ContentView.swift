@@ -532,6 +532,7 @@ private struct StatusPanel: View {
 
             StatusRow(title: "Local Bridge", value: store.localBridgeSummary, symbol: "server.rack")
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
+            StatusRow(title: "Realtime Runtime", value: store.realtimeRuntimeSummary, symbol: "waveform.path.ecg")
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off")", symbol: "key.horizontal")
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")

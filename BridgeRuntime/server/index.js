@@ -783,8 +783,11 @@ const MIN_TURN_RMS = Number(process.env.VB_TURN_MIN_RMS || 90);
 const MIN_AUDIO_BYTES = Number(process.env.VB_MIN_AUDIO_BYTES || 1200);
 const REALTIME_SIDEBAND_ENABLED = !['0', 'false', 'off'].includes(String(process.env.REALTIME_SIDEBAND_ENABLED || '1').toLowerCase());
 const REALTIME_SIDEBAND_OPEN_TIMEOUT_MS = Number(process.env.REALTIME_SIDEBAND_OPEN_TIMEOUT_MS || 2500);
+const REALTIME_RESPONSE_CREATE_RETRY_MS = Number(process.env.REALTIME_RESPONSE_CREATE_RETRY_MS || 1700);
+const REALTIME_RESPONSE_CREATE_ACK_TIMEOUT_MS = Number(process.env.REALTIME_RESPONSE_CREATE_ACK_TIMEOUT_MS || 5000);
 const realtimeSidebands = new Map();
 const realtimeSidebandStates = new Map();
+const realtimeSidebandRetryTimers = new Map();
 const realtimePendingCounts = new Map();
 const realtimeCancelTombstones = new Map();
 const realtimeSessionConfigs = new Map();
@@ -998,6 +1001,11 @@ function realtimeSidebandStateFor(sessionToken) {
       activeResponseId: null,
       pendingResponseCreates: [],
       lastResponseCreate: null,
+      lastResponseCreateReason: '',
+      lastResponseCreateAt: null,
+      nextResponseRetryAt: null,
+      responseCreateAttempts: 0,
+      responseCreateCollisions: 0,
       handledCallIds: new Set(),
       lastToolCallId: '',
       lastError: '',
@@ -1012,11 +1020,44 @@ function realtimeSidebandStateFor(sessionToken) {
 
 function resetRealtimeSidebandState(sessionToken) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
+  clearSidebandResponseRetry(key);
   realtimeSidebandStates.delete(key);
+}
+
+function clearSidebandResponseRetry(sessionToken) {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const timer = realtimeSidebandRetryTimers.get(key);
+  if (timer) clearTimeout(timer);
+  realtimeSidebandRetryTimers.delete(key);
+  const state = realtimeSidebandStates.get(key);
+  if (state) state.nextResponseRetryAt = null;
+}
+
+function scheduleSidebandResponseRetry(ws, sessionToken, reason = 'retry', delayMs = REALTIME_RESPONSE_CREATE_RETRY_MS) {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const state = realtimeSidebandStateFor(key);
+  clearSidebandResponseRetry(key);
+  state.nextResponseRetryAt = new Date(Date.now() + delayMs).toISOString();
+  const timer = setTimeout(() => {
+    realtimeSidebandRetryTimers.delete(key);
+    const latest = realtimeSidebandStateFor(key);
+    latest.nextResponseRetryAt = null;
+    const currentWs = realtimeSidebands.get(key);
+    if (currentWs !== ws || ws?.readyState !== WebSocket.OPEN) return;
+    if (latest.activeResponseId === 'requested' || latest.activeResponseId === 'collision-wait') {
+      if (latest.lastResponseCreate) queueSidebandResponseCreate(ws, key, latest.lastResponseCreate, `${reason}-retry`);
+      latest.activeResponseId = null;
+    }
+    appendRealtimeLog({ kind: 'sideband_response_create_retry', sessionToken: key, reason, pending: latest.pendingResponseCreates.length });
+    flushSidebandResponseCreates(ws, key);
+  }, delayMs);
+  realtimeSidebandRetryTimers.set(key, timer);
+  appendRealtimeLog({ kind: 'sideband_response_create_retry_scheduled', sessionToken: key, reason, delayMs, activeResponseId: state.activeResponseId, pending: state.pendingResponseCreates.length });
 }
 
 function closeRealtimeSideband(sessionToken, reason = 'client disconnect', { clearSession = true, clearQueue = true } = {}) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
+  clearSidebandResponseRetry(key);
   const ws = realtimeSidebands.get(key);
   if (ws) {
     try { ws.close(1000, reason); } catch {}
@@ -1053,6 +1094,11 @@ function bridgeStatusSnapshot(sessionToken = '') {
       lastCloseCode: sidebandDiagnostics.lastCloseCode,
       lastCloseReason: sidebandDiagnostics.lastCloseReason,
       connectedAt: sidebandDiagnostics.connectedAt,
+      responseCreateAttempts: sidebandDiagnostics.responseCreateAttempts,
+      responseCreateCollisions: sidebandDiagnostics.responseCreateCollisions,
+      lastResponseCreateReason: sidebandDiagnostics.lastResponseCreateReason,
+      lastResponseCreateAt: sidebandDiagnostics.lastResponseCreateAt,
+      nextResponseRetryAt: sidebandDiagnostics.nextResponseRetryAt,
     } : null,
     sessionConfig,
     lastResult: latestRealtimeResult(key),
@@ -1091,12 +1137,18 @@ function requestSidebandResponseCreate(ws, sessionToken, response = {}, reason =
   }
 
   state.lastResponseCreate = event;
+  state.lastResponseCreateReason = reason;
+  state.lastResponseCreateAt = new Date().toISOString();
+  state.responseCreateAttempts += 1;
   state.activeResponseId = 'requested';
   const sent = sendSidebandEvent(ws, event);
-  appendRealtimeLog({ kind: sent ? 'sideband_response_create_sent' : 'sideband_response_create_send_failed', sessionToken: key, reason, pending: state.pendingResponseCreates.length });
+  appendRealtimeLog({ kind: sent ? 'sideband_response_create_sent' : 'sideband_response_create_send_failed', sessionToken: key, reason, attempts: state.responseCreateAttempts, pending: state.pendingResponseCreates.length });
   if (!sent) {
     state.activeResponseId = null;
+    clearSidebandResponseRetry(key);
     queueSidebandResponseCreate(ws, key, event, 'send-failed');
+  } else {
+    scheduleSidebandResponseRetry(ws, key, 'ack-timeout', REALTIME_RESPONSE_CREATE_ACK_TIMEOUT_MS);
   }
   return sent;
 }
@@ -1107,12 +1159,18 @@ function flushSidebandResponseCreates(ws, sessionToken) {
   if (state.activeResponseId || ws?.readyState !== WebSocket.OPEN || !state.pendingResponseCreates.length) return false;
   const event = state.pendingResponseCreates.shift();
   state.lastResponseCreate = event;
+  state.lastResponseCreateReason = 'queued';
+  state.lastResponseCreateAt = new Date().toISOString();
+  state.responseCreateAttempts += 1;
   state.activeResponseId = 'requested';
   const sent = sendSidebandEvent(ws, event);
-  appendRealtimeLog({ kind: sent ? 'sideband_response_create_flushed' : 'sideband_response_create_flush_failed', sessionToken: key, pending: state.pendingResponseCreates.length });
+  appendRealtimeLog({ kind: sent ? 'sideband_response_create_flushed' : 'sideband_response_create_flush_failed', sessionToken: key, attempts: state.responseCreateAttempts, pending: state.pendingResponseCreates.length });
   if (!sent) {
     state.activeResponseId = null;
+    clearSidebandResponseRetry(key);
     state.pendingResponseCreates.unshift(event);
+  } else {
+    scheduleSidebandResponseRetry(ws, key, 'ack-timeout', REALTIME_RESPONSE_CREATE_ACK_TIMEOUT_MS);
   }
   return sent;
 }
@@ -1221,12 +1279,14 @@ async function handleRealtimeSidebandEvent(ws, event, sessionToken) {
   const type = event?.type || '';
 
   if (type === 'response.created') {
+    clearSidebandResponseRetry(key);
     state.activeResponseId = event.response?.id || event.response_id || event.id || 'active';
     await appendRealtimeLog({ kind: 'sideband_response_active', sessionToken: key, responseId: state.activeResponseId });
     return;
   }
 
   if (type === 'response.done' || type === 'response.cancelled' || type === 'response.failed') {
+    clearSidebandResponseRetry(key);
     const responseId = state.activeResponseId;
     state.activeResponseId = null;
     await appendRealtimeLog({ kind: 'sideband_response_done', sessionToken: key, responseId, pending: state.pendingResponseCreates.length, type });
@@ -1238,9 +1298,11 @@ async function handleRealtimeSidebandEvent(ws, event, sessionToken) {
     const collision = activeResponseCollisionMessage(event);
     state.lastError = event?.error?.message || event?.message || JSON.stringify(event).slice(0, 500);
     if (collision) {
+      state.responseCreateCollisions += 1;
       if (state.lastResponseCreate) queueSidebandResponseCreate(ws, key, state.lastResponseCreate, 'active-response-retry');
-      state.activeResponseId = state.activeResponseId || 'active';
-      await appendRealtimeLog({ kind: 'sideband_active_response_collision', sessionToken: key, pending: state.pendingResponseCreates.length });
+      state.activeResponseId = 'collision-wait';
+      scheduleSidebandResponseRetry(ws, key, 'active-response-collision', REALTIME_RESPONSE_CREATE_RETRY_MS);
+      await appendRealtimeLog({ kind: 'sideband_active_response_collision', sessionToken: key, collisions: state.responseCreateCollisions, pending: state.pendingResponseCreates.length });
       return;
     }
     await appendRealtimeLog({ kind: 'sideband_error_event', sessionToken: key, error: state.lastError });

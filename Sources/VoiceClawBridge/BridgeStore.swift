@@ -75,6 +75,7 @@ final class BridgeStore: ObservableObject {
     @Published var bridgeURL: String = ""
     @Published var tailscaleSummary: String = "Not checked"
     @Published var localBridgeSummary: String = "Not checked"
+    @Published var realtimeRuntimeSummary: String = "Realtime runtime not checked."
     @Published var pairingJSON: String = ""
     @Published var pairingPreview: String = ""
     @Published var pairingURL: String = ""
@@ -498,6 +499,7 @@ final class BridgeStore: ObservableObject {
             tailscaleSummary = diagnostics.tailscale.summary
             setupAdvice = diagnostics.suggestedAction
             canResetTailscaleMapping = diagnostics.tailscale.canClearSafely ?? false
+            await refreshRealtimeRuntimeStatus()
 
             guard !status.isWorking else { return }
             if diagnostics.local.state == "running", diagnostics.tailscale.state == "voiceclaw_mapping" {
@@ -512,11 +514,57 @@ final class BridgeStore: ObservableObject {
         } catch {
             localBridgeSummary = "Diagnostics could not run."
             tailscaleSummary = Self.userFacingSetupError(error)
+            realtimeRuntimeSummary = "Realtime runtime status could not be read because bridge diagnostics failed."
             setupAdvice = "Install Node.js and Tailscale if needed, then click Install and Start."
             canResetTailscaleMapping = false
             if !status.isWorking {
                 status = .warning("Diagnostics Need Attention")
             }
+        }
+    }
+
+    private func refreshRealtimeRuntimeStatus() async {
+        guard let portValue = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let url = URL(string: "http://127.0.0.1:\(portValue)/realtime/status")
+        else {
+            realtimeRuntimeSummary = "Choose a valid bridge port to read Realtime runtime status."
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        applyBridgeAuthHeaders(to: &request)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                realtimeRuntimeSummary = "Realtime runtime endpoint did not return a readable status."
+                return
+            }
+
+            realtimeRuntimeSummary = Self.realtimeRuntimeSummary(from: object)
+        } catch {
+            realtimeRuntimeSummary = "Realtime runtime is not reachable on the local bridge yet."
+        }
+    }
+
+    private func applyBridgeAuthHeaders(to request: inout URLRequest) {
+        let configURL = URL(fileURLWithPath: "\(NSHomeDirectory())/.voiceclaw/bridge.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        if let token = object["gatewayToken"] as? String,
+           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        if let password = object["gatewayPassword"] as? String,
+           !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            request.setValue(password, forHTTPHeaderField: "X-OpenClaw-Gateway-Password")
         }
     }
 
@@ -630,6 +678,41 @@ final class BridgeStore: ObservableObject {
         }
 
         return .orderedSame
+    }
+
+    private static func realtimeRuntimeSummary(from object: [String: Any]) -> String {
+        let active = object["active"] as? Bool ?? false
+        let pending = integerText(object["realtimePending"]) ?? "0"
+        let maxPending = integerText(object["maxRealtimePending"]) ?? "?"
+        let sidebandEnabled = object["sidebandEnabled"] as? Bool ?? false
+        let sideband = (object["sideband"] as? String)?.capitalized ?? "Unknown"
+        let sessionConfig = object["sessionConfig"] as? [String: Any]
+        let sidebandDiagnostics = object["sidebandDiagnostics"] as? [String: Any]
+        let attempts = integerText(sidebandDiagnostics?["responseCreateAttempts"]) ?? "0"
+        let collisions = integerText(sidebandDiagnostics?["responseCreateCollisions"]) ?? "0"
+        let activeResponse = sidebandDiagnostics?["activeResponseId"] as? String
+        let queuedResponses = integerText(sidebandDiagnostics?["pendingResponseCreates"]) ?? "0"
+        let auth = sessionConfig?["authSource"] as? String ?? "not connected"
+
+        if sidebandEnabled {
+            return "Sideband \(sideband), auth \(auth), OpenClaw active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), replies active \(shortID(activeResponse) ?? "none") with \(queuedResponses) queued, \(attempts) attempts, \(collisions) collisions."
+        }
+
+        return "Sideband disabled, auth \(auth), OpenClaw active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), iPhone fallback handles OpenClaw tools."
+    }
+
+    private static func integerText(_ value: Any?) -> String? {
+        if let int = value as? Int { return "\(int)" }
+        if let double = value as? Double { return "\(Int(double))" }
+        if let string = value as? String, !string.isEmpty { return string }
+        return nil
+    }
+
+    private static func shortID(_ value: String?) -> String? {
+        guard let value,
+              !value.isEmpty
+        else { return nil }
+        return value.count > 12 ? "\(value.prefix(6))...\(value.suffix(4))" : value
     }
 
     private static func pairingPayload(from config: [String: Any]) -> [String: Any] {
