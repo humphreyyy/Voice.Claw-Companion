@@ -833,14 +833,26 @@ private struct DiagnosticsVersionFooter: View {
 
 private struct BridgeLogo: View {
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 20)
-                .fill(.linearGradient(colors: [.cyan, .indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-            Image(systemName: "waveform.path.ecg")
-                .font(.system(size: 42, weight: .semibold))
-                .foregroundStyle(.white)
-                .shadow(radius: 12)
+        if let icon = Self.appIcon {
+            Image(nsImage: icon)
+                .resizable()
+                .scaledToFit()
+                .shadow(color: .black.opacity(0.16), radius: 10, y: 5)
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(.linearGradient(colors: [.cyan, .indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                Image(systemName: "waveform.path.ecg")
+                    .font(.system(size: 42, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .shadow(radius: 12)
+            }
         }
+    }
+
+    private static var appIcon: NSImage? {
+        NSImage(named: "AppIcon")
+            ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns").flatMap(NSImage.init(contentsOf:))
     }
 }
 
