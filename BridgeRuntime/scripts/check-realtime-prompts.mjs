@@ -33,6 +33,7 @@ const instant = extractTemplate('REALTIME_INSTANT_INSTRUCTIONS');
 
 for (const needle of [
   'Operating loop',
+  'Examples and routing patterns',
   'Capability boundaries and routing priority',
   'Direct GPT-Realtime-2 is the live conversation layer',
   'iPhone-side tools are the device-action layer',
@@ -57,6 +58,7 @@ for (const [name, text] of [
   ['REALTIME_INSTANT_INSTRUCTIONS', instant],
 ]) {
   assertContains(name, text, 'Operating loop');
+  assertContains(name, text, 'Examples and routing patterns');
   assertContains(name, text, 'Capability boundaries');
   assertContains(name, text, 'iPhone-side tools are the device-action layer');
   assertContains(name, text, 'wait_for_user');

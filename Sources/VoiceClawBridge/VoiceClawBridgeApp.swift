@@ -78,8 +78,10 @@ private struct CompanionMenuBarView: View {
             Button {
                 store.openLatestDMG()
             } label: {
-                Label("Download Update DMG", systemImage: "arrow.down.circle.fill")
+                Label("Download \(store.latestReleaseTag.isEmpty ? "Update" : store.latestReleaseTag) DMG", systemImage: "arrow.down.circle.fill")
             }
+        } else {
+            Label("Updates \(store.automaticUpdateChecksEnabled ? "check automatically" : "manual only")", systemImage: "checkmark.seal")
         }
 
         Divider()

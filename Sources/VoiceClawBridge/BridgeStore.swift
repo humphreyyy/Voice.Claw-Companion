@@ -33,6 +33,7 @@ final class BridgeStore: ObservableObject {
         static let includeOpenAIAPIKeyInPairing = "voiceclaw.includeOpenAIAPIKeyInPairing"
         static let realtimeAuthMode = "voiceclaw.realtimeAuthMode"
         static let realtimeAuthFallbackToAPIKey = "voiceclaw.realtimeAuthFallbackToAPIKey"
+        static let automaticUpdateChecksEnabled = "voiceclaw.automaticUpdateChecksEnabled"
     }
 
     @Published var port: String = "3191"
@@ -77,12 +78,22 @@ final class BridgeStore: ObservableObject {
     @Published var updateSummary: String = "Updates have not been checked."
     @Published var updateAvailable: Bool = false
     @Published var isCheckingForUpdates: Bool = false
+    @Published var automaticUpdateChecksEnabled: Bool = true {
+        didSet {
+            UserDefaults.standard.set(automaticUpdateChecksEnabled, forKey: DefaultsKeys.automaticUpdateChecksEnabled)
+            configureAutomaticUpdateChecks()
+        }
+    }
+    @Published var lastUpdateCheckDate: Date?
+    @Published var latestReleaseTag: String = ""
     @Published var latestReleaseURL: URL? = URL(string: "https://github.com/bdjben/Voice.Claw-Companion/releases/latest")
     @Published var latestDMGURL: URL?
     @Published var latestDMGName: String = ""
 
     private let runner = ProcessRunner()
     private lazy var projectRoot: URL = Self.resolveProjectRoot()
+    private var automaticUpdateTask: Task<Void, Never>?
+    private static let automaticUpdateIntervalNanoseconds: UInt64 = 6 * 60 * 60 * 1_000_000_000
 
     enum BridgeStatus: Equatable {
         case idle
@@ -124,10 +135,14 @@ final class BridgeStore: ObservableObject {
         if UserDefaults.standard.object(forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey) != nil {
             realtimeAuthFallbackToAPIKey = UserDefaults.standard.bool(forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey)
         }
+        if UserDefaults.standard.object(forKey: DefaultsKeys.automaticUpdateChecksEnabled) != nil {
+            automaticUpdateChecksEnabled = UserDefaults.standard.bool(forKey: DefaultsKeys.automaticUpdateChecksEnabled)
+        }
         Task {
             await loadSavedBridgeConfig()
             await refreshStatus()
             await checkForUpdates(manual: false)
+            configureAutomaticUpdateChecks()
         }
     }
 
@@ -240,6 +255,7 @@ final class BridgeStore: ObservableObject {
         guard !isCheckingForUpdates else { return }
 
         isCheckingForUpdates = true
+        lastUpdateCheckDate = Date()
         if manual {
             updateSummary = "Checking GitHub Releases for a notarized Voice.Claw Companion update..."
         }
@@ -258,6 +274,7 @@ final class BridgeStore: ObservableObject {
             }
 
             let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+            latestReleaseTag = release.tagName
             latestReleaseURL = release.htmlURL
             let preferredAsset = release.preferredDMGAsset
             latestDMGName = preferredAsset?.name ?? ""
@@ -287,7 +304,7 @@ final class BridgeStore: ObservableObject {
 
             if Self.compareVersions(latestVersion, currentVersion) == .orderedDescending {
                 updateAvailable = true
-                updateSummary = "Update \(release.tagName) is available. Download the notarized DMG: \(latestDMGName)."
+                updateSummary = "Update \(release.tagName) is available. Download the notarized DMG: \(latestDMGName). Automatic checks only read GitHub Releases; they do not change this Mac."
             } else {
                 updateAvailable = false
                 updateSummary = "Voice.Claw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName)."
@@ -295,6 +312,21 @@ final class BridgeStore: ObservableObject {
         } catch {
             updateAvailable = false
             updateSummary = "Could not check GitHub Releases: \(error.localizedDescription)"
+        }
+    }
+
+    private func configureAutomaticUpdateChecks() {
+        automaticUpdateTask?.cancel()
+        automaticUpdateTask = nil
+
+        guard automaticUpdateChecksEnabled else { return }
+
+        automaticUpdateTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.automaticUpdateIntervalNanoseconds)
+                guard !Task.isCancelled else { break }
+                await self?.checkForUpdates(manual: false)
+            }
         }
     }
 

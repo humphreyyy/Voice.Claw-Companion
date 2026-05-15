@@ -522,6 +522,11 @@ private struct StatusPanel: View {
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off")", symbol: "key.horizontal")
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
+            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. Voice.Claw reads GitHub Releases every few hours and offers only a notarized DMG; it does not install or mutate the Mac automatically." : "Automatic checks are off. Use Check Updates when you want to compare against the latest notarized GitHub Release.", symbol: "clock.arrow.circlepath")
+
+            if let lastUpdateCheckDate = store.lastUpdateCheckDate {
+                StatusRow(title: "Updates Checked", value: lastUpdateCheckDate.formatted(date: .abbreviated, time: .standard), symbol: "calendar.badge.clock")
+            }
 
             if let lastRefreshDate = store.lastRefreshDate {
                 StatusRow(title: "Last Checked", value: lastRefreshDate.formatted(date: .abbreviated, time: .standard), symbol: "clock")
@@ -586,6 +591,11 @@ private struct StatusPanel: View {
                         .buttonStyle(.bordered)
                     }
                 }
+
+                Toggle("Automatically check GitHub Releases for notarized DMG updates", isOn: $store.automaticUpdateChecksEnabled)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             DiagnosticsVersionFooter()
