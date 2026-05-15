@@ -591,11 +591,12 @@ private struct StatusPanel: View {
 
                     if store.updateAvailable {
                         Button {
-                            store.openLatestDMG()
+                            Task { await store.downloadLatestDMG() }
                         } label: {
-                            Label("Download DMG", systemImage: "arrow.down.circle.fill")
+                            Label(store.isDownloadingUpdate ? "Downloading" : "Download and Open DMG", systemImage: "arrow.down.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(store.isDownloadingUpdate)
 
                         Button {
                             store.openLatestRelease()

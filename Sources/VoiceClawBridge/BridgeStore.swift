@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import Security
 
@@ -86,6 +87,7 @@ final class BridgeStore: ObservableObject {
     @Published var updateSummary: String = "Updates have not been checked."
     @Published var updateAvailable: Bool = false
     @Published var isCheckingForUpdates: Bool = false
+    @Published var isDownloadingUpdate: Bool = false
     @Published var automaticUpdateChecksEnabled: Bool = true {
         didSet {
             UserDefaults.standard.set(automaticUpdateChecksEnabled, forKey: DefaultsKeys.automaticUpdateChecksEnabled)
@@ -97,6 +99,7 @@ final class BridgeStore: ObservableObject {
     @Published var latestReleaseURL: URL? = URL(string: "https://github.com/bdjben/Voice.Claw-Companion/releases/latest")
     @Published var latestDMGURL: URL?
     @Published var latestDMGName: String = ""
+    @Published var latestDMGDigest: String = ""
 
     private let runner = ProcessRunner()
     private lazy var projectRoot: URL = Self.resolveProjectRoot()
@@ -260,6 +263,59 @@ final class BridgeStore: ObservableObject {
         }
     }
 
+    func downloadLatestDMG() async {
+        guard !isDownloadingUpdate else { return }
+        guard let latestDMGURL else {
+            updateSummary = "No notarized DMG URL is available yet. Check updates first."
+            openLatestRelease()
+            return
+        }
+
+        isDownloadingUpdate = true
+        updateSummary = "Downloading notarized Voice.Claw Companion DMG..."
+        defer { isDownloadingUpdate = false }
+
+        do {
+            let (temporaryURL, response) = try await URLSession.shared.download(from: latestDMGURL)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode)
+            else {
+                throw BridgeProcessError(message: "GitHub did not return the DMG download.")
+            }
+
+            let fileName = latestDMGName.isEmpty ? "VoiceClawBridge-\(latestReleaseTag.isEmpty ? "latest" : latestReleaseTag).dmg" : latestDMGName
+            let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: "\(NSHomeDirectory())/Downloads", isDirectory: true)
+            let destination = downloads.appendingPathComponent(fileName, isDirectory: false)
+            let expectedDigest = Self.normalizedSHA256Digest(latestDMGDigest)
+
+            if let expectedDigest {
+                let data = try Data(contentsOf: temporaryURL)
+                let actualDigest = Self.sha256Hex(data)
+                guard actualDigest == expectedDigest else {
+                    throw BridgeProcessError(message: "Downloaded DMG checksum did not match the GitHub release digest.")
+                }
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try data.write(to: destination, options: [.atomic])
+                lastLog = "Downloaded \(fileName) to Downloads and verified SHA-256."
+            } else {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.moveItem(at: temporaryURL, to: destination)
+                lastLog = "Downloaded \(fileName) to Downloads. No release digest was available to verify."
+            }
+
+            updateSummary = "Downloaded \(fileName) to Downloads and opened it. Drag VoiceClaw Bridge to Applications to update."
+            NSWorkspace.shared.open(destination)
+        } catch {
+            updateSummary = "Could not download the update: \(error.localizedDescription)"
+            lastLog = updateSummary
+        }
+    }
+
     func checkForUpdates(manual: Bool = true) async {
         guard !isCheckingForUpdates else { return }
 
@@ -288,6 +344,7 @@ final class BridgeStore: ObservableObject {
             let preferredAsset = release.preferredDMGAsset
             latestDMGName = preferredAsset?.name ?? ""
             latestDMGURL = preferredAsset?.browserDownloadURL
+            latestDMGDigest = preferredAsset?.digest ?? ""
 
             guard let latestVersion = Self.normalizedVersion(release.tagName),
                   !latestVersion.isEmpty
@@ -680,6 +737,20 @@ final class BridgeStore: ObservableObject {
         return .orderedSame
     }
 
+    private static func normalizedSHA256Digest(_ digest: String) -> String? {
+        let cleaned = digest.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard cleaned.hasPrefix("sha256:") else { return nil }
+        let value = String(cleaned.dropFirst("sha256:".count))
+        guard value.count == 64,
+              value.allSatisfy({ $0.isHexDigit })
+        else { return nil }
+        return value
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func realtimeRuntimeSummary(from object: [String: Any]) -> String {
         let active = object["active"] as? Bool ?? false
         let pending = integerText(object["realtimePending"]) ?? "0"
@@ -782,10 +853,12 @@ private struct GitHubRelease: Decodable {
     struct Asset: Decodable {
         let name: String
         let browserDownloadURL: URL?
+        let digest: String?
 
         enum CodingKeys: String, CodingKey {
             case name
             case browserDownloadURL = "browser_download_url"
+            case digest
         }
     }
 }
