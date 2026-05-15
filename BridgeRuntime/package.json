@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "check": "node --check server/index.js && node --check server/asr.js && node --check server/tts.js && node --check server/dialogue.js && node --check server/realtime-auth.js && node --check scripts/voiceclaw-bridge-setup.mjs"
+    "check": "node --check server/index.js && node --check server/asr.js && node --check server/tts.js && node --check server/dialogue.js && node --check server/realtime-auth.js && node --check scripts/voiceclaw-bridge-setup.mjs && node scripts/check-realtime-prompts.mjs"
   },
   "dependencies": {
     "ws": "^8.19.0"
