@@ -84,6 +84,7 @@ const REALTIME_VAD_PREFIX_PADDING_MS = Number(process.env.REALTIME_VAD_PREFIX_PA
 const REALTIME_VAD_SILENCE_DURATION_MS = Number(process.env.REALTIME_VAD_SILENCE_DURATION_MS || 330);
 const VOICECLAW_BRIDGE_TOKEN = (process.env.VOICECLAW_BRIDGE_TOKEN || process.env.OPENCLAW_GATEWAY_TOKEN || '').trim();
 const VOICECLAW_BRIDGE_PASSWORD = (process.env.VOICECLAW_BRIDGE_PASSWORD || process.env.OPENCLAW_GATEWAY_PASSWORD || '').trim();
+const watchRealtimeJobs = new Map();
 
 function timingSafeStringEqual(left, right) {
   const leftBuffer = Buffer.from(String(left || ''), 'utf8');
@@ -1876,6 +1877,46 @@ async function runWatchRealtimeTurn({ req, payload }) {
   };
 }
 
+function cleanupWatchRealtimeJobs() {
+  const oldest = Date.now() - Number(process.env.WATCH_REALTIME_JOB_RETENTION_MS || 10 * 60 * 1000);
+  for (const [jobID, job] of watchRealtimeJobs.entries()) {
+    if ((job.updatedAt || job.createdAt || 0) < oldest) watchRealtimeJobs.delete(jobID);
+  }
+}
+
+function startWatchRealtimeJob({ req, payload }) {
+  cleanupWatchRealtimeJobs();
+  const jobID = `watch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+  const reqForJob = {
+    method: 'POST',
+    url: `${BASE_PATH}/realtime/watch-turn/start`,
+    headers: { ...req.headers },
+  };
+  const job = {
+    id: jobID,
+    status: 'running',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    result: null,
+    error: '',
+  };
+  watchRealtimeJobs.set(jobID, job);
+  (async () => {
+    try {
+      const result = await runWatchRealtimeTurn({ req: reqForJob, payload });
+      job.status = 'done';
+      job.result = result;
+      job.updatedAt = Date.now();
+    } catch (error) {
+      job.status = 'error';
+      job.error = error?.message || String(error);
+      job.updatedAt = Date.now();
+      await appendRealtimeLog({ kind: 'watch_realtime_job_error', jobID, error: job.error });
+    }
+  })();
+  return jobID;
+}
+
 function extractRealtimeText(event = {}) {
   const parts = [];
   const output = event?.response?.output;
@@ -2085,6 +2126,47 @@ const httpServer = createServer(async (req, res) => {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: error?.message || String(error), auth: realtimeAuthPreferences(req) }));
       }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn/start`) {
+      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 12_000_000));
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const jobID = startWatchRealtimeJob({ req, payload });
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, jobID, status: 'running' }));
+      } catch (error) {
+        await appendRealtimeLog({ kind: 'watch_realtime_job_start_error', error: error?.message || String(error) });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/watch-turn/result`) {
+      cleanupWatchRealtimeJobs();
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const jobID = url.searchParams.get('jobID') || url.searchParams.get('jobId') || '';
+      const job = watchRealtimeJobs.get(jobID);
+      if (!job) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, status: 'missing', error: 'Watch Realtime job was not found.' }));
+        return;
+      }
+      if (job.status === 'done') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, status: 'done', result: job.result }));
+        return;
+      }
+      if (job.status === 'error') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, status: 'error', error: job.error || 'Watch Realtime job failed.' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, status: job.status || 'running' }));
       return;
     }
 
