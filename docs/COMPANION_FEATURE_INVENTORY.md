@@ -39,12 +39,13 @@ The menu bar icon uses the system `waveform.circle.fill` symbol. If a custom bra
 
 Fields:
 
-- Bridge Port: default `3191`.
+- Bridge Port: default `12321`.
 - OpenClaw Install Path: default `~/.openclaw`.
+- OpenClaw Agent: default `main`; users should change it only when debugging a non-default OpenClaw agent name.
 
 Buttons:
 
-- Use Default: resets the Bridge Port field to `3191` and clears the generated pairing payload.
+- Use Default: resets the Bridge Port field to `12321` and clears the generated pairing payload.
 - Fresh Test Port: asks the setup script for an unused high port. It does not change the Mac until Install and Start is clicked.
 - Install and Start: creates config, installs LaunchAgent, starts the bridge, and configures Tailscale Serve.
 - Check Again: read-only diagnostics refresh.
@@ -72,7 +73,7 @@ Fields and toggles:
 - Fall back to OpenAI API key if OpenClaw OAuth fails.
 - OpenAI API Key.
 - Include API Key in Setup QR.
-- Watch Public Bridge.
+- Optional Non-Tailscale HTTPS Bridge.
 - OpenAI Auth Status: shows whether API-key mode is configured and, when OpenClaw OAuth is selected, whether the Companion can mint a GPT-Realtime-2 client secret through the local OpenClaw login.
 
 Pairing outputs:
@@ -89,7 +90,7 @@ Important behavior:
 - When enabled, the setup payload includes the user's OpenAI key so the iPhone can store it in Keychain.
 - The displayed preview redacts the key.
 - The iPhone can override auth mode later.
-- Watch Public Bridge should be an intentionally public HTTPS URL, not a private Tailscale URL with a custom port.
+- Optional Non-Tailscale HTTPS Bridge should be an intentionally public HTTPS URL, not a private Tailscale URL with a custom port.
 
 ## Tailscale Section
 

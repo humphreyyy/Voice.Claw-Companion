@@ -34,13 +34,24 @@ final class BridgeStore: ObservableObject {
     private enum DefaultsKeys {
         static let includeOpenAIAPIKeyInPairing = "voiceclaw.includeOpenAIAPIKeyInPairing"
         static let watchPublicBridgeURL = "voiceclaw.watchPublicBridgeURL"
+        static let openClawAgentName = "voiceclaw.openClawAgentName"
         static let realtimeAuthMode = "voiceclaw.realtimeAuthMode"
         static let realtimeAuthFallbackToAPIKey = "voiceclaw.realtimeAuthFallbackToAPIKey"
         static let automaticUpdateChecksEnabled = "voiceclaw.automaticUpdateChecksEnabled"
+        static let automaticUpdateInstallsEnabled = "voiceclaw.automaticUpdateInstallsEnabled"
     }
 
-    @Published var port: String = "3191"
+    private static let defaultBridgePort = "12321"
+    private static let defaultOpenClawAgentName = "main"
+
+    @Published var port: String = BridgeStore.defaultBridgePort
     @Published var openClawInstallPath: String = "\(NSHomeDirectory())/.openclaw"
+    @Published var openClawAgentName: String = BridgeStore.defaultOpenClawAgentName {
+        didSet {
+            UserDefaults.standard.set(openClawAgentName, forKey: DefaultsKeys.openClawAgentName)
+            refreshPairingPayloadSecrets()
+        }
+    }
     @Published var openAIAPIKey: String = "" {
         didSet {
             CompanionKeychainStore.save(openAIAPIKey, account: "openai.apiKey")
@@ -99,6 +110,7 @@ final class BridgeStore: ObservableObject {
     }
     @Published var automaticUpdateInstallsEnabled: Bool = true {
         didSet {
+            UserDefaults.standard.set(automaticUpdateInstallsEnabled, forKey: DefaultsKeys.automaticUpdateInstallsEnabled)
             applySparkleUpdatePreferences()
         }
     }
@@ -159,13 +171,21 @@ final class BridgeStore: ObservableObject {
         if UserDefaults.standard.object(forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey) != nil {
             realtimeAuthFallbackToAPIKey = UserDefaults.standard.bool(forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey)
         }
+        if let savedAgentName = UserDefaults.standard.string(forKey: DefaultsKeys.openClawAgentName),
+           !savedAgentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            openClawAgentName = savedAgentName
+        }
         if UserDefaults.standard.object(forKey: DefaultsKeys.automaticUpdateChecksEnabled) != nil {
             automaticUpdateChecksEnabled = UserDefaults.standard.bool(forKey: DefaultsKeys.automaticUpdateChecksEnabled)
         } else if UserDefaults.standard.object(forKey: "SUEnableAutomaticChecks") == nil {
             sparkleUpdaterController.updater.automaticallyChecksForUpdates = true
+            automaticUpdateChecksEnabled = true
         }
-        if UserDefaults.standard.object(forKey: "SUAutomaticallyUpdate") == nil {
+        if UserDefaults.standard.object(forKey: DefaultsKeys.automaticUpdateInstallsEnabled) != nil {
+            automaticUpdateInstallsEnabled = UserDefaults.standard.bool(forKey: DefaultsKeys.automaticUpdateInstallsEnabled)
+        } else if UserDefaults.standard.object(forKey: "SUAutomaticallyUpdate") == nil {
             sparkleUpdaterController.updater.automaticallyDownloadsUpdates = true
+            automaticUpdateInstallsEnabled = true
         }
         syncSparkleUpdatePreferences()
         Task {
@@ -204,6 +224,8 @@ final class BridgeStore: ObservableObject {
                     String(portValue),
                     "--openclaw-path",
                     normalizedOpenClawPath,
+                    "--openclaw-agent",
+                    normalizedOpenClawAgentName,
                     "--realtime-auth-mode",
                     realtimeAuthMode.rawValue,
                     realtimeAuthFallbackToAPIKey ? "--realtime-auth-fallback-to-api-key" : "--no-realtime-auth-fallback-to-api-key",
@@ -237,7 +259,7 @@ final class BridgeStore: ObservableObject {
     }
 
     func useDefaultPort() {
-        port = "3191"
+        port = Self.defaultBridgePort
         bridgeURL = ""
         pairingJSON = ""
         pairingPreview = ""
@@ -466,8 +488,9 @@ final class BridgeStore: ObservableObject {
             }
             let output = try await runSetupScript(arguments: arguments)
             let resetResponse = try? JSONDecoder().decode(ResetResponse.self, from: Data(output.utf8))
-            port = "3191"
+            port = Self.defaultBridgePort
             openClawInstallPath = "\(NSHomeDirectory())/.openclaw"
+            openClawAgentName = Self.defaultOpenClawAgentName
             bridgeURL = ""
             tailscaleSummary = "Not checked"
             localBridgeSummary = "Not checked"
@@ -502,6 +525,11 @@ final class BridgeStore: ObservableObject {
         return trimmed.isEmpty ? "\(NSHomeDirectory())/.openclaw" : trimmed.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
     }
 
+    private var normalizedOpenClawAgentName: String {
+        let trimmed = openClawAgentName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultOpenClawAgentName : trimmed
+    }
+
     private func loadSavedBridgeConfig() async {
         let configURL = URL(fileURLWithPath: "\(NSHomeDirectory())/.voiceclaw/bridge.json")
         guard let data = try? Data(contentsOf: configURL),
@@ -513,6 +541,11 @@ final class BridgeStore: ObservableObject {
         }
         if let savedPath = object["openClawInstallPath"] as? String, !savedPath.isEmpty {
             openClawInstallPath = savedPath
+        }
+        if let savedAgentName = object["openClawAgentName"] as? String, !savedAgentName.isEmpty {
+            openClawAgentName = savedAgentName
+        } else if let savedAgentName = object["openClawAgent"] as? String, !savedAgentName.isEmpty {
+            openClawAgentName = savedAgentName
         }
         if let savedURL = object["tailscaleBaseURL"] as? String {
             bridgeURL = savedURL
@@ -552,6 +585,7 @@ final class BridgeStore: ObservableObject {
         }
         updated["RealtimeAuthMode"] = realtimeAuthMode.rawValue
         updated["RealtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
+        updated["OpenClawAgent"] = normalizedOpenClawAgentName
         updated["InstantModel"] = updated["InstantModel"] as? String ?? "gpt-5-chat-latest"
         updated["InstantWebSearch"] = updated["InstantWebSearch"] as? Bool ?? true
         let trimmedWatchBridgeURL = watchPublicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -583,6 +617,7 @@ final class BridgeStore: ObservableObject {
 
         object["realtimeAuthMode"] = realtimeAuthMode.rawValue
         object["realtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
+        object["openClawAgentName"] = normalizedOpenClawAgentName
 
         guard let output = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]) else { return }
         try? output.write(to: configURL, options: [.atomic])

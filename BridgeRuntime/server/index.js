@@ -76,6 +76,7 @@ const REALTIME_TRANSCRIPTION_LANGUAGE = process.env.REALTIME_TRANSCRIPTION_LANGU
 const REALTIME_TURN_DETECTION_MODE = process.env.REALTIME_TURN_DETECTION_MODE || 'semantic_vad';
 const REALTIME_SEMANTIC_VAD_EAGERNESS = process.env.REALTIME_SEMANTIC_VAD_EAGERNESS || 'auto';
 const REALTIME_VOICE = process.env.REALTIME_VOICE || 'marin';
+const OPENCLAW_AGENT_NAME = process.env.INTERCOM_AGENT || process.env.OPENCLAW_AGENT || 'main';
 const REALTIME_LOG_DIR = process.env.REALTIME_LOG_DIR || join(__dirname, '..', 'ops-node', 'logs');
 const REALTIME_TRANSCRIPT_LOG = join(REALTIME_LOG_DIR, 'realtime-transcripts.jsonl');
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(homedir(), '.openclaw', 'openclaw.json');
@@ -1513,7 +1514,7 @@ function sanitizeRealtimeSessionToken(value = '') {
 }
 
 function realtimeOpenClawSessionToken(browserSessionId = '') {
-  return `voice-realtime-${sanitizeRealtimeSessionToken(browserSessionId)}-julian`;
+  return `voice-realtime-${sanitizeRealtimeSessionToken(browserSessionId)}-${sanitizeRealtimeSessionToken(OPENCLAW_AGENT_NAME)}`;
 }
 
 function realtimeRoutingMode(req) {

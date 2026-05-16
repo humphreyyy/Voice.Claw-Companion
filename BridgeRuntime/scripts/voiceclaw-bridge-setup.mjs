@@ -17,6 +17,8 @@ const CONFIG_DIR = join(HOME, '.voiceclaw');
 const CONFIG_FILE = join(CONFIG_DIR, 'bridge.json');
 const LAUNCH_AGENT_LABEL = 'ai.voiceclaw.bridge';
 const LAUNCH_AGENT_FILE = join(HOME, 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
+const DEFAULT_BRIDGE_PORT = 12321;
+const DEFAULT_OPENCLAW_AGENT_NAME = 'main';
 
 function parseArgs(argv) {
   const options = {
@@ -30,6 +32,7 @@ function parseArgs(argv) {
     suggestPort: false,
     port: null,
     openClawInstallPath: join(HOME, '.openclaw'),
+    openClawAgentName: DEFAULT_OPENCLAW_AGENT_NAME,
     realtimeAuthMode: null,
     realtimeAuthFallbackToAPIKey: null,
   };
@@ -48,6 +51,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--port=')) options.port = Number(arg.slice('--port='.length));
     else if (arg === '--openclaw-path') options.openClawInstallPath = argv[++index] || options.openClawInstallPath;
     else if (arg.startsWith('--openclaw-path=')) options.openClawInstallPath = arg.slice('--openclaw-path='.length);
+    else if (arg === '--openclaw-agent') options.openClawAgentName = normalizeOpenClawAgentName(argv[++index]);
+    else if (arg.startsWith('--openclaw-agent=')) options.openClawAgentName = normalizeOpenClawAgentName(arg.slice('--openclaw-agent='.length));
     else if (arg === '--realtime-auth-mode') options.realtimeAuthMode = normalizeRealtimeAuthMode(argv[++index]);
     else if (arg.startsWith('--realtime-auth-mode=')) options.realtimeAuthMode = normalizeRealtimeAuthMode(arg.slice('--realtime-auth-mode='.length));
     else if (arg === '--realtime-auth-fallback-to-api-key') options.realtimeAuthFallbackToAPIKey = true;
@@ -80,8 +85,9 @@ Options:
   --diagnose                 Print read-only local bridge and Tailscale Serve diagnostics
   --suggest-port             Print a fresh unused test port without changing system state
   --json                     Print only the iPhone setup JSON
-  --port 3191                Bridge/Tailscale HTTPS port
+  --port 12321               Bridge/Tailscale HTTPS port
   --openclaw-path PATH       OpenClaw install/config folder, usually ~/.openclaw
+  --openclaw-agent NAME      OpenClaw agent name, usually main
   --realtime-auth-mode MODE   api-key or openclaw-oauth
   --realtime-auth-fallback-to-api-key / --no-realtime-auth-fallback-to-api-key
 
@@ -116,6 +122,11 @@ function normalizeRealtimeAuthMode(value) {
   return normalized === 'openclaw-oauth' || normalized === 'oauth' || normalized === 'openclaw'
     ? 'openclaw-oauth'
     : 'api-key';
+}
+
+function normalizeOpenClawAgentName(value) {
+  const trimmed = String(value || '').trim();
+  return trimmed || DEFAULT_OPENCLAW_AGENT_NAME;
 }
 
 async function resolveNodePath() {
@@ -449,6 +460,10 @@ async function installLaunchAgent(config) {
     <string>${xmlEscape(openClawConfigPath)}</string>
     <key>OPENCLAW_INSTALL_PATH</key>
     <string>${xmlEscape(config.openClawInstallPath)}</string>
+    <key>INTERCOM_AGENT</key>
+    <string>${xmlEscape(config.openClawAgentName)}</string>
+    <key>OPENCLAW_AGENT</key>
+    <string>${xmlEscape(config.openClawAgentName)}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -487,6 +502,7 @@ function buildPairingPayload(config) {
     TailscaleBaseURL: config.tailscaleBaseURL,
     BridgePath: '/realtime/openclaw-turn',
     OpenClawInstallPath: config.openClawInstallPath,
+    OpenClawAgent: config.openClawAgentName,
     OpenClawGatewayToken: config.gatewayToken,
     RouteMode: 'openclaw-bridge',
     RealtimeModel: 'gpt-realtime-2',
@@ -501,6 +517,7 @@ function printSummary(config, pairingPayload, actions) {
   console.log(`LaunchAgent: ${LAUNCH_AGENT_FILE}`);
   console.log(`Bridge URL: ${config.tailscaleBaseURL || '(Tailscale DNS unavailable)'}`);
   console.log(`OpenClaw path: ${config.openClawInstallPath}`);
+  console.log(`OpenClaw agent: ${config.openClawAgentName}`);
   console.log(`Token: ${config.gatewayToken ? 'generated' : 'missing'}`);
   for (const action of actions) console.log(`- ${action}`);
   console.log('\nPaste this setup JSON into VoiceClaw Settings, or show it as a QR code from the Mac companion:\n');
@@ -518,14 +535,14 @@ async function main() {
 
   if (options.diagnose) {
     const existing = await readBridgeConfig();
-    const diagnostics = await diagnoseBridge(options.port || existing.port || 3191);
+    const diagnostics = await diagnoseBridge(options.port || existing.port || DEFAULT_BRIDGE_PORT);
     console.log(JSON.stringify(diagnostics, null, 2));
     return;
   }
 
   if (options.reset) {
     const existing = await readBridgeConfig();
-    const resetPort = options.port || existing.port || 3191;
+    const resetPort = options.port || existing.port || DEFAULT_BRIDGE_PORT;
     const result = await resetBridgeState({
       resetTailscalePort: options.resetTailscalePort,
       port: resetPort,
@@ -541,12 +558,14 @@ async function main() {
 
   const existing = await readBridgeConfig();
   const dnsName = await detectTailscaleDNSName();
-  const port = options.port || existing.port || 3191;
+  const port = options.port || existing.port || DEFAULT_BRIDGE_PORT;
   const openClawInstallPath = normalizeInstallPath(options.openClawInstallPath || existing.openClawInstallPath);
+  const openClawAgentName = normalizeOpenClawAgentName(options.openClawAgentName || existing.openClawAgentName || existing.openClawAgent);
   validateOpenClawInstallPath(openClawInstallPath);
   const config = {
     port,
     openClawInstallPath,
+    openClawAgentName,
     gatewayToken: existing.gatewayToken || generateToken(),
     tailscaleDNSName: dnsName || existing.tailscaleDNSName || '',
     realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'api-key'),

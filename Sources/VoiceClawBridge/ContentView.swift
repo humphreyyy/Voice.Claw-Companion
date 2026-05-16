@@ -307,7 +307,7 @@ private struct SetupPanel: View {
                     FieldLabel("Bridge Port")
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 8) {
-                            TextField("3191", text: $store.port)
+                            TextField("12321", text: $store.port)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: 120)
 
@@ -325,7 +325,7 @@ private struct SetupPanel: View {
                             .disabled(store.status.isWorking)
                         }
 
-                        Text("Default is 3191. Fresh Test Port chooses an unused high port without changing your Mac, which is useful when you want to test onboarding without reusing an old Tailscale Serve mapping. The iPhone URL will include this port, and changing it means pairing the phone again.")
+                        Text("Default is 12321. Fresh Test Port chooses an unused high port without changing your Mac, which is useful when you want to test onboarding without reusing an old Tailscale Serve mapping. The iPhone URL will include this port, and changing it means pairing the phone again.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -338,6 +338,18 @@ private struct SetupPanel: View {
                         TextField("\(NSHomeDirectory())/.openclaw", text: $store.openClawInstallPath)
                             .textFieldStyle(.roundedBorder)
                         Text("Choose the folder that contains openclaw.json. On most Macs this is ~/.openclaw.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                GridRow {
+                    FieldLabel("OpenClaw Agent")
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("main", text: $store.openClawAgentName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 260)
+                        Text("Leave this as main unless setup fails and you want to try the name of your primary OpenClaw agent or another OpenClaw agent.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -451,12 +463,12 @@ private struct PairingPanel: View {
                 }
 
                 GridRow {
-                    FieldLabel("Watch Public Bridge")
+                    FieldLabel("Optional Non-Tailscale HTTPS Bridge")
                     VStack(alignment: .leading, spacing: 6) {
                         TextField("https://...", text: $store.watchPublicBridgeURL)
                             .textFieldStyle(.roundedBorder)
 
-                        Text("Optional. Use this only for an intentionally public HTTPS/Funnel OpenClaw bridge that Apple Watch can reach over cellular. Leave it blank for the private iPhone Relay path.")
+                        Text("Optional. Use this to enter the URL of a non-Tailscale HTTPS bridge to OpenClaw, instead of using Tailscale. This is only required if you wish to contact OpenClaw from your Apple Watch when your iPhone is not nearby. Leave it blank if you always intend on using the iPhone relay path when you want to contact OpenClaw from your Apple Watch.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -574,7 +586,7 @@ private struct TailscalePanel: View {
             PanelHeader(title: "Tailscale", subtitle: "VoiceClaw uses Tailscale Serve so the iPhone can reach this Mac on your private network.", symbol: "network")
 
             InfoCallout(symbol: "network.badge.shield.half.filled", title: "What Tailscale Serve Is", bodyText: "Tailscale Serve is a private HTTPS reverse proxy: it takes a Tailscale URL on this Mac and forwards it to the local VoiceClaw bridge running on 127.0.0.1. It is private to devices in your tailnet, not a public internet link.")
-            InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the VoiceClaw bridge service on this Mac. With the default, the iPhone connects to a URL ending in :3191. If you choose another free port, run Install and Start again and pair the iPhone with the new QR code.")
+            InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the VoiceClaw bridge service on this Mac. With the default, the iPhone connects to a URL ending in :12321. If you choose another free port, run Install and Start again and pair the iPhone with the new QR code.")
             InfoCallout(symbol: "lock", title: "What Must Be Allowed", bodyText: "Tailscale must be installed and signed in, and HTTPS certificates must be enabled for your tailnet. If you are not the tailnet owner or admin, ask that person to enable HTTPS certificates. VoiceClaw configures Serve only when you click Install and Start; Check Again is read-only.")
             InfoCallout(symbol: "trash.slash", title: "Why VoiceClaw Does Not Use Serve Reset", bodyText: "Tailscale's full Serve reset clears every Serve mapping on this Mac. VoiceClaw only offers a guarded cleanup for the selected port, and only when the mapping looks exactly like VoiceClaw's own bridge.")
 
@@ -821,11 +833,11 @@ private struct DiagnosticsVersionFooter: View {
 
     var body: some View {
         Text(versionText)
-            .font(.caption2.monospaced())
-            .foregroundStyle(.tertiary)
+            .font(.callout.monospaced().weight(.semibold))
+            .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, 4)
+            .padding(.top, 8)
             .accessibilityLabel("App Version")
             .accessibilityValue(versionText)
     }

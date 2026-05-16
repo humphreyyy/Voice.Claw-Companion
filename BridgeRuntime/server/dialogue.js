@@ -13,7 +13,7 @@ const OPENCLAW_BIN = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(os.homedir(), '.openclaw', 'openclaw.json');
 const OPENCLAW_INSTALL_PATH = process.env.OPENCLAW_INSTALL_PATH || join(os.homedir(), '.openclaw');
 const OPENCLAW_GATEWAY_MODULE = process.env.OPENCLAW_GATEWAY_MODULE || '';
-const DEFAULT_AGENT = process.env.INTERCOM_AGENT || 'julian';
+const DEFAULT_AGENT = process.env.INTERCOM_AGENT || process.env.OPENCLAW_AGENT || 'main';
 const DEFAULT_SESSION = process.env.INTERCOM_SESSION_ID || 'voice-intercom-default';
 const DEFAULT_THINKING = process.env.INTERCOM_THINKING || 'minimal';
 const INSTANT_RAW_MODEL = 'openai/chat-latest';
@@ -80,10 +80,10 @@ function buildProcessingRoutes() {
     return {
       id: alias,
       label: isInstantRaw ? 'GPT-5.5 Instant (chat-latest · raw/no tools)' : (isBridgeDefault ? BRIDGE_DEFAULT_LABEL : short),
-      agent: 'julian',
+      agent: DEFAULT_AGENT,
       model: fullModelId,
       // chat-latest is fast only through OpenClaw's raw model-run path. The
-      // full tool-enabled Julian agent path times out with this public API
+      // full tool-enabled OpenClaw agent path times out with this public API
       // alias, so keep it selectable but never make it masquerade as the
       // OpenClaw-aware default route.
       modelRun: isInstantRaw,
@@ -101,7 +101,7 @@ function buildProcessingRoutes() {
     routes.push({
       id: 'default',
       label: 'default',
-      agent: 'julian',
+      agent: DEFAULT_AGENT,
       model: null,
       modelOverride: null,
       fastHint: true,
@@ -134,10 +134,8 @@ function routeIdByAlias(raw) {
   const wanted = String(raw || '').trim();
   if (!wanted) return '';
 
-  // Backward-compatible aliases from old UI values: all old agent/route names
-  // now mean the configured primary model route, still executed by Julian.
   const primary = PROCESSING_ROUTES[0]?.id || 'default';
-  if (wanted === 'julian' || wanted === 'default' || wanted === 'default-fast' || wanted === 'intercom' || wanted === 'gpt54' || wanted === 'gpt54-fast') return primary;
+  if (wanted === 'main' || wanted === 'default' || wanted === 'default-fast' || wanted === 'intercom' || wanted === 'gpt54' || wanted === 'gpt54-fast') return primary;
   return wanted;
 }
 
@@ -335,7 +333,7 @@ function buildIntercomPrompt(userText) {
   return `User said: ${userText}
 
 Realtime/OpenClaw fallback instruction:
-- Fulfill the user's request using normal OpenClaw/Julian judgment and tools.
+- Fulfill the user's request using normal OpenClaw judgment and tools.
 - Return a concise spoken/text response back to Realtime that primarily answers the user's original request.
 - Do not perform side effects outside the current OpenClaw request unless the user explicitly asks for them.`;
 }

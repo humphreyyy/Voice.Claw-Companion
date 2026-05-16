@@ -51,7 +51,7 @@ const transcriptStorageKey = 'voice-bridge-transcript-v1';
 const sessionTokenStorageKey = 'voice-bridge-session-token-v1';
 const PROCESSING_DEFAULT_VERSION = 'openclaw-tools-gpt55-minimal-2026-05-06';
 const VOICE_DEFAULT_VERSION = 'openai-streaming-default-2026-05-07';
-const LEGACY_DEFAULT_PROCESSING_AGENTS = new Set(['julian', 'default', 'default-fast', 'intercom', 'gpt54', 'gpt54-fast', 'gpt-5.4', 'chat-latest']);
+const LEGACY_DEFAULT_PROCESSING_AGENTS = new Set(['main', 'default', 'default-fast', 'intercom', 'gpt54', 'gpt54-fast', 'gpt-5.4', 'chat-latest']);
 const LEGACY_DEFAULT_VOICES = new Set(['piper-ryan-high', 'piper-libritts-high']);
 const MODES = { PTT: 'ptt', HANDSFREE: 'handsfree' };
 const DEFAULT_WAKE_PHRASE = 'Hey';
@@ -156,8 +156,8 @@ const state = {
   cloudOptions: loadCloudOptionsConfig(),
   processingOptions: {
     agents: [
-      { id: 'default', label: 'default (julian primary)' },
-      { id: 'default-fast', label: 'default-fast (julian primary)' },
+      { id: 'default', label: 'default (main primary)' },
+      { id: 'default-fast', label: 'default-fast (main primary)' },
       { id: 'opus', label: 'opus (claude-opus-4-6)' },
       { id: 'opus45', label: 'opus45 (claude-opus-4-5)' },
       { id: 'sonnet', label: 'sonnet (claude-sonnet-4-6)' },
