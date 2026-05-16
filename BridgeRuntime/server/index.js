@@ -5,7 +5,7 @@
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile, stat, mkdir, appendFile, readdir, writeFile, unlink } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { accessSync, constants as fsConstants, readFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +43,29 @@ const MIME = {
   '.svg':  'image/svg+xml',
   '.ico':  'image/x-icon',
 };
+
+const EXECUTABLE_SEARCH_PATHS = [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/usr/bin',
+  '/bin',
+  '/opt/local/bin',
+];
+
+function executablePath(name) {
+  if (String(name || '').includes('/')) return name;
+  const pathEntries = String(process.env.PATH || '')
+    .split(':')
+    .filter(Boolean);
+  for (const dir of [...pathEntries, ...EXECUTABLE_SEARCH_PATHS]) {
+    try {
+      const candidate = join(dir, name);
+      accessSync(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return name;
+}
 
 const REALTIME_MODEL = process.env.REALTIME_MODEL || 'gpt-realtime-2';
 const REALTIME_TRANSCRIPTION_MODEL = process.env.REALTIME_TRANSCRIPTION_MODEL || 'gpt-realtime-whisper';
@@ -1674,7 +1697,7 @@ async function m4aBufferToRealtimePCM(inputBuffer) {
   await writeFile(inputPath, inputBuffer);
   try {
     return await new Promise((resolve, reject) => {
-      const child = spawn('ffmpeg', [
+      const child = spawn(executablePath('ffmpeg'), [
         '-hide_banner',
         '-loglevel', 'error',
         '-i', inputPath,
@@ -1782,7 +1805,7 @@ async function runWatchRealtimeTurn({ req, payload }) {
   let userTranscript = '';
   let assistantText = '';
   const audioChunks = [];
-  const deadline = Date.now() + Number(process.env.WATCH_REALTIME_TURN_TIMEOUT_MS || 120000);
+  const deadline = Date.now() + Number(process.env.WATCH_REALTIME_TURN_TIMEOUT_MS || 105000);
 
   try {
     while (Date.now() < deadline) {
