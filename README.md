@@ -52,6 +52,9 @@ It does not uninstall Tailscale, change tailnet settings, remove OpenClaw, remov
 
 For a cleaner onboarding test, **Reset App + Tailscale Mapping** can also remove the selected Tailscale Serve mapping. This action is intentionally guarded: it runs only when diagnostics identify the selected port as a VoiceClaw mapping that forwards exactly to `http://127.0.0.1:<port>`. It refuses to remove other Serve mappings, and it never runs Tailscale's full `serve reset` command.
 
+## Privacy Policy
+Neither the iOS/watchOS apps nor the macOS companion apps collect any data at all. Nothing leaves your system. No background "phoning home". Nothing. Feel free to inspect them yourself. The privacy policy is, essentially, "I never touch your data, so I never handle your data, so you privacy is never jeopardized in the first place. I have no idea who you are and I don't care. Enjoy (and please subscribe to the iOS app)!"
+
 ## Develop
 
 ```sh
