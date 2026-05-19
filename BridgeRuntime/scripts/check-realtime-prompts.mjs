@@ -142,6 +142,7 @@ for (const [name, text] of [
   assertContains(name, text, 'wait_for_user');
   assertContains(name, text, 'iPhone-side tools');
   assertContains(name, text, 'iphone_sync_watch_settings');
+  assertContains(name, text, 'iphone_switch_voice_route');
   assertContains(name, text, 'iphone_run_shortcut');
   assertContains(name, text, 'named Apple Shortcuts');
   assertContains(name, text, 'custom iPhone workflows');
@@ -158,6 +159,7 @@ for (const [name, text] of [
 
 assertContains('REALTIME_INSTANT_INSTRUCTIONS', instant, 'gpt55_instant');
 assertContains('server/index.js', source, "name: 'iphone_sync_watch_settings'");
+assertContains('server/index.js', source, "name: 'iphone_switch_voice_route'");
 assertContains('server/index.js', source, "name: 'iphone_list_calendar_events'");
 assertContains('server/index.js', source, "name: 'iphone_list_reminders'");
 assertContains('server/index.js', source, "name: 'iphone_analyze_selected_media'");
