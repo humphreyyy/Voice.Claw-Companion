@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.51</title>
+            <pubDate>Tue, 19 May 2026 16:11:11 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202605191309</sparkle:version>
+            <sparkle:shortVersionString>0.1.51</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.51</h2><ul><li>Fixes VoiceClaw route switching so the Companion advertises exact route choices and the confirmation flow can prepare, confirm, or cancel reliably.</li><li>Keeps route switching compatible with current and recent iPhone builds.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.51/VoiceClawCompanion-0.1.51-202605191309.dmg" length="2965404" type="application/octet-stream" sparkle:edSignature="5hB1eNQN84CMXV6inkIvC5L+s6bxXQyl255ZOtxuu6TWYqi4M9U3Yd958GnG1/bl0NB9xA1MKeJ8gS1iC3LHCw=="/>
+        </item>
+        <item>
             <title>0.1.50</title>
             <pubDate>Tue, 19 May 2026 13:52:05 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -34,18 +46,6 @@
 </ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.49/VoiceClawCompanion-0.1.49-202605170056.dmg" length="2964583" type="application/octet-stream" sparkle:edSignature="qqwHwv9IS4SZnZBYN33IZSPJw2GfBiqosZt5rhYp720yw+HvLZ2aVUoD9ghDee7u3W2DcvO+BFftSuBa6N8hCw=="/>
-        </item>
-        <item>
-            <title>0.1.48</title>
-            <pubDate>Sat, 16 May 2026 15:19:28 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202605161518</sparkle:version>
-            <sparkle:shortVersionString>0.1.48</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.48</h2><ul><li>Adds asynchronous Watch Tunnel turns so public Cloudflare tunnels return a job immediately and avoid long-request proxy timeouts.</li><li>Keeps the existing direct Watch turn endpoint for backward compatibility while new Watch builds poll for completion.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.48/VoiceClawCompanion-0.1.48-202605161518.dmg" length="2960123" type="application/octet-stream" sparkle:edSignature="20G9+6ZbSWFzs+805T4VKExn2NV/G9l3i/az6z2607OW4mWaYzGaTx5l9QexCblnHLOZxP1IYuE3pxo+OEx0BQ=="/>
         </item>
     </channel>
 </rss>

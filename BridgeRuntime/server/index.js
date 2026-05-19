@@ -178,7 +178,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - Apple Watch can use Direct GPT-Realtime-2 audio requests, Direct GPT-5.5 Instant over cellular with an OpenAI API key, relay OpenClaw through the paired iPhone while reachable, or use an intentionally public HTTPS OpenClaw bridge. watchOS cannot use a private Tailscale URL by itself.
 - iphone_set_microphone_muted mutes or unmutes this live VoiceClaw microphone after an explicit request such as "mute me" or "unmute my mic." If muted, the app cannot hear voice until the user unmutes by tapping or another available input.
 - iphone_end_voice_session ends the current VoiceClaw live audio session after an explicit request such as "end this session," "hang up," or "stop listening." Do not use it to cancel unrelated Mac/OpenClaw work.
-- iphone_switch_voice_route changes VoiceClaw's selected route only after explicit confirmation. When the user asks to switch VoiceClaw mode, switch voice route, or switch route to Direct, Realtime-2, Instant, Bridge, OpenClaw, Tunnel, or HTTPS Tunnel, first call iphone_switch_voice_route with action "prepare" and the target route. Then ask one short confirmation question: "Switch to <route> and restart the live session?" If the user confirms, call iphone_switch_voice_route with action "confirm"; if they decline, call it with action "cancel." Do not switch routes on the prepare step.
+- iphone_switch_voice_route changes VoiceClaw's selected route only after explicit confirmation. When the user asks to switch VoiceClaw mode, switch voice route, or switch route to Direct, Realtime-2, Instant, Bridge, OpenClaw, Tunnel, or HTTPS Tunnel, first call iphone_switch_voice_route with action "prepare" and the exact route enum. Then ask one short confirmation question: "Switch to <route> and restart the live session?" If the user confirms, call iphone_switch_voice_route with action "confirm" and the same route enum; if they decline, call it with action "cancel" and the same route enum. Do not switch routes on the prepare step.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
 - iphone_open_app_settings opens the iOS Settings page for VoiceClaw when the user asks to change app permissions.
 - iphone_open_url opens a public http or https URL in the user's default browser only when the user asks to open a link.
@@ -359,7 +359,7 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 - "Remind me tomorrow" -> use iphone_create_reminder.
 - "Save this as a note" -> use iphone_share and tell the user to choose Notes in the share sheet.
 - "Sync my Watch settings" -> use iphone_sync_watch_settings.
-- "Switch VoiceClaw mode to Tunnel" or "Switch the route to Instant" -> call iphone_switch_voice_route with action "prepare" and the target route, then ask whether to switch and restart the live session.
+- "Switch VoiceClaw mode to Tunnel" or "Switch the route to Instant" -> call iphone_switch_voice_route with action "prepare" and route "openclaw-public-tunnel" or "gpt55-instant", then ask whether to switch and restart the live session.
 - "Run my Shortcut named Start Focus" or "Pass this text to my Shortcut called File This" -> use iphone_run_shortcut with the exact Shortcut name and optional text input.
 - "Open that URL", "show me directions", "look at this screenshot", "take a picture of this", "I copied a screenshot", "open WhatsApp Business with Sam", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
 - If the user asks for Mac/private-computer work, explain that OpenClaw Bridge mode is needed for that specific action.
@@ -414,7 +414,7 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 - "Remind me tomorrow" -> use iphone_create_reminder.
 - "Save this as a note" -> use iphone_share and tell the user to choose Notes in the share sheet.
 - "Sync my Watch settings" -> use iphone_sync_watch_settings.
-- "Switch VoiceClaw mode to Tunnel" or "Switch the route to Instant" -> call iphone_switch_voice_route with action "prepare" and the target route, then ask whether to switch and restart the live session.
+- "Switch VoiceClaw mode to Tunnel" or "Switch the route to Instant" -> call iphone_switch_voice_route with action "prepare" and route "openclaw-public-tunnel" or "gpt55-instant", then ask whether to switch and restart the live session.
 - "Run my Shortcut named Start Focus" or "Pass this text to my Shortcut called File This" -> use iphone_run_shortcut with the exact Shortcut name and optional text input.
 - Explicit iPhone actions such as Maps, calls, drafts, reminders, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, Notes share-sheet handoff, clipboard, Shortcuts, VoiceClaw screens, or URLs -> use the matching iPhone-side tool.
 - Do not mention or simulate Mac/private-computer tools in this mode.
@@ -567,16 +567,16 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_switch_voice_route',
-    description: 'Prepare, confirm, or cancel a VoiceClaw route/mode switch on this iPhone. Use only when the user explicitly asks to switch VoiceClaw mode, voice route, or route to Direct, Realtime-2, Instant, Bridge, OpenClaw, Tunnel, or HTTPS Tunnel. First call with action "prepare" and a target_route, ask a short confirmation question, then call with action "confirm" or "cancel".',
+    description: 'Prepare, confirm, or cancel a VoiceClaw route/mode switch on this iPhone. Use only when the user explicitly asks to switch VoiceClaw mode, voice route, or route to Direct, Realtime-2, Instant, Bridge, OpenClaw, Tunnel, or HTTPS Tunnel. First call with action "prepare" and an exact route enum, ask a short confirmation question, then call with action "confirm" or "cancel" and the same route enum.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         action: { type: 'string', enum: ['prepare', 'confirm', 'cancel'], description: 'prepare stores the requested route pending confirmation; confirm applies it and restarts the live session; cancel clears the pending request.' },
-        target_route: { type: 'string', description: 'Requested route/mode, such as Realtime-2, Instant, Bridge, or Tunnel. Required for prepare.' },
+        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'openclaw-bridge', 'openclaw-public-tunnel'], description: 'Exact route enum: realtime-only for Direct GPT-Realtime-2, gpt55-instant for GPT-5.5 Instant, openclaw-bridge for OpenClaw Bridge, or openclaw-public-tunnel for OpenClaw HTTPS Tunnel.' },
         reason: { type: 'string', description: 'Brief reason the user requested this route switch.' }
       },
-      required: ['action']
+      required: ['action', 'route']
     }
   },
   {
