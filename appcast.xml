@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.53</title>
+            <pubDate>Wed, 20 May 2026 22:38:59 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202605201937</sparkle:version>
+            <sparkle:shortVersionString>0.1.53</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.53</h2><ul><li>Watch-originated OpenClaw tunnel turns now preserve synced OpenClaw model and reasoning settings from the iPhone app.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.53/VoiceClawCompanion-0.1.53-202605201937.dmg" length="2968727" type="application/octet-stream" sparkle:edSignature="5oeH/vjj8n27TUk7Nke9G3twZutkETXtoGslj617sozbpf85LVaoGdD574Yz8y0un4mN8Y9WiwslsyAWLHwzBw=="/>
+        </item>
+        <item>
             <title>0.1.52</title>
             <pubDate>Wed, 20 May 2026 18:17:39 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,21 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.51</h2><ul><li>Fixes VoiceClaw route switching so the Companion advertises exact route choices and the confirmation flow can prepare, confirm, or cancel reliably.</li><li>Keeps route switching compatible with current and recent iPhone builds.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.51/VoiceClawCompanion-0.1.51-202605191309.dmg" length="2965404" type="application/octet-stream" sparkle:edSignature="5hB1eNQN84CMXV6inkIvC5L+s6bxXQyl255ZOtxuu6TWYqi4M9U3Yd958GnG1/bl0NB9xA1MKeJ8gS1iC3LHCw=="/>
-        </item>
-        <item>
-            <title>0.1.50</title>
-            <pubDate>Tue, 19 May 2026 13:52:05 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202605191050</sparkle:version>
-            <sparkle:shortVersionString>0.1.50</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.50</h2>
-<ul>
-  <li>Adds VoiceClaw route switching to Companion-created realtime sessions so Bridge and Tunnel sessions expose the same iPhone route-switch tool as direct iPhone sessions.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.50/VoiceClawCompanion-0.1.50-202605191050.dmg" length="2965512" type="application/octet-stream" sparkle:edSignature="44cOMkv4v41/FWBVZCe9qnldaHR4SktSJegy3/eZTAh4GQJxacxjey5Bmnse0WiGHPwrxRWYMlA8yALrYTWbAA=="/>
         </item>
     </channel>
 </rss>

@@ -1731,10 +1731,11 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
   }
 }
 
-function watchRealtimeSessionConfig({ routeMode = 'openclaw', model = REALTIME_MODEL, voice = REALTIME_VOICE, sessionToken = '' } = {}) {
+function watchRealtimeSessionConfig({ routeMode = 'openclaw', model = REALTIME_MODEL, voice = REALTIME_VOICE, sessionToken = '', processing = {} } = {}) {
   const options = {
     sessionToken: sanitizeRealtimeSessionToken(sessionToken),
     routeMode,
+    processing: processing && typeof processing === 'object' ? processing : {},
     model: String(model || REALTIME_MODEL).trim() || REALTIME_MODEL,
     voice: String(voice || REALTIME_VOICE).trim() || REALTIME_VOICE,
     noiseReduction: 'near_field',
@@ -1845,7 +1846,8 @@ async function runWatchRealtimeTurn({ req, payload }) {
   const audioContentType = String(payload.audioContentType || 'audio/m4a').trim();
   if (!text && !audioBase64) throw new Error('Watch Realtime turn needs audio or text.');
 
-  const { session } = watchRealtimeSessionConfig({ routeMode, model, voice, sessionToken });
+  const processing = payload.processing && typeof payload.processing === 'object' ? payload.processing : {};
+  const { options, session } = watchRealtimeSessionConfig({ routeMode, model, voice, sessionToken, processing });
   const apiKey = openAIKeyForRealtimeRequest(req);
   const realtimeBearer = await resolveRealtimeBearer({ req, session, apiKey });
   const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
@@ -1866,6 +1868,7 @@ async function runWatchRealtimeTurn({ req, payload }) {
 
   await openedPromise;
   const key = sanitizeRealtimeSessionToken(sessionToken);
+  realtimeSessionConfigs.set(key, { ...options, sessionStartedAt: new Date().toISOString() });
   realtimeSidebandStateFor(key).activeResponseId = null;
   const send = (event) => {
     if (ws.readyState !== WebSocket.OPEN) throw new Error('GPT-Realtime-2 Watch relay is not open.');
