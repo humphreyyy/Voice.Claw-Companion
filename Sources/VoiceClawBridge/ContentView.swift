@@ -532,6 +532,7 @@ private struct PairingPanel: View {
             }
 
             InfoCallout(symbol: "key.radiowaves.forward", title: "OpenAI Auth Status", bodyText: store.realtimeAuthStatusSummary)
+            InfoCallout(symbol: "square.grid.2x2", title: "iPhone Widgets and Controls", bodyText: "After pairing this iPhone, add VoiceClaw widgets from the iOS Home Screen widget gallery for one-tap route launches. You can also add VoiceClaw to the iPhone Lock Screen or Control Center for a quick Live launch; those controls open VoiceClaw directly on the iPhone, while this Companion is only needed for OpenClaw Bridge and HTTPS Tunnel routes.")
 
             HStack(alignment: .top, spacing: 18) {
                 Button {
