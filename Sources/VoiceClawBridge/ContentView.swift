@@ -139,6 +139,7 @@ private struct DetailPane: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HeroPanel(store: store)
+                    UpdateAvailableBanner(store: store)
                     StatusBanner(store: store)
 
                     switch selection {
@@ -259,6 +260,60 @@ private struct StatusBanner: View {
         case let .failed(message):
             BannerContent(symbol: "xmark.octagon.fill", title: message, bodyText: store.lastLog.isEmpty ? "The bridge could not be installed or started. Check Diagnostics for details." : store.lastLog, color: .red)
         }
+    }
+}
+
+private struct UpdateAvailableBanner: View {
+    @ObservedObject var store: BridgeStore
+
+    var body: some View {
+        if store.updateAvailable {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 32, weight: .semibold))
+                    .foregroundStyle(.cyan)
+                    .frame(width: 40)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(updateTitle)
+                        .font(.title3.weight(.semibold))
+                    Text(store.updateSummary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 16)
+
+                Button {
+                    store.installLatestUpdate()
+                } label: {
+                    Label("Install Update", systemImage: "arrow.down.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    Task { await store.checkForUpdates() }
+                } label: {
+                    Label("Check Again", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isCheckingForUpdates)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.cyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.cyan.opacity(0.45), lineWidth: 1))
+            .shadow(color: .cyan.opacity(0.12), radius: 12, y: 4)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var updateTitle: String {
+        if store.latestReleaseTag.isEmpty {
+            return "VoiceClaw Companion Update Available"
+        }
+        return "VoiceClaw Companion \(store.latestReleaseTag) Is Available"
     }
 }
 
@@ -639,7 +694,7 @@ private struct StatusPanel: View {
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
-            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw checks for signed GitHub Release updates in the background." : "Automatic checks are off. The menu bar icon shows an update warning; use Check Updates when you want to compare against the latest release.", symbol: "clock.arrow.circlepath")
+            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw checks for signed GitHub Release updates every \(store.automaticUpdateCheckInterval.shortLabel)." : "Automatic checks are off. The menu bar icon shows an update warning; use Check Updates when you want to compare against the latest release.", symbol: "clock.arrow.circlepath")
             StatusRow(title: "Update Install", value: store.automaticUpdateInstallsEnabled ? "Automatic install is on. When Sparkle finds a signed update, it can download and install it in-app instead of making you open a DMG manually." : "Automatic install is off. VoiceClaw will still show available updates, but you decide when to install them.", symbol: store.automaticUpdateInstallsEnabled ? "arrow.down.app.fill" : "arrow.down.app")
 
             if let lastUpdateCheckDate = store.lastUpdateCheckDate {
@@ -714,6 +769,20 @@ private struct StatusPanel: View {
                     .toggleStyle(.checkbox)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Picker("Check Frequency", selection: $store.automaticUpdateCheckInterval) {
+                    ForEach(CompanionUpdateCheckInterval.allCases) { interval in
+                        Text(interval.shortLabel).tag(interval)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 360)
+                .disabled(!store.automaticUpdateChecksEnabled)
+
+                Text("VoiceClaw checks once at launch and then repeats at this interval while the companion is open.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Toggle("Automatically download and install signed updates", isOn: $store.automaticUpdateInstallsEnabled)
                     .toggleStyle(.checkbox)

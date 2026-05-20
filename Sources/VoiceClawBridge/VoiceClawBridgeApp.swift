@@ -30,10 +30,14 @@ struct VoiceClawBridgeApp: App {
             }
         }
 
-        MenuBarExtra("VoiceClaw", systemImage: menuBarSystemImage) {
+        MenuBarExtra(menuBarTitle, systemImage: menuBarSystemImage) {
             CompanionMenuBarView(store: store)
         }
         .menuBarExtraStyle(.menu)
+    }
+
+    private var menuBarTitle: String {
+        store.updateAvailable ? "Update" : "VoiceClaw"
     }
 
     private var menuBarSystemImage: String {
@@ -59,6 +63,29 @@ private struct CompanionMenuBarView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        if store.updateAvailable {
+            Label("Update Available", systemImage: "arrow.down.circle.fill")
+                .font(.headline)
+
+            if !store.latestReleaseTag.isEmpty {
+                Text(store.latestReleaseTag)
+            }
+
+            Button {
+                store.installLatestUpdate()
+            } label: {
+                Label("Install Update", systemImage: "arrow.down.circle.fill")
+            }
+
+            Button {
+                store.openLatestRelease()
+            } label: {
+                Label("Open Release", systemImage: "safari")
+            }
+
+            Divider()
+        }
+
         Button {
             openMainWindow()
         } label: {
@@ -79,10 +106,11 @@ private struct CompanionMenuBarView: View {
         .disabled(store.pairingJSON.isEmpty)
 
         Button {
-            store.installLatestUpdate()
+            Task { await store.checkForUpdates() }
         } label: {
-            Label("Check for Updates", systemImage: "arrow.down.circle")
+            Label(store.isCheckingForUpdates ? "Checking Updates" : "Check Updates", systemImage: "arrow.down.circle")
         }
+        .disabled(store.isCheckingForUpdates)
 
         if store.updateAvailable {
             Button {
@@ -92,6 +120,10 @@ private struct CompanionMenuBarView: View {
             }
         } else {
             Label(updateModeLabel, systemImage: updateModeSymbol)
+        }
+
+        if store.automaticUpdateChecksEnabled {
+            Label("Checks: \(store.automaticUpdateCheckInterval.shortLabel)", systemImage: "clock.arrow.circlepath")
         }
 
         Divider()

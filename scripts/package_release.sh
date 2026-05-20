@@ -86,7 +86,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>SUPublicEDKey</key>
   <string>$SPARKLE_PUBLIC_ED_KEY</string>
   <key>SUScheduledCheckInterval</key>
-  <integer>21600</integer>
+  <integer>1800</integer>
 </dict>
 </plist>
 PLIST

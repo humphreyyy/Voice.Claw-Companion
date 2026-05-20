@@ -29,6 +29,51 @@ enum CompanionRealtimeAuthMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum CompanionUpdateCheckInterval: String, CaseIterable, Identifiable {
+    case fiveMinutes = "5m"
+    case thirtyMinutes = "30m"
+    case oneHour = "1h"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .fiveMinutes:
+            "Every 5 minutes"
+        case .thirtyMinutes:
+            "Every 30 minutes"
+        case .oneHour:
+            "Every hour"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .fiveMinutes:
+            "5 min"
+        case .thirtyMinutes:
+            "30 min"
+        case .oneHour:
+            "1 hour"
+        }
+    }
+
+    var seconds: TimeInterval {
+        switch self {
+        case .fiveMinutes:
+            5 * 60
+        case .thirtyMinutes:
+            30 * 60
+        case .oneHour:
+            60 * 60
+        }
+    }
+
+    var nanoseconds: UInt64 {
+        UInt64(seconds * 1_000_000_000)
+    }
+}
+
 @MainActor
 final class BridgeStore: ObservableObject {
     private enum DefaultsKeys {
@@ -39,6 +84,7 @@ final class BridgeStore: ObservableObject {
         static let realtimeAuthFallbackToAPIKey = "voiceclaw.realtimeAuthFallbackToAPIKey"
         static let automaticUpdateChecksEnabled = "voiceclaw.automaticUpdateChecksEnabled"
         static let automaticUpdateInstallsEnabled = "voiceclaw.automaticUpdateInstallsEnabled"
+        static let automaticUpdateCheckInterval = "voiceclaw.automaticUpdateCheckInterval"
     }
 
     private static let defaultBridgePort = "12321"
@@ -114,6 +160,13 @@ final class BridgeStore: ObservableObject {
             applySparkleUpdatePreferences()
         }
     }
+    @Published var automaticUpdateCheckInterval: CompanionUpdateCheckInterval = .thirtyMinutes {
+        didSet {
+            UserDefaults.standard.set(automaticUpdateCheckInterval.rawValue, forKey: DefaultsKeys.automaticUpdateCheckInterval)
+            configureAutomaticUpdateChecks()
+            applySparkleUpdatePreferences()
+        }
+    }
     @Published var lastUpdateCheckDate: Date?
     @Published var latestReleaseTag: String = ""
     @Published var latestReleaseURL: URL? = URL(string: "https://github.com/bdjben/Voice.Claw-Companion/releases/latest")
@@ -127,7 +180,6 @@ final class BridgeStore: ObservableObject {
     private var automaticUpdateTask: Task<Void, Never>?
     private var isSyncingSparkleUpdatePreferences = false
     private var suppressTransientSetupWarningUntil: Date?
-    private static let automaticUpdateIntervalNanoseconds: UInt64 = 6 * 60 * 60 * 1_000_000_000
 
     enum BridgeStatus: Equatable {
         case idle
@@ -187,7 +239,14 @@ final class BridgeStore: ObservableObject {
             sparkleUpdaterController.updater.automaticallyDownloadsUpdates = true
             automaticUpdateInstallsEnabled = true
         }
+        if let savedUpdateInterval = UserDefaults.standard.string(forKey: DefaultsKeys.automaticUpdateCheckInterval),
+           let interval = CompanionUpdateCheckInterval(rawValue: savedUpdateInterval) {
+            automaticUpdateCheckInterval = interval
+        } else {
+            automaticUpdateCheckInterval = .thirtyMinutes
+        }
         syncSparkleUpdatePreferences()
+        applySparkleUpdatePreferences()
         Task {
             await loadSavedBridgeConfig()
             await refreshStatus()
@@ -420,7 +479,7 @@ final class BridgeStore: ObservableObject {
                 updateSummary = "Update \(release.tagName) is available. Use Install Update to let Sparkle download and install the signed release. Notarized DMG: \(latestDMGName)."
             } else {
                 updateAvailable = false
-                updateSummary = "VoiceClaw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName)."
+                updateSummary = "VoiceClaw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName). Automatic checks run \(automaticUpdateCheckInterval.label.lowercased()) when enabled."
             }
         } catch {
             updateAvailable = false
@@ -434,9 +493,10 @@ final class BridgeStore: ObservableObject {
 
         guard automaticUpdateChecksEnabled else { return }
 
+        let intervalNanoseconds = automaticUpdateCheckInterval.nanoseconds
         automaticUpdateTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: Self.automaticUpdateIntervalNanoseconds)
+                try? await Task.sleep(nanoseconds: intervalNanoseconds)
                 guard !Task.isCancelled else { break }
                 await self?.checkForUpdates(manual: false)
             }
@@ -446,6 +506,7 @@ final class BridgeStore: ObservableObject {
     private func applySparkleUpdatePreferences() {
         guard !isSyncingSparkleUpdatePreferences else { return }
         sparkleUpdaterController.updater.automaticallyChecksForUpdates = automaticUpdateChecksEnabled
+        sparkleUpdaterController.updater.updateCheckInterval = automaticUpdateCheckInterval.seconds
         if sparkleUpdaterController.updater.allowsAutomaticUpdates {
             sparkleUpdaterController.updater.automaticallyDownloadsUpdates = automaticUpdateInstallsEnabled
         }

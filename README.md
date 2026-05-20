@@ -39,7 +39,7 @@ The Pair iPhone screen includes an OpenAI API key field. **Include API Key in Se
 
 ## Updates
 
-VoiceClaw Companion checks GitHub Releases for signed updates. Automatic checks and automatic signed update installs are on by default. The Diagnostics screen and menu bar item show when updates are manual-only or when a newer build is available.
+VoiceClaw Companion checks GitHub Releases for signed updates. Automatic checks and automatic signed update installs are on by default. The Diagnostics screen lets users choose whether checks run every 5 minutes, every 30 minutes, or every hour. The main window and menu bar item show prominently when a newer build is available.
 
 ## Reset First-Run State
 
