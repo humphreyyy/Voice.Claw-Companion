@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.52</title>
+            <pubDate>Wed, 20 May 2026 18:17:39 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202605201515</sparkle:version>
+            <sparkle:shortVersionString>0.1.52</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.52</h2><ul><li>Adds Companion runtime support for the new GPT-5.5 without OpenClaw route and iPhone/watch route-switching metadata.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.52/VoiceClawCompanion-0.1.52-202605201515.dmg" length="2966499" type="application/octet-stream" sparkle:edSignature="RWeT25p+zzyZzET648rI8nrsUHM5ZQ5ryeOnO39mnR+eb3J9cFUMno9/vPvlmI4HrhlMzcRKo0WD+thCkY41Bg=="/>
+        </item>
+        <item>
             <title>0.1.51</title>
             <pubDate>Tue, 19 May 2026 16:11:11 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -28,24 +40,6 @@
 </ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.50/VoiceClawCompanion-0.1.50-202605191050.dmg" length="2965512" type="application/octet-stream" sparkle:edSignature="44cOMkv4v41/FWBVZCe9qnldaHR4SktSJegy3/eZTAh4GQJxacxjey5Bmnse0WiGHPwrxRWYMlA8yALrYTWbAA=="/>
-        </item>
-        <item>
-            <title>0.1.49</title>
-            <pubDate>Sun, 17 May 2026 01:04:55 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202605170056</sparkle:version>
-            <sparkle:shortVersionString>0.1.49</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.49</h2>
-<ul>
-  <li>Uses port 12321 for new bridge setup and defaults the OpenClaw agent name to main.</li>
-  <li>Adds an OpenClaw Agent field for users who need to target a different local agent.</li>
-  <li>Clarifies the optional non-Tailscale HTTPS bridge setup for Apple Watch use away from iPhone relay.</li>
-  <li>Makes update checks enabled by default and improves Diagnostics version/build visibility.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.49/VoiceClawCompanion-0.1.49-202605170056.dmg" length="2964583" type="application/octet-stream" sparkle:edSignature="qqwHwv9IS4SZnZBYN33IZSPJw2GfBiqosZt5rhYp720yw+HvLZ2aVUoD9ghDee7u3W2DcvO+BFftSuBa6N8hCw=="/>
         </item>
     </channel>
 </rss>

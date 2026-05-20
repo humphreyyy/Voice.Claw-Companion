@@ -434,6 +434,24 @@ ${IPHONE_TOOL_CAPABILITY_SUMMARY}
 - If audio is unclear or sounds like your own previous speech echoing back, ask briefly for clarification instead of guessing.
 `;
 
+const REALTIME_GPT55_DIRECT_INSTRUCTIONS = process.env.REALTIME_GPT55_DIRECT_INSTRUCTIONS || `
+# Role
+- You are VoiceClaw in GPT-5.5 without OpenClaw mode.
+- GPT-Realtime-2 is responsible for live voice, timing, interruption, and short conversational answers.
+- Use GPT-5.5 Direct only when the full GPT-5.5 model materially improves the answer.
+
+# Available capability map
+- GPT-Realtime-2 direct voice conversation for fast back-and-forth, interruption, ordinary short answers, clarification, and spoken flow.
+- gpt55_direct for richer GPT-5.5 text answers, drafting, rewriting, planning, complex reasoning, research synthesis, and current public web questions.
+- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone mute/unmute, live session ending, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, Calendar/Reminder actions, email/message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, share sheets, named Shortcuts, and clipboard reading/copying.
+
+# Boundaries
+- This route uses the user's ChatGPT subscription through the Companion and does not require an OpenAI API key for GPT-5.5 Direct.
+- OpenClaw/Mac/private-computer tools are not available. Do not claim access to local files, browser state, shell, private mail/messages, memory, crons, dashboards, or OpenClaw tools.
+- Call gpt55_direct with reasoning "medium" by default.
+- If current public information is needed, set web_search true and include relevant context.
+`;
+
 const REALTIME_TOOLS = [
   {
     type: 'function',
@@ -489,6 +507,25 @@ const INSTANT_REALTIME_TOOLS = [
         text: { type: 'string', description: 'The complete user request for GPT-5.5 Instant.' },
         context: { type: 'string', description: 'Brief conversational context needed to answer correctly.' },
         web_search: { type: 'boolean', description: 'True when current public web information is useful.' }
+      },
+      required: ['text']
+    }
+  }
+];
+
+const GPT55_DIRECT_REALTIME_TOOLS = [
+  {
+    type: 'function',
+    name: 'gpt55_direct',
+    description: "Ask the full GPT-5.5 model through the user's ChatGPT subscription via the Companion, without OpenClaw/Mac/private-computer tools. Use for substantive reasoning, drafting, current public web questions, complex reasoning, research, or answers that benefit from a full text model. Reasoning defaults to medium.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        text: { type: 'string', description: 'The complete user request for GPT-5.5.' },
+        context: { type: 'string', description: 'Brief conversational or web-search context needed to answer correctly.' },
+        web_search: { type: 'boolean', description: 'True when current public web information is useful.' },
+        reasoning: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh'], description: 'Reasoning level. Defaults to medium.' }
       },
       required: ['text']
     }
@@ -567,13 +604,13 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_switch_voice_route',
-    description: 'Prepare, confirm, or cancel a VoiceClaw route/mode switch on this iPhone. Use only when the user explicitly asks to switch VoiceClaw mode, voice route, or route to Direct, Realtime-2, Instant, Bridge, OpenClaw, Tunnel, or HTTPS Tunnel. First call with action "prepare" and an exact route enum, ask a short confirmation question, then call with action "confirm" or "cancel" and the same route enum.',
+    description: 'Prepare, confirm, or cancel a VoiceClaw route/mode switch on this iPhone. Use only when the user explicitly asks to switch VoiceClaw mode, voice route, or route to Direct, Realtime-2, Instant, GPT-5.5 without OpenClaw, Bridge, OpenClaw, Tunnel, or HTTPS Tunnel. First call with action "prepare" and an exact route enum, ask a short confirmation question, then call with action "confirm" or "cancel" and the same route enum.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         action: { type: 'string', enum: ['prepare', 'confirm', 'cancel'], description: 'prepare stores the requested route pending confirmation; confirm applies it and restarts the live session; cancel clears the pending request.' },
-        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'openclaw-bridge', 'openclaw-public-tunnel'], description: 'Exact route enum: realtime-only for Direct GPT-Realtime-2, gpt55-instant for GPT-5.5 Instant, openclaw-bridge for OpenClaw Bridge, or openclaw-public-tunnel for OpenClaw HTTPS Tunnel.' },
+        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'gpt55-direct', 'openclaw-bridge', 'openclaw-public-tunnel'], description: 'Exact route enum: realtime-only for Direct GPT-Realtime-2, gpt55-instant for GPT-5.5 Instant, gpt55-direct for GPT-5.5 without OpenClaw, openclaw-bridge for OpenClaw Bridge, or openclaw-public-tunnel for OpenClaw HTTPS Tunnel.' },
         reason: { type: 'string', description: 'Brief reason the user requested this route switch.' }
       },
       required: ['action', 'route']
@@ -1367,6 +1404,31 @@ async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
     return;
   }
   if (name === 'bridge_status') { outputAndSpeak(JSON.stringify(bridgeStatusSnapshot(sessionToken))); return; }
+  if (name === 'gpt55_direct') {
+    const requestText = String(args.text || '').trim();
+    if (!requestText) { outputJsonAndSpeakSummary({ ok: false, error: 'No GPT-5.5 request text supplied.' }); return; }
+    const context = String(args.context || '').trim();
+    const text = context ? `Conversation and web-search context:\n${context}\n\nUser request:\n${requestText}` : requestText;
+    const reasoning = ['low', 'medium', 'high', 'xhigh'].includes(String(args.reasoning || '').trim()) ? String(args.reasoning).trim() : 'medium';
+    const turnId = `rt-gpt55-direct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const result = await runRealtimeOpenClawTurn({
+      text,
+      sessionToken,
+      turnId,
+      urgency: 'normal',
+      processing: { agent: 'gpt55-direct', thinking: reasoning, fastMode: 'on' },
+    });
+    outputJsonAndSpeakSummary({
+      ok: !!result.ok,
+      route: 'gpt55_direct',
+      model: 'openai/gpt-5.5',
+      reasoning,
+      answer: result.reply,
+      summary: result.ok ? result.reply : `GPT-5.5 Direct failed: ${result.error || 'unknown error'}`,
+      error: result.ok ? undefined : result.error,
+    });
+    return;
+  }
   if (name && name !== 'openclaw_turn') return;
   const gate = actionability(args.text || '', { allowWake: false, allowShortCommand: true, context: 'realtime-sideband' });
   if (!gate.actionable) { outputAndSpeak("I didn't catch that. Say it again?"); return; }
@@ -1539,6 +1601,7 @@ function realtimeRoutingMode(req) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const value = String(url.searchParams.get('route') || req.headers['x-openclaw-route'] || '').toLowerCase();
   if (['instant', 'gpt55', 'gpt-5.5', 'gpt55-instant', 'chat-latest'].includes(value)) return 'instant';
+  if (['gpt55-direct', 'gpt-5.5-direct', 'gpt55-without-openclaw', 'without-openclaw'].includes(value)) return 'gpt55-direct';
   return value === 'direct' || value === 'pure' || value === 'realtime-only' ? 'direct' : 'openclaw';
 }
 
@@ -1547,7 +1610,7 @@ function isOpenClawRealtimeRoute(routeMode = '') {
 }
 
 function hasServerOwnedRealtimeTools(routeMode = '') {
-  return isOpenClawRealtimeRoute(routeMode);
+  return isOpenClawRealtimeRoute(routeMode) || routeMode === 'gpt55-direct';
 }
 
 function realtimeCurrentContext() {
@@ -1564,17 +1627,19 @@ function realtimeCurrentContext() {
 function realtimeInstructionsForRoute(routeMode = '') {
   const base = isOpenClawRealtimeRoute(routeMode)
     ? REALTIME_INSTRUCTIONS
-    : (routeMode === 'instant' ? REALTIME_INSTANT_INSTRUCTIONS : REALTIME_DIRECT_INSTRUCTIONS);
+    : (routeMode === 'gpt55-direct' ? REALTIME_GPT55_DIRECT_INSTRUCTIONS : (routeMode === 'instant' ? REALTIME_INSTANT_INSTRUCTIONS : REALTIME_DIRECT_INSTRUCTIONS));
   return `${base.trim()}\n${realtimeCurrentContext()}`.trim();
 }
 
 function realtimeToolsForRoute(routeMode = '') {
   if (routeMode === 'instant') return [...INSTANT_REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS];
+  if (routeMode === 'gpt55-direct') return [...GPT55_DIRECT_REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS];
   return isOpenClawRealtimeRoute(routeMode) ? [...REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS] : IPHONE_REALTIME_TOOLS;
 }
 
 function watchRealtimeToolsForRoute(routeMode = '') {
   if (routeMode === 'instant') return INSTANT_REALTIME_TOOLS;
+  if (routeMode === 'gpt55-direct') return GPT55_DIRECT_REALTIME_TOOLS;
   return isOpenClawRealtimeRoute(routeMode) ? REALTIME_TOOLS : [];
 }
 
@@ -1990,7 +2055,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', REALTIME_MODEL], routeModes: ['direct', 'instant', 'openclaw'], auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw'], auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;
@@ -2116,7 +2181,7 @@ const httpServer = createServer(async (req, res) => {
       const body = await readRequestBody(req, 200_000).catch(() => '{}');
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
-      const routeMode = ['direct', 'instant', 'openclaw'].includes(String(payload.routeMode || '').toLowerCase())
+      const routeMode = ['direct', 'instant', 'gpt55-direct', 'openclaw'].includes(String(payload.routeMode || '').toLowerCase())
         ? String(payload.routeMode || '').toLowerCase()
         : 'direct';
       const { session } = watchRealtimeSessionConfig({

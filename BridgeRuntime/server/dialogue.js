@@ -19,7 +19,9 @@ const DEFAULT_THINKING = process.env.INTERCOM_THINKING || 'minimal';
 const INSTANT_RAW_MODEL = 'openai/chat-latest';
 const BRIDGE_DEFAULT_MODEL = process.env.INTERCOM_DEFAULT_MODEL || 'openai/gpt-5.5';
 const BRIDGE_DEFAULT_LABEL = process.env.INTERCOM_DEFAULT_MODEL_LABEL || 'GPT-5.5 (OpenClaw tools)';
-const THINKING_OPTIONS = ['off', 'minimal', 'low', 'medium', 'high'];
+const DIRECT_GPT55_ROUTE_ID = 'gpt55-direct';
+const DIRECT_GPT55_MODEL = 'openai/gpt-5.5';
+const THINKING_OPTIONS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
 function shortModelName(modelId = '') {
   if (!modelId) return 'default';
@@ -96,6 +98,18 @@ function buildProcessingRoutes() {
     };
   });
 
+  routes.splice(Math.min(routes.length, 1), 0, {
+    id: DIRECT_GPT55_ROUTE_ID,
+    label: 'GPT-5.5 Direct (raw/no OpenClaw)',
+    agent: DEFAULT_AGENT,
+    model: DIRECT_GPT55_MODEL,
+    modelRun: true,
+    promptMode: 'none',
+    modelOverride: DIRECT_GPT55_MODEL,
+    fastHint: true,
+    fastVerified: false,
+  });
+
   // Hard fallback if runtime metadata is unavailable.
   if (!routes.length) {
     routes.push({
@@ -136,6 +150,7 @@ function routeIdByAlias(raw) {
 
   const primary = PROCESSING_ROUTES[0]?.id || 'default';
   if (wanted === 'main' || wanted === 'default' || wanted === 'default-fast' || wanted === 'intercom' || wanted === 'gpt54' || wanted === 'gpt54-fast') return primary;
+  if (['gpt55-direct', 'gpt55direct', 'gpt-5.5-direct', 'gpt-5.5-without-openclaw', 'without-openclaw'].includes(wanted)) return DIRECT_GPT55_ROUTE_ID;
   return wanted;
 }
 
