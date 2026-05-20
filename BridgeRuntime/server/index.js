@@ -1822,6 +1822,87 @@ function realtimeUserMessage(text = '') {
   };
 }
 
+function safeAttachmentFilename(value = '', fallback = 'attachment.bin') {
+  const cleaned = String(value || '')
+    .replace(/[^\w.\- ]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return cleaned || fallback;
+}
+
+async function writeVoiceClawAttachments(sessionToken = '', attachments = []) {
+  const safeSession = sanitizeRealtimeSessionToken(sessionToken || `attachment-${Date.now().toString(36)}`);
+  const dir = join(tmpdir(), 'voiceclaw-attachments', safeSession);
+  await mkdir(dir, { recursive: true });
+  const written = [];
+  const maxAttachments = Number(process.env.VOICECLAW_ATTACHMENT_MAX_COUNT || 8);
+  const maxBytes = Number(process.env.VOICECLAW_ATTACHMENT_MAX_BYTES || 12_000_000);
+  for (const [index, attachment] of attachments.slice(0, maxAttachments).entries()) {
+    const base64 = String(attachment?.base64 || '').trim();
+    if (!base64) continue;
+    const bytes = Buffer.from(base64, 'base64');
+    if (!bytes.length) continue;
+    if (bytes.length > maxBytes) {
+      written.push({
+        filename: safeAttachmentFilename(attachment?.filename, `attachment-${index + 1}.bin`),
+        mimeType: String(attachment?.mimeType || 'application/octet-stream'),
+        skipped: true,
+        reason: `attachment too large (${bytes.length} bytes)`,
+      });
+      continue;
+    }
+    const filename = safeAttachmentFilename(attachment?.filename, `attachment-${index + 1}.bin`);
+    const path = join(dir, `${index + 1}-${filename}`);
+    await writeFile(path, bytes);
+    written.push({
+      filename,
+      mimeType: String(attachment?.mimeType || 'application/octet-stream'),
+      path,
+      bytes: bytes.length,
+    });
+  }
+  return written;
+}
+
+async function runRealtimeAttachmentAnalysis({ text, sessionToken, urgency = 'normal', processing = {}, attachments = [] } = {}) {
+  const key = sanitizeRealtimeSessionToken(sessionToken || `attachment-${Date.now().toString(36)}`);
+  const written = await writeVoiceClawAttachments(key, Array.isArray(attachments) ? attachments : []);
+  const fileLines = written.length
+    ? written.map((file) => {
+      if (file.skipped) return `- ${file.filename} (${file.mimeType}): skipped, ${file.reason}`;
+      return `- ${file.filename} (${file.mimeType}, ${file.bytes} bytes): ${file.path}`;
+    }).join('\n')
+    : '- No binary files were attached; answer from the supplied text and context.';
+  const prompt = `
+VoiceClaw iPhone attachment analysis request.
+
+User request:
+${String(text || '').trim() || 'Analyze the attached item and summarize what matters.'}
+
+Attachment files written on this Mac for OpenClaw/tool inspection:
+${fileLines}
+
+Use OpenClaw/local tools and model vision as appropriate. If the attachment is an image, inspect it directly when possible. If a file type cannot be read directly, explain that plainly and suggest the most useful next step.
+`.trim();
+  const reply = await generateReply(prompt, {
+    processing: { ...(processing || {}), sessionToken: realtimeOpenClawSessionToken(key), fastMode: 'on' },
+    timeoutMs: realtimeVoiceTimeoutMs(urgency, processing || {}),
+  });
+  await appendRealtimeLog({
+    kind: 'attachment_analysis',
+    sessionToken: key,
+    attachments: written.map((file) => ({ filename: file.filename, mimeType: file.mimeType, bytes: file.bytes || 0, skipped: !!file.skipped })),
+    replyPreview: String(reply || '').slice(0, 300),
+  });
+  return {
+    ok: true,
+    sessionToken: key,
+    reply: reply || 'OpenClaw finished the attachment analysis, but returned no text.',
+    attachments: written,
+  };
+}
+
 function watchRealtimeResponseCreate({ voice = REALTIME_VOICE, instructions = '' } = {}) {
   const response = {
     output_modalities: ['audio'],
@@ -1842,12 +1923,16 @@ async function runWatchRealtimeTurn({ req, payload }) {
   const model = String(payload.model || REALTIME_MODEL).trim() || REALTIME_MODEL;
   const voice = String(payload.voice || REALTIME_VOICE).trim() || REALTIME_VOICE;
   const text = String(payload.text || '').trim();
+  const context = String(payload.context || '').trim();
   const audioBase64 = String(payload.audioBase64 || '').trim();
   const audioContentType = String(payload.audioContentType || 'audio/m4a').trim();
   if (!text && !audioBase64) throw new Error('Watch Realtime turn needs audio or text.');
 
   const processing = payload.processing && typeof payload.processing === 'object' ? payload.processing : {};
   const { options, session } = watchRealtimeSessionConfig({ routeMode, model, voice, sessionToken, processing });
+  if (context) {
+    session.instructions = `${session.instructions || ''}\n\n# Recent VoiceClaw Watch Conversation\n${context}`.trim();
+  }
   const apiKey = openAIKeyForRealtimeRequest(req);
   const realtimeBearer = await resolveRealtimeBearer({ req, session, apiKey });
   const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
@@ -1939,6 +2024,12 @@ async function runWatchRealtimeTurn({ req, payload }) {
     try { ws.close(); } catch {}
   }
 
+  if (!assistantText.trim()) {
+    const latest = latestRealtimeResult(key);
+    if (latest?.ok && latest.reply) {
+      assistantText = String(latest.reply);
+    }
+  }
   const reply = assistantText.trim() || 'GPT-Realtime-2 returned model audio.';
   const audioData = Buffer.concat(audioChunks);
   await appendRealtimeLog({
@@ -2121,6 +2212,29 @@ const httpServer = createServer(async (req, res) => {
       }
       res.writeHead(result.ok ? 200 : (result.cancelled ? 409 : 400), { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ...result, queue: { pending: realtimeQueueCount(payload.sessionToken), max: MAX_REALTIME_PENDING_TURNS } }));
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/analyze-attachment`) {
+      const body = await readRequestBody(req, Number(process.env.VOICECLAW_ATTACHMENT_MAX_BODY_BYTES || 30_000_000));
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      const sessionToken = payload.sessionToken || req.headers['x-voice-session-token'] || `attachment-${Date.now().toString(36)}`;
+      try {
+        const result = await runRealtimeAttachmentAnalysis({
+          text: payload.text || '',
+          sessionToken,
+          urgency: payload.urgency || 'normal',
+          processing: payload.processing && typeof payload.processing === 'object' ? payload.processing : {},
+          attachments: Array.isArray(payload.attachments) ? payload.attachments : [],
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        await appendRealtimeLog({ kind: 'attachment_analysis_error', sessionToken: sanitizeRealtimeSessionToken(sessionToken), error: err.message });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message || 'Attachment analysis failed.' }));
+      }
       return;
     }
 
