@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.58</title>
+            <pubDate>Thu, 21 May 2026 03:36:00 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202605210334</sparkle:version>
+            <sparkle:shortVersionString>0.1.58</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.58</h2><ul><li>Adds Launch upon Startup so VoiceClaw Companion can open automatically when the Mac user logs in.</li><li>Adds a prominent Launch upon Startup control and status in the main window, Diagnostics, and the menu bar.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.58/VoiceClawCompanion-0.1.58-202605210334.dmg" length="3176587" type="application/octet-stream" sparkle:edSignature="AUhh+5M40D/OCKK6tKnqJOLI0XlOkr8xFqJ7c+xXiP9OqVWLZaai0Io29l3zcqYtPQn102vKBreDBBu4p7TZCQ=="/>
+        </item>
+        <item>
             <title>0.1.57</title>
             <pubDate>Thu, 21 May 2026 02:53:34 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -13,30 +25,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.57</h2><ul><li>Adds iPhone Home Screen widget and Lock Screen / Control Center control guidance to the Pair iPhone page.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.57/VoiceClawCompanion-0.1.57-202605210250.dmg" length="3162500" type="application/octet-stream" sparkle:edSignature="Yf//fitFfvYShaJh95bdt1Y5yx5ayonJig5G3xonP042Kp1NcOTscLj1vhsbzDFitZGux14WvselkS56APnPCw=="/>
-        </item>
-        <item>
-            <title>0.1.56</title>
-            <pubDate>Thu, 21 May 2026 01:51:42 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202605210149</sparkle:version>
-            <sparkle:shortVersionString>0.1.56</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.56</h2><p>Update to check auto-updater functionality.</p>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.56/VoiceClawCompanion-0.1.56-202605210149.dmg" length="3162499" type="application/octet-stream" sparkle:edSignature="s4uNowdjhx/VcK1wXSC+CQWJrBdNj2HztkppPIgmGBTYTkVf7rRF+DcmT9yAoHfrfMeVtkdhAv8g73sTMwCzCg=="/>
-        </item>
-        <item>
-            <title>0.1.55</title>
-            <pubDate>Thu, 21 May 2026 01:49:24 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202605210147</sparkle:version>
-            <sparkle:shortVersionString>0.1.55</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.55</h2><ul><li>Adds visible update alerts in the main window and menu bar.</li><li>Adds automatic update check frequency options: 5 minutes, 30 minutes, or 1 hour.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.55/VoiceClawCompanion-0.1.55-202605210147.dmg" length="3162402" type="application/octet-stream" sparkle:edSignature="K/51NUu9I0ibdlt/Fag+rwt9Sw4KFVDjI36q/nc5aCSzlidoe0wRnMg4rghuDGtFppKaoQYHmHNYU+nfLvEXDQ=="/>
         </item>
     </channel>
 </rss>

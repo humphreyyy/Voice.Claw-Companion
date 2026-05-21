@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Foundation
 import Security
+import ServiceManagement
 import Sparkle
 
 enum CompanionRealtimeAuthMode: String, CaseIterable, Identifiable {
@@ -85,6 +86,7 @@ final class BridgeStore: ObservableObject {
         static let automaticUpdateChecksEnabled = "voiceclaw.automaticUpdateChecksEnabled"
         static let automaticUpdateInstallsEnabled = "voiceclaw.automaticUpdateInstallsEnabled"
         static let automaticUpdateCheckInterval = "voiceclaw.automaticUpdateCheckInterval"
+        static let launchAtStartupEnabled = "voiceclaw.launchAtStartupEnabled"
     }
 
     private static let defaultBridgePort = "12321"
@@ -173,6 +175,9 @@ final class BridgeStore: ObservableObject {
     @Published var latestDMGURL: URL?
     @Published var latestDMGName: String = ""
     @Published var latestDMGDigest: String = ""
+    @Published var launchAtStartupEnabled: Bool = false
+    @Published var launchAtStartupSummary: String = "Launch at startup has not been checked."
+    @Published var isUpdatingLaunchAtStartup: Bool = false
 
     private let runner = ProcessRunner()
     private let sparkleUpdaterController: SPUStandardUpdaterController
@@ -248,6 +253,7 @@ final class BridgeStore: ObservableObject {
         syncSparkleUpdatePreferences()
         applySparkleUpdatePreferences()
         Task {
+            await configureLaunchAtStartupOnFirstRun()
             await loadSavedBridgeConfig()
             await refreshStatus()
             await checkForUpdates(manual: false)
@@ -256,8 +262,48 @@ final class BridgeStore: ObservableObject {
     }
 
     func refreshStatus() async {
+        refreshLaunchAtStartupStatus()
         await refreshBridgeDiagnostics()
         lastRefreshDate = Date()
+    }
+
+    func refreshLaunchAtStartupStatus() {
+        let status = SMAppService.mainApp.status
+        launchAtStartupEnabled = status == .enabled || status == .requiresApproval
+        launchAtStartupSummary = Self.launchAtStartupSummary(for: status)
+    }
+
+    func setLaunchAtStartupEnabled(_ enabled: Bool, userInitiated: Bool = true) async {
+        guard !isUpdatingLaunchAtStartup else { return }
+        isUpdatingLaunchAtStartup = true
+        defer { isUpdatingLaunchAtStartup = false }
+
+        do {
+            let currentStatus = SMAppService.mainApp.status
+            if enabled {
+                if currentStatus != .enabled, currentStatus != .requiresApproval {
+                    try SMAppService.mainApp.register()
+                }
+                UserDefaults.standard.set(true, forKey: DefaultsKeys.launchAtStartupEnabled)
+            } else {
+                if currentStatus == .enabled || currentStatus == .requiresApproval {
+                    try await SMAppService.mainApp.unregister()
+                }
+                UserDefaults.standard.set(false, forKey: DefaultsKeys.launchAtStartupEnabled)
+            }
+            refreshLaunchAtStartupStatus()
+            lastLog = enabled
+                ? "VoiceClaw Companion is set to launch when this Mac user logs in."
+                : "VoiceClaw Companion will no longer launch automatically at login."
+        } catch {
+            refreshLaunchAtStartupStatus()
+            let action = enabled ? "enable" : "disable"
+            let message = "Could not \(action) Launch upon Startup: \(error.localizedDescription)"
+            launchAtStartupSummary = message
+            if userInitiated {
+                lastLog = message
+            }
+        }
     }
 
     func setupBridge() async {
@@ -518,6 +564,21 @@ final class BridgeStore: ObservableObject {
         automaticUpdateChecksEnabled = sparkleUpdaterController.updater.automaticallyChecksForUpdates
         automaticUpdateInstallsEnabled = sparkleUpdaterController.updater.automaticallyDownloadsUpdates
         isSyncingSparkleUpdatePreferences = false
+    }
+
+    private func configureLaunchAtStartupOnFirstRun() async {
+        let defaults = UserDefaults.standard
+        let storedPreference = defaults.object(forKey: DefaultsKeys.launchAtStartupEnabled)
+        if storedPreference == nil {
+            defaults.set(true, forKey: DefaultsKeys.launchAtStartupEnabled)
+        }
+
+        refreshLaunchAtStartupStatus()
+        if defaults.bool(forKey: DefaultsKeys.launchAtStartupEnabled),
+           SMAppService.mainApp.status != .enabled,
+           SMAppService.mainApp.status != .requiresApproval {
+            await setLaunchAtStartupEnabled(true, userInitiated: false)
+        }
     }
 
     func chooseFreshTestPort() async {
@@ -913,6 +974,21 @@ final class BridgeStore: ObservableObject {
         }
 
         return .orderedSame
+    }
+
+    private static func launchAtStartupSummary(for status: SMAppService.Status) -> String {
+        switch status {
+        case .enabled:
+            return "VoiceClaw Companion will open automatically when this Mac user logs in."
+        case .requiresApproval:
+            return "VoiceClaw Companion is registered for login, but macOS needs approval in System Settings > General > Login Items."
+        case .notRegistered:
+            return "VoiceClaw Companion is not currently set to open at login."
+        case .notFound:
+            return "macOS could not find this app as a login item. Move VoiceClaw Companion to Applications, reopen it, then enable Launch upon Startup."
+        @unknown default:
+            return "macOS returned an unknown Launch upon Startup status."
+        }
     }
 
     private static func normalizedSHA256Digest(_ digest: String) -> String? {

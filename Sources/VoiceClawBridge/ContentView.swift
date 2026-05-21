@@ -139,6 +139,7 @@ private struct DetailPane: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HeroPanel(store: store)
+                    LaunchAtStartupPanel(store: store)
                     UpdateAvailableBanner(store: store)
                     StatusBanner(store: store)
 
@@ -314,6 +315,46 @@ private struct UpdateAvailableBanner: View {
             return "VoiceClaw Companion Update Available"
         }
         return "VoiceClaw Companion \(store.latestReleaseTag) Is Available"
+    }
+}
+
+private struct LaunchAtStartupPanel: View {
+    @ObservedObject var store: BridgeStore
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(store.launchAtStartupEnabled ? .green : .orange)
+                .frame(width: 40)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Launch upon Startup")
+                    .font(.title3.weight(.semibold))
+                Text(store.launchAtStartupSummary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+
+            Spacer(minLength: 16)
+
+            Toggle("Launch upon Startup", isOn: Binding(
+                get: { store.launchAtStartupEnabled },
+                set: { enabled in
+                    Task { await store.setLaunchAtStartupEnabled(enabled) }
+                }
+            ))
+            .toggleStyle(.switch)
+            .disabled(store.isUpdatingLaunchAtStartup)
+            .help("Open VoiceClaw Companion automatically when this Mac user logs in.")
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke((store.launchAtStartupEnabled ? Color.green : Color.orange).opacity(0.30)))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -695,6 +736,7 @@ private struct StatusPanel: View {
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
+            StatusRow(title: "Launch upon Startup", value: store.launchAtStartupSummary, symbol: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
             StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw checks for signed GitHub Release updates every \(store.automaticUpdateCheckInterval.shortLabel)." : "Automatic checks are off. The menu bar icon shows an update warning; use Check Updates when you want to compare against the latest release.", symbol: "clock.arrow.circlepath")
             StatusRow(title: "Update Install", value: store.automaticUpdateInstallsEnabled ? "Automatic install is on. When Sparkle finds a signed update, it can download and install it in-app instead of making you open a DMG manually." : "Automatic install is off. VoiceClaw will still show available updates, but you decide when to install them.", symbol: store.automaticUpdateInstallsEnabled ? "arrow.down.app.fill" : "arrow.down.app")
 

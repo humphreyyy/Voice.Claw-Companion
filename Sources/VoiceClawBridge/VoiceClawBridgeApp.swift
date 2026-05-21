@@ -126,6 +126,8 @@ private struct CompanionMenuBarView: View {
             Label("Checks: \(store.automaticUpdateCheckInterval.shortLabel)", systemImage: "clock.arrow.circlepath")
         }
 
+        Label(store.launchAtStartupEnabled ? "Launches at login" : "Does not launch at login", systemImage: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
+
         Divider()
 
         Label(store.status.title, systemImage: statusSymbol)
