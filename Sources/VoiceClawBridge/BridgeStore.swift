@@ -710,6 +710,9 @@ final class BridgeStore: ObservableObject {
         updated["OpenClawAgent"] = normalizedOpenClawAgentName
         updated["InstantModel"] = updated["InstantModel"] as? String ?? "gpt-5-chat-latest"
         updated["InstantWebSearch"] = updated["InstantWebSearch"] as? Bool ?? true
+        updated["CompanionVersion"] = Self.currentCompanionVersion ?? ""
+        updated["CompanionBuild"] = Self.currentCompanionBuild ?? ""
+        updated["CompanionReleaseTag"] = Self.currentCompanionReleaseTag
         let trimmedWatchBridgeURL = watchPublicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedWatchBridgeURL.isEmpty {
             updated.removeValue(forKey: "WatchPublicBridgeURL")
@@ -950,6 +953,17 @@ final class BridgeStore: ObservableObject {
         return normalizedVersion(value ?? "")
     }
 
+    private static var currentCompanionBuild: String? {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+    }
+
+    private static var currentCompanionReleaseTag: String {
+        guard let currentCompanionVersion,
+              !currentCompanionVersion.isEmpty
+        else { return "" }
+        return "v\(currentCompanionVersion)"
+    }
+
     private static func normalizedVersion(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -1084,6 +1098,9 @@ final class BridgeStore: ObservableObject {
             "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
             "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? true,
             "WatchPublicBridgeURL": "",
+            "CompanionVersion": Self.currentCompanionVersion ?? "",
+            "CompanionBuild": Self.currentCompanionBuild ?? "",
+            "CompanionReleaseTag": Self.currentCompanionReleaseTag,
         ]
     }
 

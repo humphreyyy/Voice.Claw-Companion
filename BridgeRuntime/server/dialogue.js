@@ -266,6 +266,20 @@ async function runGatewayAgentTurn(message, cfg, { signal, timeoutMs = 60000 } =
   return aborter ? await Promise.race([request, aborter]) : await request;
 }
 
+function userFacingOpenClawGatewayError(error) {
+  const message = String(error?.message || error || '');
+  if (/gateway module was not found|callGateway export|module not found|cannot find module/i.test(message)) {
+    return 'OpenClaw is not available to the Companion on this Mac. Open or reinstall OpenClaw, then retry from VoiceClaw.';
+  }
+  if (/ECONNREFUSED|connection refused|failed to connect|could not connect|not running|socket hang up|EHOSTUNREACH|ENETUNREACH/i.test(message)) {
+    return 'OpenClaw is not running on this Mac, or the Companion cannot reach it. Open OpenClaw, wait until it is ready, then retry from VoiceClaw.';
+  }
+  if (/unauthorized|forbidden|login|oauth|auth/i.test(message)) {
+    return 'OpenClaw could not authenticate this request. Open OpenClaw on the Mac, confirm your ChatGPT login, then retry from VoiceClaw.';
+  }
+  return null;
+}
+
 function runOpenclawTurn(args, { signal, timeoutMs = 60000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = execFile(OPENCLAW_BIN, args, { timeout: timeoutMs }, (err, stdout, stderr) => {
@@ -427,6 +441,8 @@ export async function generateReply(userText, { signal, processing, timeoutMs = 
   } catch (e) {
     if (e.message === 'aborted') throw e;
     console.error('[dialogue] gateway agent error:', e.message);
+    const specific = userFacingOpenClawGatewayError(e);
+    if (specific) return specific;
     if (/timed out|timeout/i.test(String(e.message || ''))) {
       return 'OpenClaw took too long to finish that. Try again or make it a smaller request.';
     }

@@ -1687,6 +1687,29 @@ async function steerRealtimeOpenClawTurn({ text, sessionToken, urgency, processi
   return { ok: !!result.ok, steered: !!result.ok, reply: result.ok ? 'Added that to the active OpenClaw request.' : undefined, sessionToken: key, turnId: current.turnId, activeSinceMs: Date.now() - current.startedAt, summary: result.ok ? 'Added that to the active OpenClaw request.' : `OpenClaw steering failed: ${result.error || 'unknown error'}`, error: result.error || undefined };
 }
 
+function userFacingOpenClawTurnError(err) {
+  const message = String(err?.message || err || '');
+  if (/gateway module was not found|callGateway export|module not found|cannot find module/i.test(message)) {
+    return {
+      code: 'openclaw_unavailable',
+      error: 'OpenClaw is not available to the Companion on this Mac. Open or reinstall OpenClaw, then retry from VoiceClaw.',
+    };
+  }
+  if (/ECONNREFUSED|connection refused|failed to connect|could not connect|not running|socket hang up|EHOSTUNREACH|ENETUNREACH/i.test(message)) {
+    return {
+      code: 'openclaw_not_running',
+      error: 'OpenClaw is not running on this Mac, or the Companion cannot reach it. Open OpenClaw, wait until it is ready, then retry from VoiceClaw.',
+    };
+  }
+  if (/unauthorized|forbidden|login|oauth|auth/i.test(message)) {
+    return {
+      code: 'openclaw_auth_failed',
+      error: 'OpenClaw could not authenticate this request. Open OpenClaw on the Mac, confirm your ChatGPT login, then retry from VoiceClaw.',
+    };
+  }
+  return { code: 'openclaw_turn_failed', error: 'OpenClaw turn failed' };
+}
+
 async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, processing }) {
   const cleanedText = String(text || '').trim();
   if (!cleanedText) return { ok: false, error: 'empty text' };
@@ -1725,9 +1748,10 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
       return { ok: false, cancelled: true, error: 'turn cancelled' };
     }
     console.error('[realtime-openclaw]', err.message);
-    await appendRealtimeLog({ kind: 'error', sessionToken: key, turnId: effectiveTurnId, error: err.message });
-    rememberRealtimeResult(key, { ok: false, error: 'OpenClaw turn failed', turnId: effectiveTurnId });
-    return { ok: false, error: 'OpenClaw turn failed' };
+    const userFacing = userFacingOpenClawTurnError(err);
+    await appendRealtimeLog({ kind: 'error', sessionToken: key, turnId: effectiveTurnId, code: userFacing.code, error: err.message });
+    rememberRealtimeResult(key, { ok: false, code: userFacing.code, error: userFacing.error, turnId: effectiveTurnId });
+    return { ok: false, code: userFacing.code, error: userFacing.error };
   }
 }
 
@@ -1982,24 +2006,53 @@ async function runWatchRealtimeTurn({ req, payload }) {
 
   try {
     while (Date.now() < deadline) {
-      const event = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('GPT-Realtime-2 Watch relay response timed out.')), Math.max(1000, deadline - Date.now()));
-        ws.once('message', (data) => {
-          clearTimeout(timer);
-          try { resolve(JSON.parse(data.toString())); } catch (err) { reject(err); }
+      let event;
+      try {
+        event = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('GPT-Realtime-2 Watch relay response timed out.')), Math.max(1000, deadline - Date.now()));
+          ws.once('message', (data) => {
+            clearTimeout(timer);
+            try { resolve(JSON.parse(data.toString())); } catch (err) { reject(err); }
+          });
+          ws.once('error', (err) => { clearTimeout(timer); reject(err); });
+          ws.once('close', (code, reason) => {
+            clearTimeout(timer);
+            reject(new Error(`GPT-Realtime-2 Watch relay closed (${code} ${String(reason || '')}).`));
+          });
         });
-        ws.once('error', (err) => { clearTimeout(timer); reject(err); });
-        ws.once('close', (code, reason) => {
-          clearTimeout(timer);
-          reject(new Error(`GPT-Realtime-2 Watch relay closed (${code} ${String(reason || '')}).`));
-        });
-      });
+      } catch (error) {
+        const latest = latestRealtimeResult(key);
+        if (latest?.ok && latest.reply) {
+          assistantText = String(latest.reply);
+          await appendRealtimeLog({
+            kind: 'watch_realtime_turn_text_fallback',
+            sessionToken: key,
+            routeMode,
+            reason: error?.message || String(error),
+            replyPreview: assistantText.slice(0, 300),
+          });
+          break;
+        }
+        throw error;
+      }
 
       if (event?.error) {
         throw new Error(event.error.message || JSON.stringify(event.error));
       }
 
       await handleRealtimeSidebandEvent(ws, event, key);
+      const latestOpenClawReply = latestRealtimeResult(key);
+      if (!assistantText.trim() && !audioChunks.length && latestOpenClawReply?.ok && latestOpenClawReply.reply) {
+        assistantText = String(latestOpenClawReply.reply);
+        await appendRealtimeLog({
+          kind: 'watch_realtime_turn_text_fallback',
+          sessionToken: key,
+          routeMode,
+          reason: 'openclaw-result-ready',
+          replyPreview: assistantText.slice(0, 300),
+        });
+        break;
+      }
       const type = event?.type || '';
       if (type === 'conversation.item.input_audio_transcription.completed' && event.transcript) {
         userTranscript = String(event.transcript);
