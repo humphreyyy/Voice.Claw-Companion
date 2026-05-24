@@ -63,8 +63,6 @@ for (const needle of [
   'Operating loop',
   'Examples and routing patterns',
   'Capability boundaries and routing priority',
-  'GPT-Realtime-2 is a full first responder',
-  'DO NOT send substantive questions to OpenClaw by default',
   'Direct GPT-Realtime-2 is the live conversation layer',
   'iPhone-side tools are the device-action layer',
   'Active work controls are part of the OpenClaw route',
@@ -92,13 +90,24 @@ for (const needle of [
   'steer_openclaw instead of starting a second OpenClaw turn',
   'bridge_status before starting another OpenClaw turn',
 ]) {
-  assertContains('REALTIME_INSTRUCTIONS', openClaw, needle);
+  assertContains('REALTIME_INSTRUCTIONS expanded prompt', expandedOpenClaw, needle);
+}
+
+for (const needle of [
+  'OpenClaw is not a fallback, not escalation-only, and not only for computer/file/coding work',
+  'If the user did not say "OpenClaw," still call openclaw_turn for substantive work',
+  'Never say the user must explicitly ask to use OpenClaw in this route',
+  'use OpenClaw for almost every substantive request',
+  "If your next words would be \"I can't\"",
+  'There is no stop-to-cancel window',
+]) {
+  assertContains('REALTIME_INSTRUCTIONS expanded prompt', expandedOpenClaw, needle);
 }
 
 for (const needle of [
   'Capability awareness as VoiceClaw grows',
   'The active route and active tool list are authoritative',
-  'Do not under-use GPT-Realtime-2',
+  'Do not under-use OpenClaw in OpenClaw Bridge/Tunnel routes',
   'Use iphone_status when the user asks about this iPhone',
   'Permission-gated tools such as Location, Contacts, Calendar, Reminders, microphone, camera, and clipboard access',
   'Use bridge_status when the user asks about OpenClaw queue',
@@ -113,6 +122,9 @@ for (const [name, text] of [
 ]) {
   assertContains(name, text, '${CAPABILITY_AWARENESS_INSTRUCTIONS}');
 }
+
+assertContains('REALTIME_DIRECT_INSTRUCTIONS', direct, 'GPT-Realtime-2 is a full first responder');
+assertContains('REALTIME_INSTANT_INSTRUCTIONS', instant, 'GPT-Realtime-2 remains a full first responder');
 
 for (const needle of ['openclaw_turn', 'steer_openclaw', 'stop_openclaw', 'bridge_status']) {
   assertOmits('REALTIME_DIRECT_INSTRUCTIONS', direct, needle);
@@ -142,7 +154,7 @@ for (const [name, text] of [
   assertContains(name, text, 'wait_for_user');
   assertContains(name, text, 'iPhone-side tools');
   assertContains(name, text, 'iphone_sync_watch_settings');
-  assertContains(name, text, 'iphone_switch_voice_route');
+  assertContains(name, text, 'iphone_confirm_voice_route_switch');
   assertContains(name, text, 'iphone_run_shortcut');
   assertContains(name, text, 'named Apple Shortcuts');
   assertContains(name, text, 'custom iPhone workflows');
@@ -159,7 +171,7 @@ for (const [name, text] of [
 
 assertContains('REALTIME_INSTANT_INSTRUCTIONS', instant, 'gpt55_instant');
 assertContains('server/index.js', source, "name: 'iphone_sync_watch_settings'");
-assertContains('server/index.js', source, "name: 'iphone_switch_voice_route'");
+assertContains('server/index.js', source, "name: 'iphone_confirm_voice_route_switch'");
 assertContains('server/index.js', source, "name: 'iphone_list_calendar_events'");
 assertContains('server/index.js', source, "name: 'iphone_list_reminders'");
 assertContains('server/index.js', source, "name: 'iphone_analyze_selected_media'");

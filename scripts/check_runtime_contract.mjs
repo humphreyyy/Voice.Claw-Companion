@@ -82,6 +82,11 @@ const stalePhrases = [
   'ask whether to switch and restart',
   'no direct Realtime/MCP tool can handle',
   'with GPT-5.5 Instant vision',
+  'iPhone waits briefly so the user can say stop to cancel',
+  'VoiceClaw waits briefly so the user can say stop to cancel',
+  'they can say stop to cancel',
+  'short stop-to-cancel window',
+  'short cancellation window',
 ];
 
 for (const phrase of stalePhrases) {
@@ -94,6 +99,7 @@ const requiredPhrases = [
   'iphone_set_transcript_visible opens or closes the transcript panel',
   'iphone_set_speakerphone_enabled switches only the live VoiceClaw audio output',
   "iphone_confirm_voice_route_switch changes VoiceClaw's selected route",
+  'There is no stop-to-cancel window',
   'through the active VoiceClaw route when possible',
 ];
 

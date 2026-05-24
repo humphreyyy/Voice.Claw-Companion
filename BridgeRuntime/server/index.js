@@ -182,10 +182,10 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_set_transcript_visible opens or closes the transcript panel on the VoiceClaw Live tab when the user asks to show, open, hide, close, expand, or collapse the transcript.
 - iphone_clear_transcript clears the current Live tab transcript when the user asks to clear, erase, delete, wipe, or reset it.
 - iphone_end_voice_session ends the current VoiceClaw live audio session after an explicit request such as "end this session," "hang up," or "stop listening." Do not use it to cancel unrelated Mac/OpenClaw work.
-- iphone_restart_voice_session restarts the current VoiceClaw live audio session after the user asks to restart or reconnect. Do not ask for confirmation; the iPhone waits briefly so the user can say stop to cancel.
+- iphone_restart_voice_session restarts the current VoiceClaw live audio session after the user asks to restart or reconnect. Do not ask for confirmation. Say exactly "Starting a new session." and use the tool immediately. There is no stop-to-cancel window.
 - iphone_prepare_voice_route_switch is legacy compatibility only for route switches; prefer iphone_confirm_voice_route_switch for new calls.
-- iphone_confirm_voice_route_switch changes VoiceClaw's selected route after an explicit user request to switch VoiceClaw mode or route. Do not ask a confirmation question; say VoiceClaw is switching and that the user can say stop to cancel, then call the tool.
-- iphone_cancel_voice_route_switch cancels a pending route switch or restart when the user says stop, cancel, never mind, do not switch, or do not restart during the short cancellation window.
+- iphone_confirm_voice_route_switch changes VoiceClaw's selected route after an explicit user request to switch VoiceClaw mode or route. Do not ask a confirmation question. Say briefly that VoiceClaw is switching, then use the tool immediately. There is no stop-to-cancel window.
+- iphone_cancel_voice_route_switch is legacy compatibility only. Route switches and restarts normally happen immediately, so there should not be a pending switch or restart to cancel.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
 - iphone_open_app_settings opens the iOS Settings page for VoiceClaw when the user asks to change app permissions.
 - iphone_open_url opens a public http or https URL in the user's default browser only when the user asks to open a link.
@@ -373,7 +373,7 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 - "Remind me tomorrow" -> use iphone_create_reminder.
 - "Save this as a note" -> use iphone_share and tell the user to choose Notes in the share sheet.
 - "Sync my Watch settings" -> use iphone_sync_watch_settings.
-- "Switch VoiceClaw mode to Tunnel" or "Switch the route to Instant" -> briefly say that VoiceClaw is switching and they can say stop to cancel, then call iphone_confirm_voice_route_switch with route "openclaw-public-tunnel" or "gpt55-instant". Do not ask for confirmation.
+- "Switch VoiceClaw mode to Tunnel" or "Switch the route to Instant" -> briefly say that VoiceClaw is switching, then call iphone_confirm_voice_route_switch with route "openclaw-public-tunnel" or "gpt55-instant" immediately. Do not ask for confirmation.
 - "Run my Shortcut named Start Focus" or "Pass this text to my Shortcut called File This" -> use iphone_run_shortcut with the exact Shortcut name and optional text input.
 - "Open that URL", "show me directions", "look at this screenshot", "take a picture of this", "I copied a screenshot", "open WhatsApp Business with Sam", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
 - If the user asks for Mac/private-computer work, explain that OpenClaw Bridge mode is needed for that specific action.
@@ -428,7 +428,7 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 - "Remind me tomorrow" -> use iphone_create_reminder.
 - "Save this as a note" -> use iphone_share and tell the user to choose Notes in the share sheet.
 - "Sync my Watch settings" -> use iphone_sync_watch_settings.
-- "Switch VoiceClaw mode to Tunnel" or "Switch the route to Instant" -> briefly say that VoiceClaw is switching and they can say stop to cancel, then call iphone_confirm_voice_route_switch with route "openclaw-public-tunnel" or "gpt55-instant". Do not ask for confirmation.
+- "Switch VoiceClaw mode to Tunnel" or "Switch the route to Instant" -> briefly say that VoiceClaw is switching, then call iphone_confirm_voice_route_switch with route "openclaw-public-tunnel" or "gpt55-instant" immediately. Do not ask for confirmation.
 - "Run my Shortcut named Start Focus" or "Pass this text to my Shortcut called File This" -> use iphone_run_shortcut with the exact Shortcut name and optional text input.
 - Explicit iPhone actions such as Maps, calls, drafts, reminders, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, Notes share-sheet handoff, clipboard, Shortcuts, VoiceClaw screens, or URLs -> use the matching iPhone-side tool.
 - Do not mention or simulate Mac/private-computer tools in this mode.
@@ -659,7 +659,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_restart_voice_session',
-    description: 'Restart the current VoiceClaw live audio session after the user explicitly asks to restart, reconnect, refresh, or start over. Do not ask for confirmation; VoiceClaw waits briefly so the user can say stop to cancel, then restarts with the microphone unmuted.',
+    description: 'Restart the current VoiceClaw live audio session after the user explicitly asks to restart, reconnect, refresh, or start over. Do not ask for confirmation; say exactly "Starting a new session." and restart immediately with the microphone unmuted. There is no stop-to-cancel window.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -672,7 +672,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_prepare_voice_route_switch',
-    description: 'Legacy compatibility tool for a VoiceClaw route switch after the user explicitly asks to switch VoiceClaw mode or route. Prefer iphone_confirm_voice_route_switch for new calls. Do not ask a confirmation question; a successful call schedules the switch with a short stop-to-cancel window.',
+    description: 'Legacy compatibility tool for a VoiceClaw route switch after the user explicitly asks to switch VoiceClaw mode or route. Prefer iphone_confirm_voice_route_switch for new calls. Do not ask a confirmation question; a successful call switches immediately with the microphone unmuted. There is no stop-to-cancel window.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -686,7 +686,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_confirm_voice_route_switch',
-    description: 'Apply a VoiceClaw route switch after the user explicitly asks to switch routes. Do not ask a confirmation question; VoiceClaw waits briefly so the user can say stop to cancel, then switches and restarts with the microphone unmuted.',
+    description: 'Apply a VoiceClaw route switch after the user explicitly asks to switch routes. Do not ask a confirmation question; briefly say VoiceClaw is switching, then switch immediately and restart with the microphone unmuted. There is no stop-to-cancel window.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -700,7 +700,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_cancel_voice_route_switch',
-    description: 'Cancel a pending VoiceClaw route switch or restart when the user says stop, cancel, never mind, do not switch, or do not restart during the short cancellation window.',
+    description: 'Legacy compatibility tool for cancelling a pending VoiceClaw route switch or restart. Route switches and restarts normally happen immediately now, so there is usually nothing pending to cancel.',
     parameters: {
       type: 'object',
       additionalProperties: false,
