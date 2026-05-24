@@ -24,6 +24,7 @@ DMG_PATH="$DIST_DIR/VoiceClawCompanion-$VERSION-$BUILD_NUMBER.dmg"
 SIGN_IDENTITY="${DEVELOPER_ID_APPLICATION:-Developer ID Application: Benjamin Badejo (6VFF5BZWJU)}"
 
 cd "$ROOT_DIR"
+node "$ROOT_DIR/scripts/check_runtime_contract.mjs"
 swift build -c release
 
 rm -rf "$RELEASE_DIR" "$ZIP_PATH" "$DMG_PATH"
