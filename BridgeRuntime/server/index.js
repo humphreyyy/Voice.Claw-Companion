@@ -86,6 +86,7 @@ const REALTIME_VAD_SILENCE_DURATION_MS = Number(process.env.REALTIME_VAD_SILENCE
 const VOICECLAW_BRIDGE_TOKEN = (process.env.VOICECLAW_BRIDGE_TOKEN || process.env.OPENCLAW_GATEWAY_TOKEN || '').trim();
 const VOICECLAW_BRIDGE_PASSWORD = (process.env.VOICECLAW_BRIDGE_PASSWORD || process.env.OPENCLAW_GATEWAY_PASSWORD || '').trim();
 const watchRealtimeJobs = new Map();
+const watchRealtimeSessions = new Map();
 
 function timingSafeStringEqual(left, right) {
   const leftBuffer = Buffer.from(String(left || ''), 'utf8');
@@ -1131,9 +1132,30 @@ function pruneRealtimeResults() {
   }
 }
 
+function realtimeResultKey(sessionToken, turnId = '') {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const turn = String(turnId || '').trim();
+  return turn ? `${key}::${turn}` : key;
+}
+
+function realtimeResultSessionPrefix(sessionToken) {
+  return `${sanitizeRealtimeSessionToken(sessionToken)}::`;
+}
+
+function clearRealtimeResults(sessionToken) {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const prefix = realtimeResultSessionPrefix(key);
+  realtimeCompletedResults.delete(key);
+  for (const storedKey of realtimeCompletedResults.keys()) {
+    if (storedKey.startsWith(prefix)) realtimeCompletedResults.delete(storedKey);
+  }
+}
+
 function rememberRealtimeResult(sessionToken, result = {}) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
-  realtimeCompletedResults.set(key, {
+  const storedKey = realtimeResultKey(key, result.turnId || '');
+  realtimeCompletedResults.set(storedKey, {
+    sessionToken: key,
     ok: !!result.ok,
     reply: result.reply || '',
     error: result.error || '',
@@ -1144,11 +1166,32 @@ function rememberRealtimeResult(sessionToken, result = {}) {
   pruneRealtimeResults();
 }
 
-function latestRealtimeResult(sessionToken) {
+function latestRealtimeResult(sessionToken, options = {}) {
   pruneRealtimeResults();
   const key = sanitizeRealtimeSessionToken(sessionToken);
-  const result = realtimeCompletedResults.get(key);
+  const turnId = String(options.turnId || '').trim();
+  const sinceMs = Number(options.sinceMs || 0);
+  const consume = !!options.consume;
+  let storedKey = realtimeResultKey(key, turnId);
+  let result = turnId ? realtimeCompletedResults.get(storedKey) : realtimeCompletedResults.get(key);
+  if (!result && !turnId) {
+    const prefix = realtimeResultSessionPrefix(key);
+    let newestKey = '';
+    let newestResult = null;
+    for (const [candidateKey, candidate] of realtimeCompletedResults.entries()) {
+      if (!candidateKey.startsWith(prefix)) continue;
+      if (sinceMs && candidate.completedAt < sinceMs) continue;
+      if (!newestResult || candidate.completedAt > newestResult.completedAt) {
+        newestKey = candidateKey;
+        newestResult = candidate;
+      }
+    }
+    storedKey = newestKey;
+    result = newestResult;
+  }
   if (!result) return null;
+  if (sinceMs && result.completedAt < sinceMs) return null;
+  if (consume && storedKey) realtimeCompletedResults.delete(storedKey);
   return {
     ...result,
     completedAgoMs: Date.now() - result.completedAt,
@@ -1716,7 +1759,7 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
 
   const key = sanitizeRealtimeSessionToken(sessionToken);
   if (realtimeTurns.has(key)) return await steerRealtimeOpenClawTurn({ text: cleanedText, sessionToken: key, urgency, processing });
-  realtimeCompletedResults.delete(key);
+  clearRealtimeResults(key);
   const controller = new AbortController();
   const openclawToken = realtimeOpenClawSessionToken(key);
   const effectiveTurnId = String(turnId || `rt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -1941,6 +1984,145 @@ function watchRealtimeResponseCreate({ voice = REALTIME_VOICE, instructions = ''
   return { type: 'response.create', response };
 }
 
+const WATCH_REALTIME_SESSION_IDLE_MS = Number(process.env.WATCH_REALTIME_SESSION_IDLE_MS || 10 * 60 * 1000);
+
+function watchRealtimeSessionSignature({ routeMode = '', model = '', voice = '' } = {}) {
+  return JSON.stringify({
+    routeMode: String(routeMode || ''),
+    model: String(model || ''),
+    voice: String(voice || ''),
+  });
+}
+
+function watchRealtimeIsOpen(state) {
+  return state?.ws?.readyState === WebSocket.OPEN;
+}
+
+function rejectWatchRealtimeWaiters(state, error) {
+  if (!state) return;
+  state.terminalError = error;
+  while (state.waiters.length) {
+    const waiter = state.waiters.shift();
+    clearTimeout(waiter.timer);
+    waiter.reject(error);
+  }
+}
+
+function closeWatchRealtimeSession(sessionToken, reason = 'watch realtime session closed') {
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const state = watchRealtimeSessions.get(key);
+  if (!state) return false;
+  state.closing = true;
+  watchRealtimeSessions.delete(key);
+  rejectWatchRealtimeWaiters(state, new Error(reason));
+  try { state.ws?.close(1000, reason); } catch {}
+  appendRealtimeLog({ kind: 'watch_realtime_session_closed', sessionToken: key, reason }).catch(() => {});
+  return true;
+}
+
+function cleanupWatchRealtimeSessions() {
+  const oldest = Date.now() - WATCH_REALTIME_SESSION_IDLE_MS;
+  for (const [key, state] of watchRealtimeSessions.entries()) {
+    if (!watchRealtimeIsOpen(state) || (state.lastUsedAt || 0) < oldest) {
+      closeWatchRealtimeSession(key, !watchRealtimeIsOpen(state) ? 'watch realtime socket not open' : 'watch realtime idle timeout');
+    }
+  }
+}
+
+function sendWatchRealtimeEvent(state, event) {
+  if (!watchRealtimeIsOpen(state)) throw new Error('GPT-Realtime-2 Watch relay is not open.');
+  state.ws.send(JSON.stringify(event));
+}
+
+function nextWatchRealtimeEvent(state, timeoutMs) {
+  if (state.terminalError) return Promise.reject(state.terminalError);
+  if (state.eventQueue.length) return Promise.resolve(state.eventQueue.shift());
+  return new Promise((resolve, reject) => {
+    const waiter = {
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        const index = state.waiters.indexOf(waiter);
+        if (index >= 0) state.waiters.splice(index, 1);
+        reject(new Error('GPT-Realtime-2 Watch relay response timed out.'));
+      }, timeoutMs),
+    };
+    state.waiters.push(waiter);
+  });
+}
+
+async function getWatchRealtimeSession({ req, routeMode, model, voice, session, apiKey, sessionToken }) {
+  cleanupWatchRealtimeSessions();
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  const signature = watchRealtimeSessionSignature({ routeMode, model, voice });
+  const existing = watchRealtimeSessions.get(key);
+  if (watchRealtimeIsOpen(existing) && existing.signature === signature) {
+    existing.lastUsedAt = Date.now();
+    existing.terminalError = null;
+    existing.eventQueue = [];
+    return existing;
+  }
+  if (existing) closeWatchRealtimeSession(key, 'watch realtime route changed');
+
+  const realtimeBearer = await resolveRealtimeBearer({ req, session, apiKey });
+  const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
+  const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${realtimeBearer.bearer}` } });
+  const state = {
+    key,
+    ws,
+    signature,
+    routeMode,
+    model,
+    voice,
+    authSource: realtimeBearer.source,
+    createdAt: Date.now(),
+    lastUsedAt: Date.now(),
+    eventQueue: [],
+    waiters: [],
+    terminalError: null,
+    closing: false,
+    activeTurnId: '',
+  };
+
+  ws.on('message', (data) => {
+    try {
+      const event = JSON.parse(data.toString());
+      if (state.waiters.length) {
+        const waiter = state.waiters.shift();
+        clearTimeout(waiter.timer);
+        waiter.resolve(event);
+      } else {
+        state.eventQueue.push(event);
+      }
+    } catch (err) {
+      rejectWatchRealtimeWaiters(state, err);
+    }
+  });
+  ws.on('error', (err) => {
+    rejectWatchRealtimeWaiters(state, err);
+  });
+  ws.on('close', (code, reason) => {
+    if (watchRealtimeSessions.get(key) === state) watchRealtimeSessions.delete(key);
+    const message = state.closing ? `GPT-Realtime-2 Watch relay closed (${code}).` : `GPT-Realtime-2 Watch relay closed unexpectedly (${code} ${String(reason || '')}).`;
+    rejectWatchRealtimeWaiters(state, new Error(message));
+    appendRealtimeLog({ kind: 'watch_realtime_session_socket_close', sessionToken: key, code, reason: String(reason || ''), activeTurnId: state.activeTurnId }).catch(() => {});
+  });
+
+  const opened = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('GPT-Realtime-2 Watch relay connection timed out.')), 15000);
+    ws.once('open', () => { clearTimeout(timer); resolve(true); });
+    ws.once('error', (err) => { clearTimeout(timer); reject(err); });
+    ws.once('close', (code, reason) => {
+      clearTimeout(timer);
+      reject(new Error(`GPT-Realtime-2 Watch relay closed before start (${code} ${String(reason || '')}).`));
+    });
+  });
+  if (!opened) throw new Error('GPT-Realtime-2 Watch relay did not open.');
+  watchRealtimeSessions.set(key, state);
+  await appendRealtimeLog({ kind: 'watch_realtime_session_opened', sessionToken: key, routeMode, model, voice, authSource: realtimeBearer.source });
+  return state;
+}
+
 async function runWatchRealtimeTurn({ req, payload }) {
   const routeMode = realtimeRoutingMode({ ...req, url: `${BASE_PATH}/realtime/watch-turn?route=${encodeURIComponent(payload.routeMode || 'openclaw')}`, headers: { ...req.headers, 'x-openclaw-route': payload.routeMode || 'openclaw' } });
   const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || req.headers['x-voice-session-token'] || `watch-${Date.now().toString(36)}`);
@@ -1958,31 +2140,20 @@ async function runWatchRealtimeTurn({ req, payload }) {
     session.instructions = `${session.instructions || ''}\n\n# Recent VoiceClaw Watch Conversation\n${context}`.trim();
   }
   const apiKey = openAIKeyForRealtimeRequest(req);
-  const realtimeBearer = await resolveRealtimeBearer({ req, session, apiKey });
-  const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
-  const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${realtimeBearer.bearer}` } });
-  let opened = false;
   const startedAt = Date.now();
-  const openedPromise = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('GPT-Realtime-2 Watch relay connection timed out.')), 15000);
-    ws.once('open', () => { opened = true; clearTimeout(timer); resolve(true); });
-    ws.once('error', (err) => { clearTimeout(timer); reject(err); });
-    ws.once('close', (code, reason) => {
-      if (!opened) {
-        clearTimeout(timer);
-        reject(new Error(`GPT-Realtime-2 Watch relay closed before start (${code} ${String(reason || '')}).`));
-      }
-    });
-  });
-
-  await openedPromise;
   const key = sanitizeRealtimeSessionToken(sessionToken);
+  const watchTurnId = String(payload.turnId || `watch-rt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const watchState = await getWatchRealtimeSession({ req, routeMode, model, voice, session, apiKey, sessionToken: key });
+  if (watchState.activeTurnId) {
+    throw new Error('GPT-Realtime-2 Watch relay already has an active turn. Cancel or wait for the current turn before starting another.');
+  }
+  watchState.activeTurnId = watchTurnId;
+  watchState.lastUsedAt = Date.now();
+  watchState.eventQueue = [];
   realtimeSessionConfigs.set(key, { ...options, sessionStartedAt: new Date().toISOString() });
   realtimeSidebandStateFor(key).activeResponseId = null;
-  const send = (event) => {
-    if (ws.readyState !== WebSocket.OPEN) throw new Error('GPT-Realtime-2 Watch relay is not open.');
-    ws.send(JSON.stringify(event));
-  };
+  const send = (event) => sendWatchRealtimeEvent(watchState, event);
+  const nextRealtimeEvent = (timeoutMs) => nextWatchRealtimeEvent(watchState, timeoutMs);
 
   send({ type: 'session.update', session });
   if (text) {
@@ -2001,29 +2172,24 @@ async function runWatchRealtimeTurn({ req, payload }) {
 
   let userTranscript = '';
   let assistantText = '';
+  let replySource = 'rt2';
   const audioChunks = [];
-  const deadline = Date.now() + Number(process.env.WATCH_REALTIME_TURN_TIMEOUT_MS || 105000);
+  const deadline = Date.now() + Number(process.env.WATCH_REALTIME_TURN_TIMEOUT_MS || 180000);
+  let openClawFallbackReadyAt = 0;
 
   try {
     while (Date.now() < deadline) {
+      if (openClawFallbackReadyAt && Date.now() - openClawFallbackReadyAt > Number(process.env.WATCH_REALTIME_OPENCLAW_AUDIO_GRACE_MS || 15000)) {
+        break;
+      }
       let event;
       try {
-        event = await new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error('GPT-Realtime-2 Watch relay response timed out.')), Math.max(1000, deadline - Date.now()));
-          ws.once('message', (data) => {
-            clearTimeout(timer);
-            try { resolve(JSON.parse(data.toString())); } catch (err) { reject(err); }
-          });
-          ws.once('error', (err) => { clearTimeout(timer); reject(err); });
-          ws.once('close', (code, reason) => {
-            clearTimeout(timer);
-            reject(new Error(`GPT-Realtime-2 Watch relay closed (${code} ${String(reason || '')}).`));
-          });
-        });
+        event = await nextRealtimeEvent(Math.max(1000, deadline - Date.now()));
       } catch (error) {
-        const latest = latestRealtimeResult(key);
+        const latest = latestRealtimeResult(key, { sinceMs: startedAt, consume: true });
         if (latest?.ok && latest.reply) {
           assistantText = String(latest.reply);
+          replySource = 'openclaw';
           await appendRealtimeLog({
             kind: 'watch_realtime_turn_text_fallback',
             sessionToken: key,
@@ -2033,6 +2199,7 @@ async function runWatchRealtimeTurn({ req, payload }) {
           });
           break;
         }
+        if (assistantText.trim()) break;
         throw error;
       }
 
@@ -2040,10 +2207,12 @@ async function runWatchRealtimeTurn({ req, payload }) {
         throw new Error(event.error.message || JSON.stringify(event.error));
       }
 
-      await handleRealtimeSidebandEvent(ws, event, key);
-      const latestOpenClawReply = latestRealtimeResult(key);
-      if (!assistantText.trim() && !audioChunks.length && latestOpenClawReply?.ok && latestOpenClawReply.reply) {
+      await handleRealtimeSidebandEvent(watchState.ws, event, key);
+      const latestOpenClawReply = latestRealtimeResult(key, { sinceMs: startedAt, consume: true });
+      if (!assistantText.trim() && latestOpenClawReply?.ok && latestOpenClawReply.reply) {
         assistantText = String(latestOpenClawReply.reply);
+        replySource = 'openclaw';
+        openClawFallbackReadyAt = Date.now();
         await appendRealtimeLog({
           kind: 'watch_realtime_turn_text_fallback',
           sessionToken: key,
@@ -2051,7 +2220,7 @@ async function runWatchRealtimeTurn({ req, payload }) {
           reason: 'openclaw-result-ready',
           replyPreview: assistantText.slice(0, 300),
         });
-        break;
+        continue;
       }
       const type = event?.type || '';
       if (type === 'conversation.item.input_audio_transcription.completed' && event.transcript) {
@@ -2073,23 +2242,31 @@ async function runWatchRealtimeTurn({ req, payload }) {
         }
       }
     }
+  } catch (error) {
+    if (watchState.terminalError) closeWatchRealtimeSession(key, error?.message || 'watch realtime terminal error');
+    throw error;
   } finally {
-    try { ws.close(); } catch {}
+    if (watchState.activeTurnId === watchTurnId) watchState.activeTurnId = '';
+    watchState.lastUsedAt = Date.now();
   }
 
   if (!assistantText.trim()) {
-    const latest = latestRealtimeResult(key);
+    const latest = latestRealtimeResult(key, { sinceMs: startedAt, consume: true });
     if (latest?.ok && latest.reply) {
       assistantText = String(latest.reply);
+      replySource = 'openclaw';
     }
   }
   const reply = assistantText.trim() || 'GPT-Realtime-2 returned model audio.';
   const audioData = Buffer.concat(audioChunks);
+  const audioSource = audioData.length ? 'rt2' : 'none';
   await appendRealtimeLog({
     kind: 'watch_realtime_turn',
     sessionToken: key,
     routeMode,
-    authSource: realtimeBearer.source,
+    authSource: watchState.authSource,
+    replySource,
+    audioSource,
     text: text || userTranscript,
     replyPreview: reply.slice(0, 300),
     audioBytes: audioData.length,
@@ -2099,7 +2276,9 @@ async function runWatchRealtimeTurn({ req, payload }) {
     ok: true,
     routeMode,
     sessionToken: key,
-    authSource: realtimeBearer.source,
+    authSource: watchState.authSource,
+    replySource,
+    audioSource,
     transcript: userTranscript.trim() || text,
     reply,
     audioBase64: audioData.length ? audioData.toString('base64') : '',
@@ -2113,6 +2292,31 @@ function cleanupWatchRealtimeJobs() {
   for (const [jobID, job] of watchRealtimeJobs.entries()) {
     if ((job.updatedAt || job.createdAt || 0) < oldest) watchRealtimeJobs.delete(jobID);
   }
+}
+
+function cancelWatchRealtimeJob({ jobID = '', sessionToken = '', turnId = '', reason = 'watch requested cancel' } = {}) {
+  cleanupWatchRealtimeJobs();
+  const id = String(jobID || '').trim();
+  const job = id ? watchRealtimeJobs.get(id) : null;
+  const key = sanitizeRealtimeSessionToken(sessionToken || job?.sessionToken || '');
+  const cancelledOpenClaw = key ? cancelRealtimeTurn(key, reason, turnId, { force: !turnId }) : false;
+  if (key) {
+    clearRealtimeResults(key);
+    closeWatchRealtimeSession(key, reason);
+    const state = realtimeSidebandStates.get(key);
+    if (state) {
+      state.pendingResponseCreates = [];
+      state.activeResponseId = null;
+      clearSidebandResponseRetry(key);
+    }
+  }
+  if (job) {
+    job.status = 'cancelled';
+    job.error = 'Watch Realtime job was cancelled.';
+    job.updatedAt = Date.now();
+  }
+  appendRealtimeLog({ kind: 'watch_realtime_cancel', jobID: id, sessionToken: key, turnId: String(turnId || ''), cancelledOpenClaw, reason });
+  return { ok: true, cancelledOpenClaw, jobCancelled: !!job, sessionToken: key };
 }
 
 function startWatchRealtimeJob({ req, payload }) {
@@ -2130,15 +2334,18 @@ function startWatchRealtimeJob({ req, payload }) {
     updatedAt: Date.now(),
     result: null,
     error: '',
+    sessionToken: sanitizeRealtimeSessionToken(payload?.sessionToken || req.headers['x-voice-session-token'] || ''),
   };
   watchRealtimeJobs.set(jobID, job);
   (async () => {
     try {
       const result = await runWatchRealtimeTurn({ req: reqForJob, payload });
+      if (job.status === 'cancelled') return;
       job.status = 'done';
       job.result = result;
       job.updatedAt = Date.now();
     } catch (error) {
+      if (job.status === 'cancelled') return;
       job.status = 'error';
       job.error = error?.message || String(error);
       job.updatedAt = Date.now();
@@ -2165,6 +2372,10 @@ function extractRealtimeText(event = {}) {
 }
 
 async function readRequestBody(req, limitBytes = 2_000_000) {
+  return (await readRequestBuffer(req, limitBytes)).toString('utf8');
+}
+
+async function readRequestBuffer(req, limitBytes = 2_000_000) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -2172,7 +2383,70 @@ async function readRequestBody(req, limitBytes = 2_000_000) {
     if (size > limitBytes) throw new Error('request body too large');
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
+}
+
+function parseMultipartFormData(buffer, contentType = '') {
+  const match = String(contentType || '').match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  const boundary = (match?.[1] || match?.[2] || '').trim();
+  if (!boundary) throw new Error('multipart boundary missing');
+
+  const delimiter = Buffer.from(`--${boundary}`);
+  const fields = {};
+  const files = {};
+  let cursor = 0;
+
+  while (cursor < buffer.length) {
+    const start = buffer.indexOf(delimiter, cursor);
+    if (start < 0) break;
+    let partStart = start + delimiter.length;
+    if (buffer.slice(partStart, partStart + 2).toString() === '--') break;
+    if (buffer.slice(partStart, partStart + 2).toString() === '\r\n') partStart += 2;
+
+    const next = buffer.indexOf(delimiter, partStart);
+    if (next < 0) break;
+    let part = buffer.slice(partStart, next);
+    if (part.slice(-2).toString() === '\r\n') part = part.slice(0, -2);
+
+    const headerEnd = part.indexOf(Buffer.from('\r\n\r\n'));
+    if (headerEnd < 0) {
+      cursor = next;
+      continue;
+    }
+    const headerText = part.slice(0, headerEnd).toString('utf8');
+    const content = part.slice(headerEnd + 4);
+    const disposition = headerText.split(/\r\n/).find((line) => /^content-disposition:/i.test(line)) || '';
+    const name = disposition.match(/name="([^"]+)"/i)?.[1] || '';
+    if (!name) {
+      cursor = next;
+      continue;
+    }
+    const filename = disposition.match(/filename="([^"]*)"/i)?.[1] || '';
+    const mimeType = headerText.match(/^content-type:\s*(.+)$/im)?.[1]?.trim() || 'application/octet-stream';
+    if (filename) {
+      files[name] = { filename, mimeType, buffer: content };
+    } else {
+      fields[name] = content.toString('utf8');
+    }
+    cursor = next;
+  }
+
+  return { fields, files };
+}
+
+function watchRealtimePayloadFromMultipart(buffer, contentType = '') {
+  const { fields, files } = parseMultipartFormData(buffer, contentType);
+  let metadata = {};
+  try { metadata = JSON.parse(fields.metadata || '{}'); } catch { metadata = {}; }
+  const audio = files.audio;
+  if (audio?.buffer?.length) {
+    metadata.audioBase64 = audio.buffer.toString('base64');
+    metadata.audioContentType = metadata.audioContentType || audio.mimeType || 'audio/m4a';
+    metadata.audioFilename = audio.filename || 'watch-turn.m4a';
+    metadata.transport = 'multipart-file';
+    metadata.audioBytes = audio.buffer.length;
+  }
+  return metadata;
 }
 
 // ── HTTP server (static files) ──────────────────────────────────────
@@ -2384,7 +2658,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn/start`) {
-      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 12_000_000));
+      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 48_000_000));
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       try {
@@ -2393,6 +2667,42 @@ const httpServer = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: true, jobID, status: 'running' }));
       } catch (error) {
         await appendRealtimeLog({ kind: 'watch_realtime_job_start_error', error: error?.message || String(error) });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn/start-file`) {
+      try {
+        const body = await readRequestBuffer(req, Number(process.env.WATCH_REALTIME_MAX_MULTIPART_BYTES || 96_000_000));
+        const payload = watchRealtimePayloadFromMultipart(body, req.headers['content-type'] || '');
+        const jobID = startWatchRealtimeJob({ req, payload });
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, jobID, status: 'running', transport: 'multipart-file' }));
+      } catch (error) {
+        await appendRealtimeLog({ kind: 'watch_realtime_job_start_file_error', error: error?.message || String(error) });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn/cancel`) {
+      const body = await readRequestBody(req, 128_000);
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const result = cancelWatchRealtimeJob({
+          jobID: payload.jobID || payload.jobId || '',
+          sessionToken: payload.sessionToken || req.headers['x-voice-session-token'] || '',
+          turnId: payload.turnId || '',
+          reason: payload.reason || 'watch requested cancel',
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        await appendRealtimeLog({ kind: 'watch_realtime_cancel_error', error: error?.message || String(error) });
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
       }
@@ -2419,13 +2729,18 @@ const httpServer = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: false, status: 'error', error: job.error || 'Watch Realtime job failed.' }));
         return;
       }
+      if (job.status === 'cancelled') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, status: 'cancelled', error: job.error || 'Watch Realtime job was cancelled.' }));
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, status: job.status || 'running' }));
       return;
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn`) {
-      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 12_000_000));
+      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 48_000_000));
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       try {
@@ -2434,6 +2749,21 @@ const httpServer = createServer(async (req, res) => {
         res.end(JSON.stringify(result));
       } catch (error) {
         await appendRealtimeLog({ kind: 'watch_realtime_turn_error', error: error?.message || String(error) });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn-file`) {
+      try {
+        const body = await readRequestBuffer(req, Number(process.env.WATCH_REALTIME_MAX_MULTIPART_BYTES || 96_000_000));
+        const payload = watchRealtimePayloadFromMultipart(body, req.headers['content-type'] || '');
+        const result = await runWatchRealtimeTurn({ req, payload });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ...result, transport: 'multipart-file' }));
+      } catch (error) {
+        await appendRealtimeLog({ kind: 'watch_realtime_turn_file_error', error: error?.message || String(error) });
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
       }
