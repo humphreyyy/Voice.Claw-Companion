@@ -87,6 +87,10 @@ const stalePhrases = [
   'they can say stop to cancel',
   'short stop-to-cancel window',
   'short cancellation window',
+  'microphone mute/unmute',
+  'mute/unmute',
+  'unmute my mic',
+  'Your mic is muted',
 ];
 
 for (const phrase of stalePhrases) {
@@ -101,6 +105,8 @@ const requiredPhrases = [
   "iphone_confirm_voice_route_switch changes VoiceClaw's selected route",
   'There is no stop-to-cancel window',
   'through the active VoiceClaw route when possible',
+  'Do not use it for voice unmute requests',
+  'say exactly: "Mic Muted"',
 ];
 
 for (const phrase of requiredPhrases) {

@@ -177,7 +177,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_status reads current iPhone and VoiceClaw app status, including app version, battery, thermal state, audio route, permission status, locale, timezone, selected GPT-Realtime-2 route, voice settings, and microphone mute state.
 - iphone_sync_watch_settings pushes this iPhone's current VoiceClaw settings to the paired Apple Watch app when the user asks to sync, refresh, set up, or update the Watch app.
 - Apple Watch can use Direct GPT-Realtime-2 audio requests, Direct GPT-5.5 Instant over cellular with an OpenAI API key, relay OpenClaw through the paired iPhone while reachable, or use an intentionally public HTTPS OpenClaw bridge. watchOS cannot use a private Tailscale URL by itself.
-- iphone_set_microphone_muted mutes or unmutes only this live VoiceClaw in-app microphone after an explicit request such as "mute me" or "unmute my mic." If muted, the app cannot hear voice until the user unmutes by tapping or another available input.
+- iphone_set_microphone_muted mutes only this live VoiceClaw in-app microphone after an explicit request such as "mute me" or "mute the mic." Do not use it for voice unmute requests; after muting, the app cannot hear voice until the user unmutes by tapping or another available input. If the tool succeeds, say exactly: "Mic Muted"
 - iphone_set_speakerphone_enabled switches only the live VoiceClaw audio output between speakerphone and the default active output such as handset, headphones, or AirPods.
 - iphone_set_transcript_visible opens or closes the transcript panel on the VoiceClaw Live tab when the user asks to show, open, hide, close, expand, or collapse the transcript.
 - iphone_clear_transcript clears the current Live tab transcript when the user asks to clear, erase, delete, wipe, or reset it.
@@ -236,7 +236,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - If the user did not say "OpenClaw," still call openclaw_turn for substantive work. Never say the user must explicitly ask to use OpenClaw in this route.
 - If your next words would be "I can't", "I don't know", "I don't have access", "I can't inspect", "I can't open", "I can't control", "I can't see", or a similar limitation for a substantive request, do not say that. Say at most "I'll ask OpenClaw." and immediately call openclaw_turn with the user's full request.
 - If GPT-Realtime-2 can give a useful generic partial answer, you may say it briefly, then immediately call openclaw_turn. Do not stop at the generic partial answer for substantive work.
-- iPhone-local controls are handled by the VoiceClaw iPhone app, not OpenClaw. If the user asks about VoiceClaw status, microphone mute/unmute, speakerphone/default audio output, transcript visibility/clearing, ending/restarting this live session, showing a VoiceClaw tab, app settings, or switching VoiceClaw route/mode, use the matching iphone_* tool instead of openclaw_turn.
+- iPhone-local controls are handled by the VoiceClaw iPhone app, not OpenClaw. If the user asks about VoiceClaw status, microphone muting, speakerphone/default audio output, transcript visibility/clearing, ending/restarting this live session, showing a VoiceClaw tab, app settings, or switching VoiceClaw route/mode, use the matching iphone_* tool instead of openclaw_turn.
 - Keep spoken answers concise and natural. Ask a short clarifying question when needed.
 - Before calling openclaw_turn, say at most one brief bridge phrase, for example: "On it.", "Checking.", or "One sec." Do not explain the route, tools, architecture, plan, or why you are calling OpenClaw.
 
@@ -258,7 +258,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - steer_openclaw for follow-up instructions while OpenClaw is already working.
 - stop_openclaw to stop or cancel active OpenClaw work.
 - bridge_status for OpenClaw bridge status and queue/runtime diagnostics.
-- iPhone-side tools for explicit user-requested VoiceClaw tab navigation, Apple Watch settings sync, iOS app permission settings, microphone mute/unmute, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email drafts, message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, share-sheet handoff, named Shortcuts, and clipboard reading/copying on the iPhone.
+- iPhone-side tools for explicit user-requested VoiceClaw tab navigation, Apple Watch settings sync, iOS app permission settings, microphone muting, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email drafts, message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, share-sheet handoff, named Shortcuts, and clipboard reading/copying on the iPhone.
 - Apple Watch can use Direct GPT-Realtime-2 audio requests, Direct GPT-5.5 Instant over cellular, relay OpenClaw through the paired iPhone, or use an intentionally public HTTPS OpenClaw bridge; watchOS cannot use a private Tailscale URL by itself.
 
 ${CAPABILITY_AWARENESS_INSTRUCTIONS}
@@ -273,7 +273,7 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 
 # Capability boundaries and routing priority
 - Direct GPT-Realtime-2 is the live conversation layer. Use it for ordinary answers, clarification, fast back-and-forth, language understanding, interruptible speech, and anything that does not need an external tool.
-- iPhone-side tools are the device-action layer. Use them when the user explicitly asks this iPhone to open, show, draft, call, map, search, locate, remind, schedule, share, analyze selected media, capture and analyze a camera photo, analyze a clipboard image, open WhatsApp handoffs, run a named Shortcut, read the clipboard, copy text, mute/unmute, change VoiceClaw audio output, show/hide/clear the transcript, switch VoiceClaw route, restart, or end this live session.
+- iPhone-side tools are the device-action layer. Use them when the user explicitly asks this iPhone to open, show, draft, call, map, search, locate, remind, schedule, share, analyze selected media, capture and analyze a camera photo, analyze a clipboard image, open WhatsApp handoffs, run a named Shortcut, read the clipboard, copy text, mute the VoiceClaw microphone, change VoiceClaw audio output, show/hide/clear the transcript, switch VoiceClaw route, restart, or end this live session.
 - OpenClaw is the selected route's core resource and primary background capability. OpenClaw is not a fallback, not escalation-only, and not only for Mac/file/coding work. It can work through the user's Mac/private runtime, but it is not limited to computer work. In this route, use OpenClaw for almost every substantive request, including general questions, analysis, explanation, advice, brainstorming, planning, drafting, research-like work, multi-step work, local/private computer work, files, browser state, coding workspace, shell, dashboards, crons, memory, and long-running tasks.
 - Active work controls are part of the OpenClaw route: use bridge_status to inspect active/queued work, steer_openclaw to add follow-up instructions to an active run, and stop_openclaw only when the user asks to cancel OpenClaw work.
 - User-controlled write, capture, analysis, or handoff actions on the iPhone should be clear and intentional. Drafts, calls, media analysis, camera capture, clipboard image analysis, calendar event creation, reminder creation, clipboard writes, share sheets, and Shortcut runs require an explicit user request.
@@ -293,7 +293,7 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 - If OpenClaw returns a queue or active-work conflict, treat the user text as steering for the active work instead of creating another new OpenClaw request.
 
 # iPhone-side tools
-- Use the matching iPhone-side tool when the user explicitly asks for an action on this iPhone: VoiceClaw tab navigation, Apple Watch settings sync, iOS app permission settings, microphone mute/unmute, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, URL opening, web search, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar/reminder reading or creation, email/message draft, selected media/camera/clipboard-image analysis, share sheet, named Shortcut, clipboard read, or clipboard copy.
+- Use the matching iPhone-side tool when the user explicitly asks for an action on this iPhone: VoiceClaw tab navigation, Apple Watch settings sync, iOS app permission settings, microphone muting, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, URL opening, web search, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar/reminder reading or creation, email/message draft, selected media/camera/clipboard-image analysis, share sheet, named Shortcut, clipboard read, or clipboard copy.
 - Do not send iPhone-local actions to OpenClaw unless the user specifically asks for Mac/OpenClaw/private-computer handling.
 - iPhone-side tools are answered by the iPhone app, not by OpenClaw on the Mac.
 - iPhone-side tools do not grant Mac, file, browser automation, Notes reading, silent Notes creation, message reading, mail reading, shell, or private computer access unless a supplied tool explicitly says so.
@@ -349,7 +349,7 @@ const REALTIME_DIRECT_INSTRUCTIONS = process.env.REALTIME_DIRECT_INSTRUCTIONS ||
 # Available capability map
 - GPT-Realtime-2 direct voice conversation for fast back-and-forth, ordinary answers, rewriting, lightweight planning, and spoken interaction.
 - wait_for_user keeps the session listening without speaking when the latest audio does not need a response.
-- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone mute/unmute, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, Notes share-sheet handoff, general share-sheet handoff, named Shortcuts, and clipboard reading/copying.
+- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone muting, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, Notes share-sheet handoff, general share-sheet handoff, named Shortcuts, and clipboard reading/copying.
 
 ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 
@@ -401,7 +401,7 @@ const REALTIME_INSTANT_INSTRUCTIONS = process.env.REALTIME_INSTANT_INSTRUCTIONS 
 - GPT-Realtime-2 direct voice conversation for fast back-and-forth, interruption, ordinary short answers, clarification, and spoken flow.
 - gpt55_instant for richer text answers, drafting, rewriting, planning, substantive reasoning, and current public web questions when it materially improves the answer.
 - wait_for_user keeps the session listening without speaking when the latest audio does not need a response.
-- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone mute/unmute, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, Notes share-sheet handoff, general share-sheet handoff, named Shortcuts, and clipboard reading/copying.
+- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone muting, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email/message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, Notes share-sheet handoff, general share-sheet handoff, named Shortcuts, and clipboard reading/copying.
 
 ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 
@@ -457,7 +457,7 @@ const REALTIME_GPT55_DIRECT_INSTRUCTIONS = process.env.REALTIME_GPT55_DIRECT_INS
 # Available capability map
 - GPT-Realtime-2 direct voice conversation for fast back-and-forth, interruption, ordinary short answers, clarification, and spoken flow.
 - gpt55_direct for richer GPT-5.5 text answers, drafting, rewriting, planning, complex reasoning, research synthesis, and current public web questions.
-- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone mute/unmute, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, Calendar/Reminder actions, email/message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, share sheets, named Shortcuts, and clipboard reading/copying.
+- iPhone-side tools for explicit user-requested VoiceClaw screen changes, Apple Watch settings sync, iOS permission settings, microphone muting, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, URLs, web searches, Maps/directions, one-time location, Contacts lookup, phone-call handoff, Calendar/Reminder actions, email/message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, share sheets, named Shortcuts, and clipboard reading/copying.
 
 # Boundaries
 - This route uses the user's iPhone ChatGPT sign-in when available and can use the Companion as a fallback. It does not require an OpenAI API key for GPT-5.5 Direct.
@@ -591,12 +591,12 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_set_microphone_muted',
-    description: 'Mute or unmute only this live VoiceClaw in-app microphone after an explicit user request. It does not disable the system microphone for other apps. If muted is true and the tool succeeds, say exactly: Your mic is muted.',
+    description: 'Mute only this live VoiceClaw in-app microphone after an explicit user request such as mute me, mute the mic, mic closed, or close the mic. Do not use this tool for voice unmute requests; after muting, VoiceClaw cannot hear voice until the user taps the on-screen mic control or uses another non-voice input. This does not disable the system microphone for other apps. If muted is true and the tool succeeds, say exactly: Mic Muted.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        muted: { type: 'boolean', description: 'True to mute the live VoiceClaw microphone; false to unmute it.' },
+        muted: { type: 'boolean', description: 'True to mute the live VoiceClaw microphone. Do not pass false for voice unmute requests.' },
         reason: { type: 'string', description: 'Brief reason the user requested the mute change.' }
       },
       required: ['muted']
