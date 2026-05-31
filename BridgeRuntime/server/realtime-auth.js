@@ -53,7 +53,7 @@ export function realtimeAuthPreferences(req) {
     ?? req?.headers?.['x-voiceclaw-auth-mode'];
   const configuredMode = process.env.VOICECLAW_REALTIME_AUTH_MODE
     ?? bridgeConfig.realtimeAuthMode
-    ?? REALTIME_AUTH_MODE_API_KEY;
+    ?? REALTIME_AUTH_MODE_OPENCLAW_OAUTH;
   const requestedFallback = req?.headers?.['x-voiceclaw-realtime-auth-fallback']
     ?? req?.headers?.['x-voiceclaw-api-key-fallback'];
   const configuredFallback = process.env.VOICECLAW_REALTIME_AUTH_FALLBACK_TO_API_KEY
@@ -61,8 +61,8 @@ export function realtimeAuthPreferences(req) {
 
   return {
     mode: normalizeRealtimeAuthMode(requestedMode ?? configuredMode),
-    fallbackToAPIKey: parseRealtimeBoolean(requestedFallback, parseRealtimeBoolean(configuredFallback, true)),
-    source: requestedMode === undefined ? 'companion-default' : 'iphone',
+    fallbackToAPIKey: parseRealtimeBoolean(requestedFallback, parseRealtimeBoolean(configuredFallback, false)),
+    source: requestedMode === undefined ? 'companion-default' : 'paired-phone',
   };
 }
 

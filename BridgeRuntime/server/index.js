@@ -1081,13 +1081,36 @@ function normalizeTurnDetectionMode(value = '') {
   return REALTIME_TURN_DETECTION_MODE;
 }
 
-function buildRealtimeTurnDetection(mode) {
+function normalizeVadSensitivity(value = '') {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(1, Math.max(0, parsed));
+}
+
+function vadTuning(sensitivity) {
+  if (sensitivity === null || sensitivity === undefined) {
+    return {
+      semanticEagerness: REALTIME_SEMANTIC_VAD_EAGERNESS,
+      threshold: REALTIME_VAD_THRESHOLD,
+      silenceDurationMs: REALTIME_VAD_SILENCE_DURATION_MS,
+    };
+  }
+  return {
+    semanticEagerness: sensitivity < 0.34 ? 'low' : (sensitivity > 0.66 ? 'high' : 'auto'),
+    threshold: Number((0.88 - (sensitivity * 0.40)).toFixed(2)),
+    silenceDurationMs: Math.min(540, Math.max(120, Math.floor(540 - (sensitivity * 420)))),
+  };
+}
+
+function buildRealtimeTurnDetection(mode, sensitivity) {
   const normalized = normalizeTurnDetectionMode(mode);
+  const tuning = vadTuning(sensitivity);
   if (normalized === 'none') return null;
   if (normalized === 'semantic_vad') {
-    return { type: 'semantic_vad', eagerness: REALTIME_SEMANTIC_VAD_EAGERNESS, create_response: true, interrupt_response: true };
+    return { type: 'semantic_vad', eagerness: tuning.semanticEagerness, create_response: true, interrupt_response: true };
   }
-  return { type: 'server_vad', threshold: REALTIME_VAD_THRESHOLD, prefix_padding_ms: REALTIME_VAD_PREFIX_PADDING_MS, silence_duration_ms: REALTIME_VAD_SILENCE_DURATION_MS, create_response: true, interrupt_response: true };
+  return { type: 'server_vad', threshold: tuning.threshold, prefix_padding_ms: REALTIME_VAD_PREFIX_PADDING_MS, silence_duration_ms: tuning.silenceDurationMs, create_response: true, interrupt_response: true };
 }
 
 function realtimeRequestOptions(req, routeMode, sessionToken) {
@@ -1098,6 +1121,7 @@ function realtimeRequestOptions(req, routeMode, sessionToken) {
   const noiseReduction = normalizeRealtimeNoiseReduction(req.headers['x-realtime-noise-reduction'] || url.searchParams.get('noiseReduction'));
   const captions = parseRealtimeBoolean(req.headers['x-realtime-captions'] ?? url.searchParams.get('captions'), REALTIME_TRANSCRIPTION_DEFAULT);
   const turnDetection = normalizeTurnDetectionMode(req.headers['x-realtime-turn-detection'] || url.searchParams.get('vad'));
+  const vadSensitivity = normalizeVadSensitivity(req.headers['x-realtime-vad-sensitivity'] ?? url.searchParams.get('vadSensitivity'));
   const realtimeReasoning = normalizeRealtimeReasoning(req.headers['x-realtime-reasoning'] || url.searchParams.get('reasoning'));
   const transcriptionDelay = normalizeTranscriptionDelay(req.headers['x-realtime-transcription-delay'] || url.searchParams.get('transcriptionDelay'));
   const transcriptionLanguage = String(req.headers['x-realtime-transcription-language'] || url.searchParams.get('language') || REALTIME_TRANSCRIPTION_LANGUAGE || '').trim();
@@ -1110,6 +1134,7 @@ function realtimeRequestOptions(req, routeMode, sessionToken) {
     noiseReduction,
     captions,
     turnDetection,
+    vadSensitivity,
     realtimeReasoning,
     transcriptionDelay,
     transcriptionLanguage,
@@ -1132,7 +1157,7 @@ function buildRealtimeAudioConfig(options = {}) {
     input.transcription = { model: REALTIME_TRANSCRIPTION_MODEL, delay: options.transcriptionDelay || REALTIME_TRANSCRIPTION_DELAY };
     if (options.transcriptionLanguage) input.transcription.language = options.transcriptionLanguage;
   }
-  const turnDetection = buildRealtimeTurnDetection(options.turnDetection);
+  const turnDetection = buildRealtimeTurnDetection(options.turnDetection, options.vadSensitivity);
   input.turn_detection = turnDetection;
   return { input, output: { voice: options.voice || REALTIME_VOICE } };
 }
@@ -1488,9 +1513,9 @@ function toolResultAnswerInstructions(result, fallback = '') {
 ${seed}`;
 }
 
-function isIPhoneOwnedRealtimeTool(name = '') {
+function isClientOwnedRealtimeTool(name = '') {
   const value = String(name || '');
-  return value.startsWith('iphone_') || value === 'gpt55_instant' || value === 'wait_for_user';
+  return value.startsWith('iphone_') || value.startsWith('android_') || value === 'gpt55_instant' || value === 'wait_for_user';
 }
 
 async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
@@ -1499,8 +1524,8 @@ async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
   const name = event.name || event.tool_name || event.function?.name;
   const callId = event.call_id || event.callId || event.item_id || event.id;
   if (!callId) return;
-  if (isIPhoneOwnedRealtimeTool(name)) {
-    await appendRealtimeLog({ kind: 'sideband_iphone_tool_ignored', sessionToken: key, name, callId });
+  if (isClientOwnedRealtimeTool(name)) {
+    await appendRealtimeLog({ kind: 'sideband_client_tool_ignored', sessionToken: key, name, callId });
     return;
   }
   if (state.handledCallIds.has(callId)) {
@@ -1808,6 +1833,17 @@ function realtimeVoiceTimeoutMs(_urgency = 'normal', _processing = {}) {
   // and other slower local tools. Realtime can still interrupt/cancel/steer turns,
   // so keep the bridge patient enough for real agent work.
   return Number(process.env.REALTIME_OPENCLAW_TIMEOUT_MS || 1200000);
+}
+
+function normalizeRealtimeProcessingPayload(payload = {}) {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const processing = source.processing && typeof source.processing === 'object' && !Array.isArray(source.processing)
+    ? { ...source.processing }
+    : {};
+  if (!processing.agent && source.agent) processing.agent = source.agent;
+  if (!processing.thinking && source.reasoning) processing.thinking = source.reasoning;
+  if (!processing.fastMode) processing.fastMode = 'on';
+  return processing;
 }
 
 
@@ -2468,6 +2504,27 @@ async function readRequestBody(req, limitBytes = 2_000_000) {
   return (await readRequestBuffer(req, limitBytes)).toString('utf8');
 }
 
+async function readRealtimeSessionRequest(req) {
+  const contentType = String(req.headers['content-type'] || '');
+  if (/multipart\/form-data/i.test(contentType)) {
+    const body = await readRequestBuffer(req, Number(process.env.REALTIME_SESSION_MAX_MULTIPART_BYTES || 8_000_000));
+    const { fields } = parseMultipartFormData(body, contentType);
+    const sdpOffer = String(fields.sdp || '').trim();
+    if (!sdpOffer) throw new Error('realtime session multipart request missing sdp');
+    let providedSession = null;
+    if (fields.session) {
+      try {
+        const parsed = JSON.parse(fields.session);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) providedSession = parsed;
+      } catch (error) {
+        throw new Error(`realtime session multipart request has invalid session JSON: ${error.message}`);
+      }
+    }
+    return { sdpOffer, providedSession, transport: 'multipart' };
+  }
+  return { sdpOffer: await readRequestBody(req), providedSession: null, transport: 'raw-sdp' };
+}
+
 async function readRequestBuffer(req, limitBytes = 2_000_000) {
   const chunks = [];
   let size = 0;
@@ -2603,7 +2660,7 @@ const httpServer = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: false, filtered: true, reason: gate.reason, error: 'unclear or non-actionable steering text' }));
         return;
       }
-      const result = await steerRealtimeOpenClawTurn({ ...payload, text: gate.text });
+      const result = await steerRealtimeOpenClawTurn({ ...payload, processing: normalizeRealtimeProcessingPayload(payload), text: gate.text });
       res.writeHead(result.ok ? 200 : 409, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
       return;
@@ -2626,7 +2683,7 @@ const httpServer = createServer(async (req, res) => {
       }
       let result;
       try {
-        result = await runRealtimeOpenClawTurn({ ...payload, text: gate.text });
+        result = await runRealtimeOpenClawTurn({ ...payload, processing: normalizeRealtimeProcessingPayload(payload), text: gate.text });
       } finally {
         decrementRealtimeQueue(payload.sessionToken);
       }
@@ -2645,7 +2702,7 @@ const httpServer = createServer(async (req, res) => {
           text: payload.text || '',
           sessionToken,
           urgency: payload.urgency || 'normal',
-          processing: payload.processing && typeof payload.processing === 'object' ? payload.processing : {},
+          processing: normalizeRealtimeProcessingPayload(payload),
           attachments: Array.isArray(payload.attachments) ? payload.attachments : [],
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2866,23 +2923,33 @@ const httpServer = createServer(async (req, res) => {
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/session`) {
       const routeMode = realtimeRoutingMode(req);
       const apiKey = openAIKeyForRealtimeRequest(req);
+      const clientPlatform = String(req.headers['x-voiceclaw-client-platform'] || '').trim().toLowerCase();
 
       const sessionToken = req.headers['x-voice-session-token'] || `browser-${Date.now().toString(36)}`;
       const options = realtimeRequestOptions(req, routeMode, sessionToken);
       realtimeSessionConfigs.set(options.sessionToken, { ...options, sessionStartedAt: new Date().toISOString() });
-      const sdpOffer = await readRequestBody(req);
-      const fd = new FormData();
-      fd.set('sdp', sdpOffer);
-      const realtimeSession = {
+      const { sdpOffer, providedSession, transport: sessionTransport } = await readRealtimeSessionRequest(req);
+      const defaultRealtimeSession = {
         type: 'realtime',
         model: options.model,
         reasoning: { effort: options.realtimeReasoning },
         instructions: realtimeInstructionsForRoute(routeMode),
         audio: buildRealtimeAudioConfig(options),
       };
+      const realtimeSession = providedSession || defaultRealtimeSession;
       const tools = realtimeToolsForRoute(routeMode);
-      realtimeSession.tools = tools;
-      realtimeSession.tool_choice = tools.length ? 'auto' : 'none';
+      if (!providedSession) {
+        realtimeSession.tools = tools;
+        realtimeSession.tool_choice = tools.length ? 'auto' : 'none';
+      } else {
+        realtimeSession.type = realtimeSession.type || 'realtime';
+        realtimeSession.model = realtimeSession.model || options.model;
+        if (!realtimeSession.audio) realtimeSession.audio = buildRealtimeAudioConfig(options);
+        if (!Array.isArray(realtimeSession.tools)) realtimeSession.tools = tools;
+        if (!realtimeSession.tool_choice) realtimeSession.tool_choice = realtimeSession.tools.length ? 'auto' : 'none';
+      }
+      const fd = new FormData();
+      fd.set('sdp', sdpOffer);
       fd.set('session', JSON.stringify(realtimeSession));
 
       let realtimeBearer;
@@ -2901,6 +2968,9 @@ const httpServer = createServer(async (req, res) => {
           realtimeAuthPreference: realtimeAuthPreferences(req).mode,
           fallbackToAPIKey: realtimeAuthPreferences(req).fallbackToAPIKey,
           oauthFallbackError: error?.message || String(error),
+          clientPlatform,
+          clientProvidedSession: !!providedSession,
+          sessionTransport,
           upstreamOK: false,
           upstreamStatus: 503,
         });
@@ -2929,16 +2999,20 @@ const httpServer = createServer(async (req, res) => {
         realtimeAuthPreference: realtimeBearer.preferences.mode,
         fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey,
         oauthFallbackError: realtimeBearer.oauthError || '',
+        clientPlatform,
+        clientProvidedSession: !!providedSession,
+        sessionTransport,
         upstreamOK: upstream.ok,
         upstreamStatus: upstream.status,
         sidebandLocationHeader: !!location,
         sidebandStarted,
       });
-      if (upstream.ok) await appendRealtimeLog({ kind: 'realtime_session_created', sessionToken: sanitizeRealtimeSessionToken(sessionToken), routeMode, sidebandLocationHeader: !!location, sidebandStarted, authSource: realtimeBearer.source, authPreferenceSource: realtimeBearer.preferences.source, fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey, oauthFallbackError: realtimeBearer.oauthError || '', options: { model: options.model, voice: options.voice, noiseReduction: options.noiseReduction, captions: options.captions, turnDetection: options.turnDetection, realtimeReasoning: options.realtimeReasoning, transcriptionDelay: options.transcriptionDelay } });
+      if (upstream.ok) await appendRealtimeLog({ kind: 'realtime_session_created', sessionToken: sanitizeRealtimeSessionToken(sessionToken), routeMode, clientPlatform, clientProvidedSession: !!providedSession, sessionTransport, sidebandLocationHeader: !!location, sidebandStarted, authSource: realtimeBearer.source, authPreferenceSource: realtimeBearer.preferences.source, fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey, oauthFallbackError: realtimeBearer.oauthError || '', options: { model: options.model, voice: options.voice, noiseReduction: options.noiseReduction, captions: options.captions, turnDetection: options.turnDetection, vadSensitivity: options.vadSensitivity, realtimeReasoning: options.realtimeReasoning, transcriptionDelay: options.transcriptionDelay } });
       const headers = { 'Content-Type': upstream.ok ? 'application/sdp' : 'text/plain' };
       if (location) headers['X-OpenAI-Realtime-Location'] = 'present';
       headers['X-OpenClaw-Route'] = routeMode;
       if (sidebandStarted) headers['X-OpenClaw-Sideband'] = 'started';
+      if (providedSession) headers['X-VoiceClaw-Provided-Session'] = 'used';
       headers['X-VoiceClaw-Realtime-Auth'] = realtimeBearer.source;
       headers['X-VoiceClaw-Realtime-Auth-Preference'] = realtimeBearer.preferences.mode;
       headers['X-VoiceClaw-Realtime-Auth-Fallback'] = realtimeBearer.oauthError ? 'used' : (realtimeBearer.preferences.fallbackToAPIKey ? 'enabled' : 'disabled');

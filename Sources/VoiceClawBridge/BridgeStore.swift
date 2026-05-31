@@ -16,16 +16,16 @@ enum CompanionRealtimeAuthMode: String, CaseIterable, Identifiable {
         case .apiKey:
             "API Key"
         case .openClawOAuth:
-            "OpenClaw OAuth"
+            "OAuth (ChatGPT Subscription)"
         }
     }
 
     var detail: String {
         switch self {
         case .apiKey:
-            "Use the OpenAI API key from the iPhone or the bridge environment."
+            "Use the OpenAI API key from the paired phone or the bridge environment."
         case .openClawOAuth:
-            "Use OpenClaw's ChatGPT/Codex login on this Mac to mint short-lived GPT-Realtime-2 client secrets."
+            "Use the ChatGPT/Codex login available through OpenClaw on this Mac to mint short-lived GPT-Realtime-2 client secrets."
         }
     }
 }
@@ -118,14 +118,14 @@ final class BridgeStore: ObservableObject {
             refreshPairingPayloadSecrets()
         }
     }
-    @Published var realtimeAuthMode: CompanionRealtimeAuthMode = .apiKey {
+    @Published var realtimeAuthMode: CompanionRealtimeAuthMode = .openClawOAuth {
         didSet {
             UserDefaults.standard.set(realtimeAuthMode.rawValue, forKey: DefaultsKeys.realtimeAuthMode)
             refreshPairingPayloadSecrets()
             Task { await persistBridgeAuthDefaults() }
         }
     }
-    @Published var realtimeAuthFallbackToAPIKey: Bool = true {
+    @Published var realtimeAuthFallbackToAPIKey: Bool = false {
         didSet {
             UserDefaults.standard.set(realtimeAuthFallbackToAPIKey, forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey)
             refreshPairingPayloadSecrets()
@@ -339,7 +339,7 @@ final class BridgeStore: ObservableObject {
 
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             updatePairingPayload(from: trimmed)
-            lastLog = "Setup completed. Copy or scan the iPhone setup payload."
+            lastLog = "Setup completed. Copy or scan the phone setup payload."
             status = .ready
             suppressTransientSetupWarningUntil = Date().addingTimeInterval(10)
             await refreshStatus()
@@ -353,7 +353,7 @@ final class BridgeStore: ObservableObject {
         guard !pairingJSON.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(pairingJSON, forType: .string)
-        lastLog = "Copied iPhone setup JSON."
+        lastLog = "Copied phone setup JSON."
     }
 
     func copyPairingLink() {
@@ -592,7 +592,7 @@ final class BridgeStore: ObservableObject {
             pairingJSON = ""
             pairingPreview = ""
             pairingURL = ""
-            lastLog = "Selected unused test port \(response.suggestedPort). Nothing changed on this Mac yet. Click Install and Start to configure the bridge and Tailscale Serve for this port, then pair the iPhone again."
+            lastLog = "Selected unused test port \(response.suggestedPort). Nothing changed on this Mac yet. Click Install and Start to configure the bridge and Tailscale Serve for this port, then pair the phone again."
             status = .idle
             await refreshStatus()
         } catch {
@@ -904,7 +904,7 @@ final class BridgeStore: ObservableObject {
 
         if lower.contains("tailscale") {
             let detail = raw.isEmpty ? "" : "\n\nTailscale detail: \(raw)"
-            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local VoiceClaw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the iPhone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoiceClaw looks for the Tailscale command in the standard macOS install locations and only changes Tailscale Serve when you click Install and Start; Check Again is read-only.\(detail)"
+            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local VoiceClaw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the phone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoiceClaw looks for the Tailscale command in the standard macOS install locations and only changes Tailscale Serve when you click Install and Start; Check Again is read-only.\(detail)"
         }
 
         if lower.contains("openclaw config was not found") || lower.contains("openclaw.json") {
@@ -1037,13 +1037,13 @@ final class BridgeStore: ObservableObject {
             return "Sideband \(sideband), auth \(auth), OpenClaw active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), replies active \(shortID(activeResponse) ?? "none") with \(queuedResponses) queued, \(attempts) attempts, \(collisions) collisions."
         }
 
-        return "Sideband disabled, auth \(auth), OpenClaw active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), iPhone fallback handles OpenClaw tools."
+        return "Sideband disabled, auth \(auth), OpenClaw active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), phone fallback handles OpenClaw tools."
     }
 
     private static func realtimeAuthStatusSummary(from object: [String: Any]) -> String {
-        let mode = object["mode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue
+        let mode = object["mode"] as? String ?? CompanionRealtimeAuthMode.openClawOAuth.rawValue
         let source = object["effectiveSource"] as? String ?? "unknown"
-        let fallback = object["fallbackToAPIKey"] as? Bool ?? true
+        let fallback = object["fallbackToAPIKey"] as? Bool ?? false
         let apiKeyAvailable = object["apiKeyAvailable"] as? Bool ?? false
         let oauth = object["openClawOAuth"] as? [String: Any]
         let oauthChecked = oauth?["checked"] as? Bool ?? false
@@ -1052,22 +1052,22 @@ final class BridgeStore: ObservableObject {
         let oauthError = oauth?["error"] as? String
 
         if mode != CompanionRealtimeAuthMode.openClawOAuth.rawValue, !oauthChecked {
-            return "API-key mode is selected from \(source). OpenAI API key available: \(apiKeyAvailable ? "yes" : "no"). Select OpenClaw OAuth and click Check Again to test Subscription (OAuth) login."
+            return "API-key mode is selected from \(source). OpenAI API key available: \(apiKeyAvailable ? "yes" : "no"). Select OAuth (ChatGPT Subscription) and click Check Again to test subscription login."
         }
 
         if oauthAvailable {
             if probe == "passed" {
-                return "OpenClaw OAuth is ready: the Companion found the OpenClaw login and minted a GPT-Realtime-2 client secret. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+                return "OAuth (ChatGPT Subscription) is ready: the Companion found the OpenClaw login and minted a GPT-Realtime-2 client secret. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
             }
 
-            return "OpenClaw OAuth profile is available. Select OpenClaw OAuth and click Check Again to run the GPT-Realtime-2 client-secret test. API-key fallback \(fallback ? "on" : "off")."
+            return "OAuth profile is available. Select OAuth (ChatGPT Subscription) and click Check Again to run the GPT-Realtime-2 client-secret test. API-key fallback \(fallback ? "on" : "off")."
         }
 
         if let oauthError, !oauthError.isEmpty {
-            return "OpenClaw OAuth is not ready: \(oauthError) Then click Check Again. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+            return "OAuth (ChatGPT Subscription) is not ready: \(oauthError) Then click Check Again. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
         }
 
-        return "OpenClaw OAuth has not been checked yet. Select OpenClaw OAuth and click Check Again to test Subscription (OAuth) login. API-key fallback \(fallback ? "on" : "off")."
+        return "OAuth (ChatGPT Subscription) has not been checked yet. Select OAuth (ChatGPT Subscription) and click Check Again to test subscription login. API-key fallback \(fallback ? "on" : "off")."
     }
 
     private static func integerText(_ value: Any?) -> String? {
@@ -1095,8 +1095,8 @@ final class BridgeStore: ObservableObject {
             "RealtimeModel": "gpt-realtime-2",
             "InstantModel": "gpt-5-chat-latest",
             "InstantWebSearch": true,
-            "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
-            "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? true,
+            "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.openClawOAuth.rawValue,
+            "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? false,
             "WatchPublicBridgeURL": "",
             "CompanionVersion": Self.currentCompanionVersion ?? "",
             "CompanionBuild": Self.currentCompanionBuild ?? "",

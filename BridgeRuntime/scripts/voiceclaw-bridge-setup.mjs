@@ -84,7 +84,7 @@ Options:
   --reset-tailscale-port     With --reset, also remove the selected Tailscale Serve port only if it is safely identified as Voice.Claw
   --diagnose                 Print read-only local bridge and Tailscale Serve diagnostics
   --suggest-port             Print a fresh unused test port without changing system state
-  --json                     Print only the iPhone setup JSON
+  --json                     Print only the phone setup JSON
   --port 12321               Bridge/Tailscale HTTPS port
   --openclaw-path PATH       OpenClaw install/config folder, usually ~/.openclaw
   --openclaw-agent NAME      OpenClaw agent name, usually main
@@ -394,11 +394,11 @@ async function diagnoseBridge(port) {
 
   let suggestedAction = 'Click Install and Start to install the bridge and configure Tailscale Serve for this port.';
   if (local.state === 'running' && tailscale.state === 'voiceclaw_mapping') {
-    suggestedAction = 'This port is ready. Pair the iPhone with the current QR code or setup link.';
+    suggestedAction = 'This port is ready. Pair the phone with the current QR code or setup link.';
   } else if (local.state !== 'running' && tailscale.state === 'stale_voiceclaw_mapping') {
     suggestedAction = 'This is a stale network mapping. Click Install and Start to reuse it, or use Reset App + Tailscale Mapping to remove it before testing first-run setup.';
   } else if (local.state === 'running' && tailscale.state === 'no_mapping') {
-    suggestedAction = 'The bridge is running locally only. Click Install and Start to publish it through Tailscale Serve, then pair the iPhone again.';
+    suggestedAction = 'The bridge is running locally only. Click Install and Start to publish it through Tailscale Serve, then pair the phone again.';
   } else if (tailscale.state === 'occupied_by_other_mapping') {
     suggestedAction = 'Choose a different port or manually review this Tailscale Serve mapping outside Voice.Claw. The app will not remove mappings it cannot identify as its own.';
   }
@@ -568,8 +568,8 @@ async function main() {
     openClawAgentName,
     gatewayToken: existing.gatewayToken || generateToken(),
     tailscaleDNSName: dnsName || existing.tailscaleDNSName || '',
-    realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'api-key'),
-    realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? true,
+    realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'openclaw-oauth'),
+    realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? false,
   };
   config.tailscaleBaseURL = config.tailscaleDNSName ? `https://${config.tailscaleDNSName}:${config.port}` : (existing.tailscaleBaseURL || '');
 

@@ -17,7 +17,7 @@ struct VoiceClawBridgeApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command])
 
-                Button("Copy iPhone Setup") {
+                Button("Copy Phone Setup") {
                     store.copyPairingPayload()
                 }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
@@ -101,7 +101,7 @@ private struct CompanionMenuBarView: View {
         Button {
             store.copyPairingPayload()
         } label: {
-            Label("Copy iPhone Setup", systemImage: "doc.on.doc")
+            Label("Copy Phone Setup", systemImage: "doc.on.doc")
         }
         .disabled(store.pairingJSON.isEmpty)
 
