@@ -687,7 +687,7 @@ const IPHONE_REALTIME_TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'gpt55-direct', 'openclaw-bridge', 'openclaw-public-tunnel'], description: 'Exact target route: realtime-only for Direct GPT-Realtime-2, gpt55-instant for GPT-5.5 Instant, gpt55-direct for GPT-5.5 without OpenClaw, openclaw-bridge for OpenClaw Bridge, or openclaw-public-tunnel for OpenClaw HTTPS Tunnel.' },
+        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'gpt55-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'], description: 'Exact target route: realtime-only for Direct GPT-Realtime-2, gpt55-instant for GPT-5.5 Instant, gpt55-direct for GPT-5.5 without OpenClaw, openclaw-bridge for OpenClaw Bridge, openclaw-public-tunnel for OpenClaw HTTPS Tunnel, hermes-bridge for Hermes via Tailscale, or hermes-public-tunnel for Hermes HTTPS Tunnel.' },
         reason: { type: 'string', description: 'Brief reason the user requested this route switch.' }
       },
       required: ['route']

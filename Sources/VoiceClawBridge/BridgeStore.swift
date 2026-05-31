@@ -25,7 +25,7 @@ enum CompanionRealtimeAuthMode: String, CaseIterable, Identifiable {
         case .apiKey:
             "Use the OpenAI API key from the paired phone or the bridge environment."
         case .openClawOAuth:
-            "Use the ChatGPT/Codex login available through OpenClaw on this Mac to mint short-lived GPT-Realtime-2 client secrets."
+            "Use ChatGPT subscription auth for GPT-Realtime-2. A signed-in phone can mint its own short-lived client secret; otherwise the Companion can use the local OpenClaw ChatGPT/Codex login. Hermes Agent routes use the same GPT-Realtime-2 auth layer."
         }
     }
 }
@@ -1032,12 +1032,14 @@ final class BridgeStore: ObservableObject {
         let activeResponse = sidebandDiagnostics?["activeResponseId"] as? String
         let queuedResponses = integerText(sidebandDiagnostics?["pendingResponseCreates"]) ?? "0"
         let auth = sessionConfig?["authSource"] as? String ?? "not connected"
+        let processing = sessionConfig?["processing"] as? [String: Any]
+        let runtime = (processing?["runtime"] as? String)?.lowercased() == "hermes" ? "Hermes" : "OpenClaw"
 
         if sidebandEnabled {
-            return "Sideband \(sideband), auth \(auth), OpenClaw active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), replies active \(shortID(activeResponse) ?? "none") with \(queuedResponses) queued, \(attempts) attempts, \(collisions) collisions."
+            return "Sideband \(sideband), auth \(auth), \(runtime) active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), replies active \(shortID(activeResponse) ?? "none") with \(queuedResponses) queued, \(attempts) attempts, \(collisions) collisions."
         }
 
-        return "Sideband disabled, auth \(auth), OpenClaw active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), phone fallback handles OpenClaw tools."
+        return "Sideband disabled, auth \(auth), \(runtime) active \(active ? "yes" : "no"), queue \(pending)/\(maxPending), phone fallback handles agent tools."
     }
 
     private static func realtimeAuthStatusSummary(from object: [String: Any]) -> String {
@@ -1057,14 +1059,14 @@ final class BridgeStore: ObservableObject {
 
         if oauthAvailable {
             if probe == "passed" {
-                return "OAuth (ChatGPT Subscription) is ready: the Companion found the OpenClaw login and minted a GPT-Realtime-2 client secret. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+                return "OAuth (ChatGPT Subscription) is ready: the Companion found the local OpenClaw ChatGPT/Codex login and minted a GPT-Realtime-2 client secret. A paired phone that is signed in to ChatGPT can also bring its own short-lived client secret. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
             }
 
-            return "OAuth profile is available. Select OAuth (ChatGPT Subscription) and click Check Again to run the GPT-Realtime-2 client-secret test. API-key fallback \(fallback ? "on" : "off")."
+            return "Local OpenClaw OAuth profile is available. Select OAuth (ChatGPT Subscription) and click Check Again to run the GPT-Realtime-2 client-secret test. If the phone is signed in to ChatGPT, it can use its own phone-minted client secret instead. API-key fallback \(fallback ? "on" : "off")."
         }
 
         if let oauthError, !oauthError.isEmpty {
-            return "OAuth (ChatGPT Subscription) is not ready: \(oauthError) Then click Check Again. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+            return "Local Companion OAuth is not ready: \(oauthError) This only blocks Companion-minted GPT-Realtime-2 client secrets. A paired phone signed in to ChatGPT can still provide its own client secret for Realtime signaling. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
         }
 
         return "OAuth (ChatGPT Subscription) has not been checked yet. Select OAuth (ChatGPT Subscription) and click Check Again to test subscription login. API-key fallback \(fallback ? "on" : "off")."

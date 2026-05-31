@@ -187,7 +187,7 @@ private struct HeroPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("VoiceClaw Companion")
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
-                Text("Install and manage the private Mac companion that lets VoiceClaw on your phone reach OpenClaw on this Mac through Tailscale.")
+                Text("Install and manage the private Mac companion that lets VoiceClaw on your phone or watch reach OpenClaw or Hermes Agent on this Mac through Tailscale or an HTTPS tunnel.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -433,7 +433,7 @@ private struct SetupPanel: View {
                     VStack(alignment: .leading, spacing: 6) {
                         TextField("\(NSHomeDirectory())/.openclaw", text: $store.openClawInstallPath)
                             .textFieldStyle(.roundedBorder)
-                        Text("Choose the folder that contains openclaw.json. On most Macs this is ~/.openclaw.")
+                        Text("Choose the folder that contains openclaw.json. This is only for OpenClaw routes; Hermes Agent routes use the installed hermes command and HERMES_HOME, so no Hermes install path is needed here. On most Macs the OpenClaw path is ~/.openclaw.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -445,14 +445,15 @@ private struct SetupPanel: View {
                         TextField("main", text: $store.openClawAgentName)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 260)
-                        Text("Leave this as main unless setup fails and you want to try the name of your primary OpenClaw agent or another OpenClaw agent.")
+                        Text("Leave this as main unless setup fails and you want to try another OpenClaw agent. Hermes routes do not use this field; the Companion resumes Hermes CLI sessions by VoiceClaw session token.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
             }
 
-            InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates VoiceClaw's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. Check Again only reads status.")
+            InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates VoiceClaw's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. The same bridge serves OpenClaw routes, Hermes Agent routes, GPT-Realtime-2 signaling, and Apple Watch relay. Check Again only reads status.")
+            InfoCallout(symbol: "sparkles", title: "Hermes Agent Routes", bodyText: "Hermes via Tailscale and Hermes HTTPS Tunnel do not need a Hermes path in this app. The bridge starts normally, then calls the hermes CLI from the user's PATH (or HERMES_BIN) with HERMES_HOME. Use Hermes routes in the phone or watch app after installing Hermes Agent and confirming it works in Terminal.")
             InfoCallout(symbol: "arrow.counterclockwise", title: "Testing First-Run Setup", bodyText: "Reset First-Run State removes only VoiceClaw's LaunchAgent and local bridge config. Use Reset App + Tailscale Mapping only when Diagnostics says the selected port is a VoiceClaw mapping; it will refuse to touch other Serve mappings.")
             InfoCallout(symbol: "lightbulb", title: "Recommended Next Step", bodyText: store.setupAdvice)
 
@@ -513,7 +514,7 @@ private struct PairingPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Pair Phone", subtitle: "Scan this QR code in VoiceClaw Settings. It can include an OpenAI API key and/or Subscription (OAuth) login preference; the paired phone can still override it later.", symbol: "qrcode")
+            PanelHeader(title: "Pair Phone", subtitle: "Scan this QR code in VoiceClaw Settings. It syncs the bridge URL, OpenClaw settings, Hermes-capable route support, and Realtime auth preferences; the paired phone can still override auth later.", symbol: "qrcode")
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
                 GridRow {
@@ -535,7 +536,7 @@ private struct PairingPanel: View {
                             .toggleStyle(.checkbox)
                             .disabled(store.realtimeAuthMode != .openClawOAuth)
 
-                        Text("When the paired phone sends its own setting, the phone wins. Fallback uses the phone's OpenAI API key if it was included in pairing or entered on the phone; otherwise the companion can only use an API key already available to its local environment.")
+                        Text("When the paired phone sends its own setting, the phone wins. If the phone is signed in to ChatGPT, it can bring its own short-lived GPT-Realtime-2 client secret to this bridge. If it is not signed in, the Companion tries the local OpenClaw ChatGPT/Codex login for OAuth. Fallback uses the phone's OpenAI API key if it was included in pairing or entered on the phone; otherwise the Companion can only use an API key already available to its local environment.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -564,7 +565,7 @@ private struct PairingPanel: View {
                         TextField("https://...", text: $store.watchPublicBridgeURL)
                             .textFieldStyle(.roundedBorder)
 
-                        Text("Enter this only when a paired phone or watch should reach OpenClaw through a public HTTPS tunnel instead of the private Tailscale bridge. Leave it blank when paired devices use Tailscale, or when Apple Watch OpenClaw access always relays through the nearby iPhone.")
+                        Text("Enter this only when a paired phone or watch should reach OpenClaw or Hermes Agent through a public HTTPS tunnel instead of the private Tailscale bridge. Leave it blank when paired devices use Tailscale, or when Apple Watch agent access always relays through the nearby iPhone.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -573,7 +574,8 @@ private struct PairingPanel: View {
             }
 
             InfoCallout(symbol: "key.radiowaves.forward", title: "OpenAI Auth Status", bodyText: store.realtimeAuthStatusSummary)
-            InfoCallout(symbol: "square.grid.2x2", title: "iOS Widgets and Watch Extras", bodyText: "For iPhone users, add VoiceClaw widgets from the iOS Home Screen widget gallery for one-tap route launches. You can also add VoiceClaw to the iPhone Lock Screen or Control Center for a quick Live launch; those controls open VoiceClaw directly on the iPhone, while this Companion is only needed for OpenClaw Bridge and HTTPS Tunnel routes.")
+            InfoCallout(symbol: "point.3.connected.trianglepath.dotted", title: "Which Runtime Handles the Work", bodyText: "GPT-Realtime-2 always handles live speech. OpenClaw routes send substantive work to OpenClaw using the OpenClaw path and agent above. Hermes routes send substantive work to Hermes Agent through the hermes CLI; the OpenClaw path is not used for Hermes.")
+            InfoCallout(symbol: "square.grid.2x2", title: "iOS Widgets and Watch Extras", bodyText: "For iPhone users, add VoiceClaw widgets from the iOS Home Screen widget gallery for one-tap route launches. You can also add VoiceClaw to the iPhone Lock Screen or Control Center for a quick Live launch; those controls open VoiceClaw directly on the iPhone, while this Companion is needed for OpenClaw and Hermes Bridge/Tunnel routes.")
 
             HStack(alignment: .top, spacing: 18) {
                 Button {
@@ -680,7 +682,7 @@ private struct TailscalePanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Tailscale", subtitle: "VoiceClaw uses Tailscale Serve so the paired phone can reach this Mac on your private network.", symbol: "network")
+            PanelHeader(title: "Tailscale", subtitle: "VoiceClaw uses Tailscale Serve so the paired phone can reach this Mac on your private network for OpenClaw and Hermes Agent routes.", symbol: "network")
 
             InfoCallout(symbol: "network.badge.shield.half.filled", title: "What Tailscale Serve Is", bodyText: "Tailscale Serve is a private HTTPS reverse proxy: it takes a Tailscale URL on this Mac and forwards it to the local VoiceClaw bridge running on 127.0.0.1. It is private to devices in your tailnet, not a public internet link.")
             InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the VoiceClaw bridge service on this Mac. With the default, the paired phone connects to a URL ending in :12321. If you choose another free port, run Install and Start again and pair the phone with the new QR code.")

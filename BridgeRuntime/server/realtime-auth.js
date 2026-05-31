@@ -66,6 +66,12 @@ export function realtimeAuthPreferences(req) {
   };
 }
 
+function bearerFromPairedPhoneClientSecret(req) {
+  const value = String(req?.headers?.['x-voiceclaw-realtime-client-secret'] || '').trim();
+  if (!value) return '';
+  return value;
+}
+
 function resolveOpenClawPackageRoot() {
   try {
     const binRealPath = realpathSync(OPENCLAW_BIN);
@@ -165,6 +171,19 @@ export async function resolveRealtimeBearer({ req, session, apiKey }) {
     };
   }
 
+  const pairedPhoneClientSecret = bearerFromPairedPhoneClientSecret(req);
+  if (pairedPhoneClientSecret) {
+    return {
+      bearer: pairedPhoneClientSecret,
+      // The Realtime sideband connection is part of the same session. Prefer a
+      // server API key if configured, otherwise use the phone-minted short-lived
+      // client secret for the Companion-owned sideband connection as well.
+      sidebandBearer: apiKey || pairedPhoneClientSecret,
+      source: 'paired-phone-oauth',
+      preferences,
+    };
+  }
+
   try {
     const oauthBearer = await resolveOpenClawOAuthBearer();
     const clientSecret = await createRealtimeClientSecret({
@@ -192,7 +211,11 @@ export async function resolveRealtimeBearer({ req, session, apiKey }) {
       };
     }
 
-    throw new Error(`${error?.message || String(error)}${preferences.fallbackToAPIKey ? ' API-key fallback is enabled, but no API key was available.' : ' API-key fallback is off.'}`);
+    const baseMessage = error?.message || String(error);
+    const phoneHint = preferences.source === 'paired-phone'
+      ? ' The paired phone selected OAuth but did not provide an iPhone-minted GPT-Realtime-2 client secret, so the Companion tried its local OpenClaw OAuth profile instead.'
+      : '';
+    throw new Error(`${baseMessage}${phoneHint}${preferences.fallbackToAPIKey ? ' API-key fallback is enabled, but no API key was available.' : ' API-key fallback is off.'}`);
   }
 }
 
