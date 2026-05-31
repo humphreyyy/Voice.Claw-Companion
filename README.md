@@ -2,11 +2,7 @@
 
 VoiceClaw Companion is the macOS bridge app for VoiceClaw on iPhone and Apple Watch. It connects the mobile app to the user's own OpenClaw installation through their private Tailscale network, without using another person's Mac, tailnet, or API credentials.
 
-<p align="center">
-  <img src="docs/assets/voiceclaw-companion-icon.png" alt="VoiceClaw Companion app icon" width="180">
-</p>
-
-![VoiceClaw Companion setup screen](docs/assets/voiceclaw-companion-setup.png)
+![VoiceClaw Companion setup screen](docs/assets/voiceclaw-companion-github.png)
 
 ## Requirements
 
@@ -37,6 +33,12 @@ Tailscale Serve is Tailscale's private HTTPS reverse proxy. It forwards a privat
 
 The Pair iPhone screen includes an OpenAI API key field. **Include API Key in Setup QR** is on by default, so the QR code/setup JSON can put the user's own GPT-Realtime-2 key into the iPhone Keychain during pairing. Turn it off only when you want to enter the key manually on iPhone.
 
+## Troubleshooting
+
+1. If VoiceClaw Realtime on your phone does not connect after completing QR code settings sync, make sure Tailscale command line integration is installed on the Mac. Open **Tailscale** > **Settings** > **Command Line Integration** > **Show me how**, choose **Add `"tailscale"` command to PATH**, then rerun **Install and Start** in VoiceClaw Companion.
+
+![Tailscale command line integration troubleshooting](docs/assets/tailscale-cli-integration-troubleshooting.png)
+
 ## Updates
 
 VoiceClaw Companion checks GitHub Releases for signed updates. Automatic checks and automatic signed update installs are on by default. The Diagnostics screen lets users choose whether checks run every 5 minutes, every 30 minutes, or every hour. The main window and menu bar item show prominently when a newer build is available.
@@ -54,32 +56,3 @@ For a cleaner onboarding test, **Reset App + Tailscale Mapping** can also remove
 
 ## Privacy Policy
 Neither the iOS/watchOS apps nor the macOS companion apps collect any data at all. Nothing leaves your system. No background "phoning home". Nothing. Feel free to inspect them yourself. The privacy policy is, essentially, "I never touch your data, so I never handle your data, so you privacy is never jeopardized in the first place. I have no idea who you are and I don't care. Enjoy (and please subscribe to the iOS app)!"
-
-## Develop
-
-```sh
-swift build
-./scripts/build_and_run.sh
-```
-
-Runtime checks:
-
-```sh
-cd BridgeRuntime
-npm install
-npm run check
-```
-
-Package a GitHub release artifact:
-
-```sh
-./scripts/package_release.sh
-```
-
-For public distribution, notarize and staple the generated DMG before uploading it to a GitHub Release. Then generate the Sparkle appcast for the notarized DMG:
-
-```sh
-./scripts/make_appcast.sh dist/VoiceClawCompanion-<version>-<build>.dmg
-```
-
-Commit and push `appcast.xml` after the matching GitHub Release asset is uploaded.
