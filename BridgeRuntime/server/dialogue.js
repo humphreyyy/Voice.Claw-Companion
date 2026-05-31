@@ -242,7 +242,15 @@ async function resolveCallGateway() {
   return callGatewayLoader;
 }
 
-async function runGatewayAgentTurn(message, cfg, { signal, timeoutMs = 60000 } = {}) {
+const MIN_OPENCLAW_REPLY_TIMEOUT_MS = 10 * 60 * 1000;
+
+function openClawReplyTimeout(value = MIN_OPENCLAW_REPLY_TIMEOUT_MS) {
+  const numeric = Number(value || MIN_OPENCLAW_REPLY_TIMEOUT_MS);
+  return Math.max(MIN_OPENCLAW_REPLY_TIMEOUT_MS, Number.isFinite(numeric) ? numeric : MIN_OPENCLAW_REPLY_TIMEOUT_MS);
+}
+
+async function runGatewayAgentTurn(message, cfg, { signal, timeoutMs = MIN_OPENCLAW_REPLY_TIMEOUT_MS } = {}) {
+  timeoutMs = openClawReplyTimeout(timeoutMs);
   const callGateway = await resolveCallGateway();
   const request = callGateway({
     method: 'agent',
@@ -280,7 +288,8 @@ function userFacingOpenClawGatewayError(error) {
   return null;
 }
 
-function runOpenclawTurn(args, { signal, timeoutMs = 60000 } = {}) {
+function runOpenclawTurn(args, { signal, timeoutMs = 60000, enforceMinimumTimeout = false } = {}) {
+  timeoutMs = enforceMinimumTimeout ? openClawReplyTimeout(timeoutMs) : timeoutMs;
   return new Promise((resolve, reject) => {
     const child = execFile(OPENCLAW_BIN, args, { timeout: timeoutMs }, (err, stdout, stderr) => {
       if (signal?.aborted) return reject(new Error('aborted'));
@@ -390,7 +399,8 @@ export async function prewarmProcessing(processing = {}, { signal } = {}) {
   };
 }
 
-export async function steerActiveReply(steerText, { processing, timeoutMs = 15000 } = {}) {
+export async function steerActiveReply(steerText, { processing, timeoutMs = MIN_OPENCLAW_REPLY_TIMEOUT_MS } = {}) {
+  timeoutMs = openClawReplyTimeout(timeoutMs);
   const trimmed = String(steerText || '').trim();
   if (!trimmed) return { ok: false, error: 'empty steer text' };
   const cfg = resolveProcessingConfig(processing || {});
@@ -416,7 +426,8 @@ ${trimmed}`;
   }
 }
 
-export async function generateReply(userText, { signal, processing, timeoutMs = 60000 } = {}) {
+export async function generateReply(userText, { signal, processing, timeoutMs = MIN_OPENCLAW_REPLY_TIMEOUT_MS } = {}) {
+  timeoutMs = openClawReplyTimeout(timeoutMs);
   const trimmed = userText.trim();
   if (!trimmed || trimmed === '[BLANK_AUDIO]') return null;
 

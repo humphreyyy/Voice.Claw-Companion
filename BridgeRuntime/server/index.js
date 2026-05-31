@@ -85,8 +85,18 @@ const REALTIME_VAD_PREFIX_PADDING_MS = Number(process.env.REALTIME_VAD_PREFIX_PA
 const REALTIME_VAD_SILENCE_DURATION_MS = Number(process.env.REALTIME_VAD_SILENCE_DURATION_MS || 330);
 const VOICECLAW_BRIDGE_TOKEN = (process.env.VOICECLAW_BRIDGE_TOKEN || process.env.OPENCLAW_GATEWAY_TOKEN || '').trim();
 const VOICECLAW_BRIDGE_PASSWORD = (process.env.VOICECLAW_BRIDGE_PASSWORD || process.env.OPENCLAW_GATEWAY_PASSWORD || '').trim();
+const MIN_REALTIME_REPLY_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_REALTIME_OPENCLAW_TIMEOUT_MS = 20 * 60 * 1000;
+const DEFAULT_WATCH_REALTIME_TURN_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_REALTIME_OPENCLAW_JOB_RETENTION_MS = 60 * 60 * 1000;
+const openClawRealtimeJobs = new Map();
 const watchRealtimeJobs = new Map();
 const watchRealtimeSessions = new Map();
+
+function timeoutAtLeastTenMinutes(value, fallback = MIN_REALTIME_REPLY_TIMEOUT_MS) {
+  const numeric = Number(value || fallback);
+  return Math.max(MIN_REALTIME_REPLY_TIMEOUT_MS, Number.isFinite(numeric) ? numeric : fallback);
+}
 
 function timingSafeStringEqual(left, right) {
   const leftBuffer = Buffer.from(String(left || ''), 'utf8');
@@ -1832,7 +1842,7 @@ function realtimeVoiceTimeoutMs(_urgency = 'normal', _processing = {}) {
   // OpenClaw fallback can legitimately use browser, files, messages, subagents,
   // and other slower local tools. Realtime can still interrupt/cancel/steer turns,
   // so keep the bridge patient enough for real agent work.
-  return Number(process.env.REALTIME_OPENCLAW_TIMEOUT_MS || 1200000);
+  return timeoutAtLeastTenMinutes(process.env.REALTIME_OPENCLAW_TIMEOUT_MS, DEFAULT_REALTIME_OPENCLAW_TIMEOUT_MS);
 }
 
 function normalizeRealtimeProcessingPayload(payload = {}) {
@@ -1854,7 +1864,7 @@ async function steerRealtimeOpenClawTurn({ text, sessionToken, urgency, processi
   const current = realtimeTurns.get(key);
   if (!current) return { ok: false, error: 'no active OpenClaw turn to steer' };
   const startedAt = Date.now();
-  const result = await steerActiveReply(cleanedText, { processing: { ...(processing || {}), sessionToken: realtimeOpenClawSessionToken(key), fastMode: 'on' }, timeoutMs: 15000 });
+  const result = await steerActiveReply(cleanedText, { processing: { ...(processing || {}), sessionToken: realtimeOpenClawSessionToken(key), fastMode: 'on' }, timeoutMs: MIN_REALTIME_REPLY_TIMEOUT_MS });
   await appendRealtimeLog({ kind: 'steer', sessionToken: key, turnId: current.turnId, urgency: urgency || 'normal', ok: !!result.ok, elapsedMs: Date.now() - startedAt, text: cleanedText, error: result.error || '' });
   return { ok: !!result.ok, steered: !!result.ok, reply: result.ok ? 'Added that to the active OpenClaw request.' : undefined, sessionToken: key, turnId: current.turnId, activeSinceMs: Date.now() - current.startedAt, summary: result.ok ? 'Added that to the active OpenClaw request.' : `OpenClaw steering failed: ${result.error || 'unknown error'}`, error: result.error || undefined };
 }
@@ -1925,6 +1935,65 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
     rememberRealtimeResult(key, { ok: false, code: userFacing.code, error: userFacing.error, turnId: effectiveTurnId });
     return { ok: false, code: userFacing.code, error: userFacing.error };
   }
+}
+
+function cleanupOpenClawRealtimeJobs() {
+  const requestedRetentionMs = Number(process.env.REALTIME_OPENCLAW_JOB_RETENTION_MS || DEFAULT_REALTIME_OPENCLAW_JOB_RETENTION_MS);
+  const retentionMs = Number.isFinite(requestedRetentionMs)
+    ? Math.max(DEFAULT_REALTIME_OPENCLAW_JOB_RETENTION_MS, requestedRetentionMs)
+    : DEFAULT_REALTIME_OPENCLAW_JOB_RETENTION_MS;
+  const oldest = Date.now() - retentionMs;
+  for (const [jobID, job] of openClawRealtimeJobs.entries()) {
+    if (job.status === 'running') continue;
+    if ((job.updatedAt || job.createdAt || 0) < oldest) openClawRealtimeJobs.delete(jobID);
+  }
+}
+
+function startOpenClawRealtimeJob({ payload, text }) {
+  cleanupOpenClawRealtimeJobs();
+  const sessionToken = payload.sessionToken || `openclaw-job-${Date.now().toString(36)}`;
+  if (!incrementRealtimeQueue(sessionToken)) {
+    return {
+      ok: false,
+      status: 'error',
+      error: 'realtime OpenClaw queue is full',
+      queued: realtimeQueueCount(sessionToken),
+      maxQueued: MAX_REALTIME_PENDING_TURNS,
+    };
+  }
+
+  const jobID = `openclaw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+  const job = {
+    id: jobID,
+    status: 'running',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    result: null,
+    error: '',
+    sessionToken: sanitizeRealtimeSessionToken(sessionToken),
+  };
+  openClawRealtimeJobs.set(jobID, job);
+  (async () => {
+    try {
+      const result = await runRealtimeOpenClawTurn({
+        ...payload,
+        processing: normalizeRealtimeProcessingPayload(payload),
+        text,
+      });
+      job.result = { ...result, queue: { pending: realtimeQueueCount(sessionToken), max: MAX_REALTIME_PENDING_TURNS } };
+      job.status = result.ok ? 'done' : (result.cancelled ? 'cancelled' : 'error');
+      job.error = result.ok ? '' : (result.error || 'OpenClaw realtime job failed.');
+      job.updatedAt = Date.now();
+    } catch (error) {
+      job.status = 'error';
+      job.error = error?.message || String(error);
+      job.updatedAt = Date.now();
+      await appendRealtimeLog({ kind: 'openclaw_realtime_job_error', jobID, error: job.error });
+    } finally {
+      decrementRealtimeQueue(sessionToken);
+    }
+  })();
+  return { ok: true, jobID, status: 'running' };
 }
 
 function watchRealtimeSessionConfig({ routeMode = 'openclaw', model = REALTIME_MODEL, voice = REALTIME_VOICE, sessionToken = '', processing = {} } = {}) {
@@ -2303,7 +2372,7 @@ async function runWatchRealtimeTurn({ req, payload }) {
   let assistantText = '';
   let replySource = 'rt2';
   const audioChunks = [];
-  const deadline = Date.now() + Number(process.env.WATCH_REALTIME_TURN_TIMEOUT_MS || 180000);
+  const deadline = Date.now() + timeoutAtLeastTenMinutes(process.env.WATCH_REALTIME_TURN_TIMEOUT_MS, DEFAULT_WATCH_REALTIME_TURN_TIMEOUT_MS);
   let openClawFallbackReadyAt = 0;
 
   try {
@@ -2663,6 +2732,52 @@ const httpServer = createServer(async (req, res) => {
       const result = await steerRealtimeOpenClawTurn({ ...payload, processing: normalizeRealtimeProcessingPayload(payload), text: gate.text });
       res.writeHead(result.ok ? 200 : 409, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/openclaw-turn/start`) {
+      const body = await readRequestBody(req, 200_000);
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      const gate = actionability(payload.text || '', { allowWake: false, allowShortCommand: true, context: 'realtime-http-job' });
+      if (!gate.actionable) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, filtered: true, reason: gate.reason, error: 'unclear or non-actionable audio' }));
+        return;
+      }
+      const result = startOpenClawRealtimeJob({ payload, text: gate.text });
+      res.writeHead(result.ok ? 202 : 429, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/openclaw-turn/result`) {
+      cleanupOpenClawRealtimeJobs();
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const jobID = url.searchParams.get('jobID') || url.searchParams.get('jobId') || '';
+      const job = openClawRealtimeJobs.get(jobID);
+      if (!job) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, status: 'missing', error: 'OpenClaw realtime job was not found.' }));
+        return;
+      }
+      if (job.status === 'done') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, status: 'done', result: job.result }));
+        return;
+      }
+      if (job.status === 'error') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, status: 'error', error: job.error || 'OpenClaw realtime job failed.', result: job.result }));
+        return;
+      }
+      if (job.status === 'cancelled') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, status: 'cancelled', error: job.error || 'OpenClaw realtime job was cancelled.', result: job.result }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, status: job.status || 'running' }));
       return;
     }
 

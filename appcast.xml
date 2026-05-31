@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.66</title>
+            <pubDate>Sun, 31 May 2026 20:02:03 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202605311952</sparkle:version>
+            <sparkle:shortVersionString>0.1.66</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.66</h2><ul><li>Adds long-running OpenClaw Realtime job handoff endpoints for iPhone and Apple Watch bridge/tunnel modes.</li><li>Raises OpenClaw reply and watch relay waits to at least 10 minutes so slower agent work is not cut off prematurely.</li><li>Keeps completed OpenClaw Realtime job results available long enough for clients to poll and retrieve them reliably.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.66/VoiceClawCompanion-0.1.66-202605311952.dmg" length="3189670" type="application/octet-stream" sparkle:edSignature="SLqhBYeamVIZWBd9j640ich80mbMJEkGFLpID+5KLW61g8fvQ4MwC2PcRZhI4X8gfSTSZZWB6BMORp+jLqhdDA=="/>
+        </item>
+        <item>
             <title>0.1.65</title>
             <pubDate>Sun, 31 May 2026 16:19:10 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.64</h2><ul><li>Synchronizes Companion-created realtime sessions with the latest VoiceClaw iPhone and Apple Watch microphone-control behavior.</li><li>Removes stale voice-unmute language from the Companion runtime contract.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.64/VoiceClawCompanion-0.1.64-202605260138.dmg" length="3186636" type="application/octet-stream" sparkle:edSignature="/Meg1sfihnJh9S2XMXWF2AB98YOAUr5UetQn/xSsuTMrXX+YkILV14uMuspJBz3gaDLkOS4O39yhSPMO7PuQDA=="/>
-        </item>
-        <item>
-            <title>0.1.63</title>
-            <pubDate>Sun, 24 May 2026 10:22:18 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202605240720</sparkle:version>
-            <sparkle:shortVersionString>0.1.63</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.63</h2><ul><li>Synchronizes Companion-created realtime sessions with the latest VoiceClaw iPhone and Apple Watch builds.</li><li>Route switches and live-session restarts now happen immediately instead of presenting stale stop-to-cancel language.</li><li>Tightens runtime contract checks so OpenClaw Bridge and HTTPS Tunnel prompts keep treating OpenClaw as the selected core resource for substantive work.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.63/VoiceClawCompanion-0.1.63-202605240720.dmg" length="3186614" type="application/octet-stream" sparkle:edSignature="5liqua7zGCZw4x2cCDoiEVwBSO6JFQ+kYCNoPGtWjaPu5uETisGEb3AnjVFYsDIhE1zWv5UBRBZ1K9KQ3V+XBQ=="/>
         </item>
     </channel>
 </rss>
