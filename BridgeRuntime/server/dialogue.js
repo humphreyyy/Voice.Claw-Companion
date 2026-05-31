@@ -10,6 +10,8 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
+const HERMES_BIN = process.env.HERMES_BIN || join(os.homedir(), '.local', 'bin', 'hermes');
+const HERMES_HOME = process.env.HERMES_HOME || join(os.homedir(), '.hermes');
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(os.homedir(), '.openclaw', 'openclaw.json');
 const OPENCLAW_INSTALL_PATH = process.env.OPENCLAW_INSTALL_PATH || join(os.homedir(), '.openclaw');
 const OPENCLAW_GATEWAY_MODULE = process.env.OPENCLAW_GATEWAY_MODULE || '';
@@ -134,6 +136,7 @@ function buildProcessingRoutes() {
 const PROCESSING_ROUTES = buildProcessingRoutes();
 const FAST_MODE_OPTIONS = ['on'];
 const _primedSessions = new Map();
+const _hermesSessions = new Map();
 let callGatewayLoader = null;
 
 function normalizeThinking(value) {
@@ -303,6 +306,84 @@ function runOpenclawTurn(args, { signal, timeoutMs = 60000, enforceMinimumTimeou
   });
 }
 
+function parseHermesChatOutput(stdout = '') {
+  const lines = String(stdout || '').split(/\r?\n/);
+  let sessionId = '';
+  const body = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*session_id:\s*(\S+)\s*$/i);
+    if (match) {
+      sessionId = match[1];
+      continue;
+    }
+    body.push(line);
+  }
+  return {
+    sessionId,
+    reply: body.join('\n').trim(),
+  };
+}
+
+function runHermesChat(message, cfg, { signal, timeoutMs = MIN_OPENCLAW_REPLY_TIMEOUT_MS } = {}) {
+  timeoutMs = openClawReplyTimeout(timeoutMs);
+  return new Promise((resolve, reject) => {
+    const args = [
+      'chat',
+      '-q', message,
+      '--quiet',
+      '--source', 'tool',
+      '--yolo',
+      '--accept-hooks',
+    ];
+    const existingSession = _hermesSessions.get(cfg.sessionId);
+    if (existingSession) {
+      args.push('--resume', existingSession);
+    }
+
+    const child = execFile(HERMES_BIN, args, {
+      timeout: timeoutMs + 30000,
+      env: {
+        ...process.env,
+        HERMES_HOME,
+        HERMES_ACCEPT_HOOKS: '1',
+      },
+    }, (err, stdout, stderr) => {
+      if (signal?.aborted) return reject(new Error('aborted'));
+      if (err) {
+        err.stdout = stdout;
+        err.stderr = stderr;
+        return reject(err);
+      }
+      const parsed = parseHermesChatOutput(stdout);
+      if (parsed.sessionId) _hermesSessions.set(cfg.sessionId, parsed.sessionId);
+      resolve({ ...parsed, stderr });
+    });
+
+    if (signal) {
+      signal.addEventListener('abort', () => { child.kill(); }, { once: true });
+    }
+  });
+}
+
+function userFacingHermesError(error) {
+  const message = String(error?.message || error || '');
+  const stderr = String(error?.stderr || '');
+  const combined = `${message}\n${stderr}`;
+  if (/ENOENT|no such file|not found/i.test(combined)) {
+    return 'Hermes Agent is not available to the Companion on this Mac. Install Hermes Agent or set HERMES_BIN, then retry from VoiceClaw.';
+  }
+  if (/No session found matching/i.test(combined)) {
+    return 'Hermes could not resume that prior VoiceClaw session. Try the request again to start a fresh Hermes session.';
+  }
+  if (/unauthorized|forbidden|login|oauth|auth/i.test(combined)) {
+    return 'Hermes could not authenticate this request. Open Hermes on the Mac, confirm its provider login, then retry from VoiceClaw.';
+  }
+  if (/timed out|timeout/i.test(combined)) {
+    return 'Hermes took too long to finish that. Try again or make it a smaller request.';
+  }
+  return 'Hermes Agent failed. Try that again.';
+}
+
 async function applyFastModeIfNeeded(cfg, signal) {
   if (!cfg.fastModeBestEffort) return;
   const desired = normalizeFastMode(cfg.fastMode);
@@ -363,6 +444,7 @@ export function resolveProcessingConfig(input = {}) {
     fastModeBestEffort: true,
     sessionToken: sanitizeSessionToken(input.sessionToken),
     sessionId: routeSessionId(route.id, input.sessionToken),
+    runtime: String(input.runtime || input.agentRuntime || '').trim().toLowerCase() === 'hermes' ? 'hermes' : 'openclaw',
     label: `${route.label} · thinking ${thinking} · fast on`,
   };
 }
@@ -376,12 +458,36 @@ Realtime/OpenClaw fallback instruction:
 - Do not perform side effects outside the current OpenClaw request unless the user explicitly asks for them.`;
 }
 
+function buildHermesPrompt(userText) {
+  return `VoiceClaw Realtime routed this spoken request to Hermes Agent.
+
+User request:
+${userText}
+
+Hermes response instructions:
+- Fulfill the user's request using normal Hermes Agent judgment, memory, tools, and local context.
+- Return a concise response suitable for VoiceClaw to speak aloud.
+- Preserve concrete results, warnings, file paths, commands, and next steps when they matter.
+- Do not mention this routing wrapper unless the user asks how VoiceClaw is connected to Hermes.`;
+}
+
 export function clearHistory() {
   // History managed by persistent OpenClaw sessions (route-scoped session ids).
 }
 
 export async function prewarmProcessing(processing = {}, { signal } = {}) {
   const cfg = resolveProcessingConfig(processing || {});
+  if (cfg.runtime === 'hermes') {
+    return {
+      ok: true,
+      processing: {
+        route: 'hermes',
+        runtime: 'hermes',
+        sessionId: cfg.sessionId,
+        label: 'Hermes Agent',
+      },
+    };
+  }
   await applyFastModeIfNeeded(cfg, signal);
   return {
     ok: true,
@@ -404,6 +510,15 @@ export async function steerActiveReply(steerText, { processing, timeoutMs = MIN_
   const trimmed = String(steerText || '').trim();
   if (!trimmed) return { ok: false, error: 'empty steer text' };
   const cfg = resolveProcessingConfig(processing || {});
+  if (cfg.runtime === 'hermes') {
+    const message = `VoiceClaw Realtime steering update for the active Hermes request:\n${trimmed}`;
+    try {
+      const result = await runHermesChat(message, cfg, { timeoutMs });
+      return { ok: true, sessionKey: `hermes:${cfg.sessionId}`, sessionId: cfg.sessionId, result, reply: result.reply || 'Added that to Hermes.' };
+    } catch (e) {
+      return { ok: false, sessionKey: `hermes:${cfg.sessionId}`, sessionId: cfg.sessionId, error: userFacingHermesError(e) };
+    }
+  }
   const message = `Realtime user steering update while the previous OpenClaw turn is still active:
 ${trimmed}`;
   try {
@@ -433,6 +548,18 @@ export async function generateReply(userText, { signal, processing, timeoutMs = 
 
   const cfg = resolveProcessingConfig(processing || {});
   const t0 = Date.now();
+  if (cfg.runtime === 'hermes') {
+    try {
+      const result = await runHermesChat(buildHermesPrompt(trimmed), cfg, { signal, timeoutMs });
+      const elapsed = Date.now() - t0;
+      console.log(`[dialogue] runtime=hermes session=${cfg.sessionId} hermesSession=${result.sessionId || _hermesSessions.get(cfg.sessionId) || ''} replied in ${elapsed}ms: "${(result.reply || '').slice(0, 80)}"`);
+      return result.reply || "I didn't catch that. Say it again.";
+    } catch (e) {
+      if (e.message === 'aborted') throw e;
+      console.error('[dialogue] Hermes agent error:', e.message);
+      return userFacingHermesError(e);
+    }
+  }
   const message = cfg.modelRun ? trimmed : buildIntercomPrompt(trimmed);
 
   await applyFastModeIfNeeded(cfg, signal);

@@ -1773,6 +1773,7 @@ function realtimeRoutingMode(req) {
   const value = String(url.searchParams.get('route') || req.headers['x-openclaw-route'] || '').toLowerCase();
   if (['instant', 'gpt55', 'gpt-5.5', 'gpt55-instant', 'chat-latest'].includes(value)) return 'instant';
   if (['gpt55-direct', 'gpt-5.5-direct', 'gpt55-without-openclaw', 'without-openclaw'].includes(value)) return 'gpt55-direct';
+  if (['hermes', 'hermes-bridge', 'hermes-tailscale', 'hermes-public-tunnel', 'hermes-tunnel', 'hermes-https-tunnel'].includes(value)) return 'hermes';
   return value === 'direct' || value === 'pure' || value === 'realtime-only' ? 'direct' : 'openclaw';
 }
 
@@ -1780,8 +1781,16 @@ function isOpenClawRealtimeRoute(routeMode = '') {
   return routeMode === 'openclaw';
 }
 
+function isHermesRealtimeRoute(routeMode = '') {
+  return routeMode === 'hermes';
+}
+
+function isAgentRealtimeRoute(routeMode = '') {
+  return isOpenClawRealtimeRoute(routeMode) || isHermesRealtimeRoute(routeMode);
+}
+
 function hasServerOwnedRealtimeTools(routeMode = '') {
-  return isOpenClawRealtimeRoute(routeMode) || routeMode === 'gpt55-direct';
+  return isAgentRealtimeRoute(routeMode) || routeMode === 'gpt55-direct';
 }
 
 function realtimeCurrentContext() {
@@ -1796,22 +1805,25 @@ function realtimeCurrentContext() {
 }
 
 function realtimeInstructionsForRoute(routeMode = '') {
-  const base = isOpenClawRealtimeRoute(routeMode)
+  const base = isAgentRealtimeRoute(routeMode)
     ? REALTIME_INSTRUCTIONS
     : (routeMode === 'gpt55-direct' ? REALTIME_GPT55_DIRECT_INSTRUCTIONS : (routeMode === 'instant' ? REALTIME_INSTANT_INSTRUCTIONS : REALTIME_DIRECT_INSTRUCTIONS));
-  return `${base.trim()}\n${realtimeCurrentContext()}`.trim();
+  const runtimeNote = isHermesRealtimeRoute(routeMode)
+    ? '\n# Selected agent runtime\n- This route uses Hermes Agent as the selected core resource instead of OpenClaw. The OpenClaw-named tool schemas are compatibility shims; when you call openclaw_turn, steer_openclaw, stop_openclaw, or bridge_status in this route, VoiceClaw routes that work to Hermes Agent through the Companion.\n- Say "Hermes" to the user, not "OpenClaw", when describing the selected route or background work.\n'
+    : '';
+  return `${base.trim()}${runtimeNote}\n${realtimeCurrentContext()}`.trim();
 }
 
 function realtimeToolsForRoute(routeMode = '') {
   if (routeMode === 'instant') return [...INSTANT_REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS];
   if (routeMode === 'gpt55-direct') return [...GPT55_DIRECT_REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS];
-  return isOpenClawRealtimeRoute(routeMode) ? [...REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS] : IPHONE_REALTIME_TOOLS;
+  return isAgentRealtimeRoute(routeMode) ? [...REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS] : IPHONE_REALTIME_TOOLS;
 }
 
 function watchRealtimeToolsForRoute(routeMode = '') {
   if (routeMode === 'instant') return INSTANT_REALTIME_TOOLS;
   if (routeMode === 'gpt55-direct') return GPT55_DIRECT_REALTIME_TOOLS;
-  return isOpenClawRealtimeRoute(routeMode) ? REALTIME_TOOLS : [];
+  return isAgentRealtimeRoute(routeMode) ? REALTIME_TOOLS : [];
 }
 
 async function appendRealtimeLog(event) {
@@ -1852,6 +1864,10 @@ function normalizeRealtimeProcessingPayload(payload = {}) {
     : {};
   if (!processing.agent && source.agent) processing.agent = source.agent;
   if (!processing.thinking && source.reasoning) processing.thinking = source.reasoning;
+  if (!processing.runtime && !processing.agentRuntime) {
+    const rawRoute = String(source.routeMode || source.route || '').toLowerCase();
+    if (rawRoute.includes('hermes')) processing.runtime = 'hermes';
+  }
   if (!processing.fastMode) processing.fastMode = 'on';
   return processing;
 }
@@ -1864,9 +1880,11 @@ async function steerRealtimeOpenClawTurn({ text, sessionToken, urgency, processi
   const current = realtimeTurns.get(key);
   if (!current) return { ok: false, error: 'no active OpenClaw turn to steer' };
   const startedAt = Date.now();
-  const result = await steerActiveReply(cleanedText, { processing: { ...(processing || {}), sessionToken: realtimeOpenClawSessionToken(key), fastMode: 'on' }, timeoutMs: MIN_REALTIME_REPLY_TIMEOUT_MS });
+  const runtime = String(processing?.runtime || processing?.agentRuntime || '').toLowerCase() === 'hermes' ? 'hermes' : 'openclaw';
+  const result = await steerActiveReply(cleanedText, { processing: { ...(processing || {}), sessionToken: realtimeOpenClawSessionToken(key), fastMode: 'on', runtime }, timeoutMs: MIN_REALTIME_REPLY_TIMEOUT_MS });
   await appendRealtimeLog({ kind: 'steer', sessionToken: key, turnId: current.turnId, urgency: urgency || 'normal', ok: !!result.ok, elapsedMs: Date.now() - startedAt, text: cleanedText, error: result.error || '' });
-  return { ok: !!result.ok, steered: !!result.ok, reply: result.ok ? 'Added that to the active OpenClaw request.' : undefined, sessionToken: key, turnId: current.turnId, activeSinceMs: Date.now() - current.startedAt, summary: result.ok ? 'Added that to the active OpenClaw request.' : `OpenClaw steering failed: ${result.error || 'unknown error'}`, error: result.error || undefined };
+  const label = runtime === 'hermes' ? 'Hermes' : 'OpenClaw';
+  return { ok: !!result.ok, steered: !!result.ok, reply: result.ok ? `Added that to the active ${label} request.` : undefined, sessionToken: key, turnId: current.turnId, activeSinceMs: Date.now() - current.startedAt, summary: result.ok ? `Added that to the active ${label} request.` : `${label} steering failed: ${result.error || 'unknown error'}`, error: result.error || undefined };
 }
 
 function userFacingOpenClawTurnError(err) {
@@ -1901,16 +1919,18 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
   clearRealtimeResults(key);
   const controller = new AbortController();
   const openclawToken = realtimeOpenClawSessionToken(key);
+  const runtime = String(processing?.runtime || processing?.agentRuntime || '').toLowerCase() === 'hermes' ? 'hermes' : 'openclaw';
+  const runtimeLabel = runtime === 'hermes' ? 'Hermes' : 'OpenClaw';
   const effectiveTurnId = String(turnId || `rt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   realtimeTurns.set(key, { controller, turnId: effectiveTurnId, startedAt: Date.now() });
 
-  await appendRealtimeLog({ kind: 'user', sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, urgency: urgency || 'normal', text: cleanedText });
+  await appendRealtimeLog({ kind: 'user', runtime, sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, urgency: urgency || 'normal', text: cleanedText });
 
   try {
     const gatewayStartedAt = Date.now();
     const reply = await generateReply(cleanedText, {
       signal: controller.signal,
-      processing: { ...(processing || {}), sessionToken: openclawToken, fastMode: 'on' },
+      processing: { ...(processing || {}), sessionToken: openclawToken, fastMode: 'on', runtime },
       timeoutMs: realtimeVoiceTimeoutMs(urgency, processing || {}),
     });
     const timings = { gatewayMs: Date.now() - gatewayStartedAt, totalMs: Date.now() - realtimeTurns.get(key)?.startedAt };
@@ -1920,7 +1940,7 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
     }
     if (realtimeTurns.get(key)?.turnId === effectiveTurnId) realtimeTurns.delete(key);
     const answer = reply || "I didn't catch that. Say it again.";
-    await appendRealtimeLog({ kind: 'assistant', sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, timings, text: answer });
+    await appendRealtimeLog({ kind: 'assistant', runtime, sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, timings, text: answer });
     rememberRealtimeResult(key, { ok: true, reply: answer, turnId: effectiveTurnId, timings });
     return { ok: true, reply: answer, sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, timings };
   } catch (err) {
@@ -1929,11 +1949,12 @@ async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, pr
       await appendRealtimeLog({ kind: 'cancelled', sessionToken: key, turnId: effectiveTurnId });
       return { ok: false, cancelled: true, error: 'turn cancelled' };
     }
-    console.error('[realtime-openclaw]', err.message);
+    console.error(`[realtime-${runtime}]`, err.message);
     const userFacing = userFacingOpenClawTurnError(err);
-    await appendRealtimeLog({ kind: 'error', sessionToken: key, turnId: effectiveTurnId, code: userFacing.code, error: err.message });
-    rememberRealtimeResult(key, { ok: false, code: userFacing.code, error: userFacing.error, turnId: effectiveTurnId });
-    return { ok: false, code: userFacing.code, error: userFacing.error };
+    const errorText = runtime === 'hermes' ? (err?.message || `${runtimeLabel} turn failed`) : userFacing.error;
+    await appendRealtimeLog({ kind: 'error', runtime, sessionToken: key, turnId: effectiveTurnId, code: userFacing.code, error: err.message });
+    rememberRealtimeResult(key, { ok: false, code: userFacing.code, error: errorText, turnId: effectiveTurnId });
+    return { ok: false, code: userFacing.code, error: errorText };
   }
 }
 
@@ -1951,18 +1972,20 @@ function cleanupOpenClawRealtimeJobs() {
 
 function startOpenClawRealtimeJob({ payload, text }) {
   cleanupOpenClawRealtimeJobs();
-  const sessionToken = payload.sessionToken || `openclaw-job-${Date.now().toString(36)}`;
+  const processing = normalizeRealtimeProcessingPayload(payload);
+  const runtime = String(processing.runtime || processing.agentRuntime || '').toLowerCase() === 'hermes' ? 'hermes' : 'openclaw';
+  const sessionToken = payload.sessionToken || `${runtime}-job-${Date.now().toString(36)}`;
   if (!incrementRealtimeQueue(sessionToken)) {
     return {
       ok: false,
       status: 'error',
-      error: 'realtime OpenClaw queue is full',
+      error: `realtime ${runtime === 'hermes' ? 'Hermes' : 'OpenClaw'} queue is full`,
       queued: realtimeQueueCount(sessionToken),
       maxQueued: MAX_REALTIME_PENDING_TURNS,
     };
   }
 
-  const jobID = `openclaw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+  const jobID = `${runtime}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
   const job = {
     id: jobID,
     status: 'running',
@@ -1977,12 +2000,12 @@ function startOpenClawRealtimeJob({ payload, text }) {
     try {
       const result = await runRealtimeOpenClawTurn({
         ...payload,
-        processing: normalizeRealtimeProcessingPayload(payload),
+        processing,
         text,
       });
       job.result = { ...result, queue: { pending: realtimeQueueCount(sessionToken), max: MAX_REALTIME_PENDING_TURNS } };
       job.status = result.ok ? 'done' : (result.cancelled ? 'cancelled' : 'error');
-      job.error = result.ok ? '' : (result.error || 'OpenClaw realtime job failed.');
+      job.error = result.ok ? '' : (result.error || `${runtime === 'hermes' ? 'Hermes' : 'OpenClaw'} realtime job failed.`);
       job.updatedAt = Date.now();
     } catch (error) {
       job.status = 'error';
@@ -2695,7 +2718,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw'], auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;
@@ -2890,7 +2913,7 @@ const httpServer = createServer(async (req, res) => {
       const body = await readRequestBody(req, 200_000).catch(() => '{}');
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
-      const routeMode = ['direct', 'instant', 'gpt55-direct', 'openclaw'].includes(String(payload.routeMode || '').toLowerCase())
+      const routeMode = ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'].includes(String(payload.routeMode || '').toLowerCase())
         ? String(payload.routeMode || '').toLowerCase()
         : 'direct';
       const { session } = watchRealtimeSessionConfig({
