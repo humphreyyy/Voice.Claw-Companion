@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.69</title>
+            <pubDate>Mon, 01 Jun 2026 19:13:30 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202606011611</sparkle:version>
+            <sparkle:shortVersionString>0.1.69</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.69</h2><ul><li>Fixes GPT-Realtime-2 OAuth via the Companion for newer OpenClaw OAuth profile stores, including OpenClaw / Hermes routes paired by QR settings sync.</li><li>Allows paired iPhone and Apple Watch sessions to use ChatGPT subscription authentication through the Companion without also requiring an in-app ChatGPT sign-in on the phone.</li><li>Preserves compatibility with older OpenClaw provider-auth installs and existing OpenAI API key fallback behavior.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.69/VoiceClawCompanion-0.1.69-202606011611.dmg" length="3192359" type="application/octet-stream" sparkle:edSignature="+a9+s1WWyfr887+i1hH2IMfPlQIvcqTtAgKOkFDzRoy2m4R1jHYRvmVBxhimJrjTdWDhtyCDD2+kJm3Fh96tBA=="/>
+        </item>
+        <item>
             <title>0.1.68</title>
             <pubDate>Mon, 01 Jun 2026 02:59:14 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.67</h2><ul><li>Adds Hermes Agent support for VoiceClaw Realtime Bridge and HTTPS Tunnel routes.</li><li>Routes Hermes turns through the local Hermes CLI with VoiceClaw session continuity.</li><li>Keeps existing OpenClaw, GPT-Realtime-2, and GPT-5.5 route behavior intact.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.67/VoiceClawCompanion-0.1.67-202606010213.dmg" length="3191197" type="application/octet-stream" sparkle:edSignature="tlYtTB6+PGLcfXH0AMuylhJtn+5mtkFUiJvMPgL+UGOXJig/b17ttUdCDPol4wEIkEJxYrOWzz3RmFyO6q29Bg=="/>
-        </item>
-        <item>
-            <title>0.1.66</title>
-            <pubDate>Sun, 31 May 2026 20:02:03 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202605311952</sparkle:version>
-            <sparkle:shortVersionString>0.1.66</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.66</h2><ul><li>Adds long-running OpenClaw Realtime job handoff endpoints for iPhone and Apple Watch bridge/tunnel modes.</li><li>Raises OpenClaw reply and watch relay waits to at least 10 minutes so slower agent work is not cut off prematurely.</li><li>Keeps completed OpenClaw Realtime job results available long enough for clients to poll and retrieve them reliably.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.66/VoiceClawCompanion-0.1.66-202605311952.dmg" length="3189670" type="application/octet-stream" sparkle:edSignature="SLqhBYeamVIZWBd9j640ich80mbMJEkGFLpID+5KLW61g8fvQ4MwC2PcRZhI4X8gfSTSZZWB6BMORp+jLqhdDA=="/>
         </item>
     </channel>
 </rss>
