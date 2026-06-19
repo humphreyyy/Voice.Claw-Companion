@@ -3117,7 +3117,8 @@ const httpServer = createServer(async (req, res) => {
         return;
       }
 
-      const usesClientSecretSignaling = realtimeBearer.source === REALTIME_AUTH_MODE_OPENCLAW_OAUTH;
+      const usesClientSecretSignaling = realtimeBearer.source === REALTIME_AUTH_MODE_OPENCLAW_OAUTH
+        || realtimeBearer.source === 'paired-phone-oauth';
       const upstream = await fetch('https://api.openai.com/v1/realtime/calls', {
         method: 'POST',
         headers: {

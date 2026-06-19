@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.70</title>
+            <pubDate>Fri, 19 Jun 2026 16:35:03 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202606191332</sparkle:version>
+            <sparkle:shortVersionString>0.1.70</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.70</h2><ul><li>Fixes paired-phone GPT-Realtime-2 OAuth signaling when VoiceClaw sends a phone-minted client secret through the Companion.</li><li>Ensures phone-provided OAuth client secrets use the Realtime ephemeral SDP signaling path instead of the API-key multipart path.</li><li>Keeps existing OpenClaw/Hermes bridge routes and API-key fallback behavior unchanged.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.70/VoiceClawCompanion-0.1.70-202606191332.dmg" length="3192334" type="application/octet-stream" sparkle:edSignature="a+5yBXAovp3DvzKzFs0CqxjJqc8y03RoB78xTIW1qeKRaxQ8YKFI/44xMufn+wpDx3dWZiAvigVPGGfVQF+bAQ=="/>
+        </item>
+        <item>
             <title>0.1.69</title>
             <pubDate>Mon, 01 Jun 2026 19:13:30 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.68</h2><ul><li>Fixes GPT-Realtime-2 OAuth signaling for paired phones signed in with ChatGPT by accepting phone-minted client secrets before falling back to local OpenClaw OAuth.</li><li>Clarifies Hermes Agent support throughout setup, pairing, auth, and diagnostics.</li><li>Explains why Hermes routes do not require a Hermes install path in the Companion.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.68/VoiceClawCompanion-0.1.68-202606010252.dmg" length="3191120" type="application/octet-stream" sparkle:edSignature="kJpOfVbYoDTKMxQAZ6nxvTbUFnl5zKZXDPUkYg7uPX/t3Ly/n+3WMHzW/EFl/MpGzGU4wwtEvT1geRAKUyD7BQ=="/>
-        </item>
-        <item>
-            <title>0.1.67</title>
-            <pubDate>Mon, 01 Jun 2026 02:18:32 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202606010213</sparkle:version>
-            <sparkle:shortVersionString>0.1.67</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.67</h2><ul><li>Adds Hermes Agent support for VoiceClaw Realtime Bridge and HTTPS Tunnel routes.</li><li>Routes Hermes turns through the local Hermes CLI with VoiceClaw session continuity.</li><li>Keeps existing OpenClaw, GPT-Realtime-2, and GPT-5.5 route behavior intact.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.67/VoiceClawCompanion-0.1.67-202606010213.dmg" length="3191197" type="application/octet-stream" sparkle:edSignature="tlYtTB6+PGLcfXH0AMuylhJtn+5mtkFUiJvMPgL+UGOXJig/b17ttUdCDPol4wEIkEJxYrOWzz3RmFyO6q29Bg=="/>
         </item>
     </channel>
 </rss>
