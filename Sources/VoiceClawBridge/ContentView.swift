@@ -560,6 +560,22 @@ private struct PairingPanel: View {
                 }
 
                 GridRow {
+                    FieldLabel("Cerebras API Key")
+                    VStack(alignment: .leading, spacing: 6) {
+                        SecureField("csk-...", text: $store.cerebrasAPIKey)
+                            .textFieldStyle(.roundedBorder)
+
+                        Toggle("Include Cerebras Key in Setup QR", isOn: $store.includeCerebrasAPIKeyInPairing)
+                            .toggleStyle(.checkbox)
+
+                        Text("Used when VoiceClaw's Companion Realtime Voice engine is set to the Cerebras middle brain. The preview below redacts it.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                GridRow {
                     FieldLabel("Non-Tailscale HTTPS Bridge")
                     VStack(alignment: .leading, spacing: 6) {
                         TextField("https://...", text: $store.watchPublicBridgeURL)

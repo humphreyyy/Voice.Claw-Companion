@@ -59,6 +59,7 @@ const OPENCLAW_AGENT_NAME = process.env.INTERCOM_AGENT || process.env.OPENCLAW_A
 const REALTIME_LOG_DIR = process.env.REALTIME_LOG_DIR || join(__dirname, '..', 'ops-node', 'logs');
 const REALTIME_TRANSCRIPT_LOG = join(REALTIME_LOG_DIR, 'realtime-transcripts.jsonl');
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(homedir(), '.openclaw', 'openclaw.json');
+const VOICECLAW_CONFIG = process.env.VOICECLAW_CONFIG || join(homedir(), '.voiceclaw', 'bridge.json');
 const REALTIME_VAD_THRESHOLD = Number(process.env.REALTIME_VAD_THRESHOLD || 0.68);
 const REALTIME_VAD_PREFIX_PADDING_MS = Number(process.env.REALTIME_VAD_PREFIX_PADDING_MS || 240);
 const REALTIME_VAD_SILENCE_DURATION_MS = Number(process.env.REALTIME_VAD_SILENCE_DURATION_MS || 330);
@@ -70,6 +71,8 @@ const DEFAULT_WATCH_REALTIME_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_REALTIME_OPENCLAW_JOB_RETENTION_MS = 60 * 60 * 1000;
 const DEFAULT_COMPANION_VOICE_JOB_RETENTION_MS = 60 * 60 * 1000;
 const COMPANION_VOICE_QWEN_MODEL = process.env.COMPANION_VOICE_QWEN_MODEL || 'qwen3.5:2b';
+const COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL = process.env.COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL || 'gemma-4-31b';
+const CEREBRAS_BASE_URL = (process.env.CEREBRAS_BASE_URL || 'https://api.cerebras.ai/v1').replace(/\/+$/g, '');
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/+$/g, '');
 const COMPANION_VOICE_QWEN_KEEP_ALIVE = process.env.COMPANION_VOICE_QWEN_KEEP_ALIVE || '30m';
 const COMPANION_VOICE_QWEN_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_QWEN_PREWARM || '1').toLowerCase());
@@ -180,6 +183,30 @@ function openAIKeyForRealtimeRequest(req) {
   return forwarded || getOpenAIApiKey();
 }
 
+function loadVoiceClawBridgeConfig() {
+  try {
+    return JSON.parse(readFileSync(VOICECLAW_CONFIG, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function normalizeCerebrasModelID(raw = '') {
+  const value = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^cerebras:/, '')
+    .replace(/^cerebras-/, '');
+  return value || COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL;
+}
+
+function cerebrasKeyForCompanionVoice(payload = {}) {
+  const forwarded = String(payload.cerebrasAPIKey || payload.cerebrasApiKey || '').trim();
+  if (forwarded) return forwarded;
+  const configured = String(loadVoiceClawBridgeConfig().cerebrasAPIKey || '').trim();
+  return configured || String(process.env.CEREBRAS_API_KEY || '').trim();
+}
+
 const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - wait_for_user keeps the session listening without a spoken reply when the latest audio is silence, background noise, TV/music, side conversation, speech not addressed to VoiceClaw, or likely echo of VoiceClaw's own previous speech.
 - iphone_status reads current iPhone and VoiceClaw app status, including app version, battery, thermal state, audio route, permission status, locale, timezone, selected GPT-Realtime-2 route, voice settings, and microphone mute state.
@@ -193,6 +220,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_restart_voice_session restarts the current VoiceClaw live audio session after the user asks to restart or reconnect. Do not ask for confirmation. Say exactly "Starting a new session." and use the tool immediately. There is no stop-to-cancel window.
 - iphone_prepare_voice_route_switch is legacy compatibility only for route switches; prefer iphone_confirm_voice_route_switch for new calls.
 - iphone_confirm_voice_route_switch changes VoiceClaw's selected route after an explicit user request to switch VoiceClaw mode or route. Do not ask a confirmation question. Say briefly that VoiceClaw is switching, then use the tool immediately. There is no stop-to-cancel window.
+- iphone_confirm_voice_engine_switch changes VoiceClaw's selected voice engine after an explicit user request to switch voice engine to GPT-Realtime-2, STT + GPT + TTS, or Companion Realtime Voice. Do not ask a confirmation question when the target is clear. Say briefly that VoiceClaw is switching engines, then use the tool immediately.
 - iphone_cancel_voice_route_switch is legacy compatibility only. Route switches and restarts normally happen immediately, so there should not be a pending switch or restart to cancel.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
 - iphone_open_app_settings opens the iOS Settings page for VoiceClaw when the user asks to change app permissions.
@@ -382,6 +410,7 @@ ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 - "Save this as a note" -> use iphone_share and tell the user to choose Notes in the share sheet.
 - "Sync my Watch settings" -> use iphone_sync_watch_settings.
 - "Switch VoiceClaw mode to Tunnel" or "Switch the route to Instant" -> briefly say that VoiceClaw is switching, then call iphone_confirm_voice_route_switch with route "openclaw-public-tunnel" or "gpt55-instant" immediately. Do not ask for confirmation.
+- "Switch the voice engine to Companion Realtime Voice" or "Use STT + GPT + TTS as the voice engine" -> briefly say that VoiceClaw is switching, then call iphone_confirm_voice_engine_switch with engine "companion-realtime-voice" or "stt-gpt-tts" immediately. Do not ask for confirmation.
 - "Run my Shortcut named Start Focus" or "Pass this text to my Shortcut called File This" -> use iphone_run_shortcut with the exact Shortcut name and optional text input.
 - "Open that URL", "show me directions", "look at this screenshot", "take a picture of this", "I copied a screenshot", "open WhatsApp Business with Sam", "text Alex", "call Sam", "copy this", or "run my Shortcut named X" -> use the matching iPhone-side tool after any needed clarification.
 - If the user asks for Mac/private-computer work, explain that OpenClaw Bridge mode is needed for that specific action.
@@ -699,10 +728,24 @@ const IPHONE_REALTIME_TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'gpt55-direct', 'openclaw-bridge', 'openclaw-public-tunnel'], description: 'Optional target route if restating the pending switch.' },
+        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'gpt55-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'], description: 'Optional target route if restating the pending switch.' },
         reason: { type: 'string', description: 'Brief reason the user confirmed this switch.' }
       },
       required: []
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_confirm_voice_engine_switch',
+    description: 'Apply a VoiceClaw voice-engine switch after the user explicitly asks to switch engines. Do not ask a confirmation question; briefly say VoiceClaw is switching engines, then switch immediately and restart with the microphone unmuted. There is no stop-to-cancel window.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        engine: { type: 'string', enum: ['gpt-realtime-2', 'stt-gpt-tts', 'companion-realtime-voice'], description: 'Target voice engine.' },
+        reason: { type: 'string', description: 'Brief reason the user requested this engine switch.' }
+      },
+      required: ['engine']
     }
   },
   {
@@ -2751,8 +2794,17 @@ function companionVoiceProcessingForRoute(routeMode, payload = {}, sessionToken 
 function normalizeCompanionVoiceBrainMode(raw = '') {
   const value = String(raw || '').trim().toLowerCase();
   if (['gpt55-fast-low', 'gpt-5.5', 'gpt55', 'gpt-55', 'gpt-5-5'].includes(value)) return 'gpt55-fast-low';
+  if (value === 'cerebras') return `cerebras:${COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL}`;
+  if (value.startsWith('cerebras:') || value.startsWith('cerebras-')) return `cerebras:${normalizeCerebrasModelID(value)}`;
   if (['local', 'local-router', 'deterministic'].includes(value)) return 'local';
   return 'qwen3.5-2b';
+}
+
+function companionVoiceCerebrasModelID(brainMode = '', payload = {}) {
+  const fromBrain = String(brainMode || '').startsWith('cerebras:')
+    ? String(brainMode).slice('cerebras:'.length)
+    : '';
+  return normalizeCerebrasModelID(payload.cerebrasModel || payload.cerebrasModelID || fromBrain);
 }
 
 function companionVoiceQwenThinkingEnabled(payload = {}) {
@@ -2762,16 +2814,53 @@ function companionVoiceQwenThinkingEnabled(payload = {}) {
 function companionVoiceLooksLikeIPhoneAction(text = '') {
   const normalized = String(text || '').trim().toLowerCase();
   if (!normalized) return false;
-  const hasActionVerb = /\b(open|show|search|map|maps|directions|navigate|call|phone|text|message|email|mail|whatsapp|share|shortcut|settings|remind|reminder|calendar|copy|clipboard|photo|camera|screenshot|transcript|speakerphone|mute|restart|switch route|switch mode|end session|stop listening)\b/i.test(normalized);
-  const hasPhoneSurface = /\b(iphone|phone|ios|safari|browser|website|url|link|apple maps|maps|message|text|email|mail|whatsapp|shortcut|settings|reminder|calendar|clipboard|photo|camera|screenshot|transcript|speakerphone|mic|voiceclaw)\b/i.test(normalized);
+  const hasActionVerb = /\b(open|show|search|map|maps|directions|navigate|call|phone|text|message|email|mail|whatsapp|share|shortcut|settings|remind|reminder|calendar|copy|clipboard|photo|camera|screenshot|transcript|speakerphone|mute|restart|switch route|switch mode|switch engine|switch voice engine|voice engine|end session|stop listening)\b/i.test(normalized);
+  const hasPhoneSurface = /\b(iphone|phone|ios|safari|browser|website|url|link|apple maps|maps|map|directions|navigation|location|near me|nearby|message|text|email|mail|whatsapp|shortcut|settings|reminder|calendar|clipboard|photo|camera|screenshot|transcript|speakerphone|mic|voiceclaw|voice engine|voice route|gpt-realtime|realtime-2|stt|tts|companion realtime|companion voice|qwen|cerebras)\b/i.test(normalized);
   const hasWebTarget = /\bhttps?:\/\/[^\s]+/i.test(normalized) || /\b[a-z0-9.-]+\.[a-z]{2,}(\/[^\s]*)?/i.test(normalized);
-  return hasActionVerb && (hasPhoneSurface || hasWebTarget);
+  const asksLocation = /\b(where am i|current location|my location|show me where i am|near me|nearby)\b/i.test(normalized);
+  return (hasActionVerb && (hasPhoneSurface || hasWebTarget)) || asksLocation;
+}
+
+function companionVoiceExtractMapsDestination(text = '') {
+  const trimmed = String(text || '').trim().replace(/[?.!]+$/g, '');
+  const patterns = [
+    /\b(?:directions|navigation|navigate|route)\s+(?:me\s+)?(?:to|towards?)\s+(.+)$/i,
+    /\bhow\s+(?:do\s+)?(?:i\s+)?(?:get|go|drive|walk)\s+(?:from\s+.+?\s+)?to\s+(.+)$/i,
+    /\bget\s+(?:me\s+)?(?:from\s+.+?\s+)?to\s+(.+)$/i,
+    /\bfrom\s+.+?\s+to\s+(.+)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (match?.[1]) {
+      return match[1]
+        .replace(/\b(?:by|via)\s+(?:car|driving|walking|transit|bus|train)$/i, '')
+        .trim();
+    }
+  }
+  return trimmed;
 }
 
 function companionVoiceFallbackIPhoneTool(text = '') {
   const trimmed = String(text || '').trim();
   const normalized = trimmed.toLowerCase();
   if (!trimmed || !companionVoiceLooksLikeIPhoneAction(trimmed)) return null;
+  if (/\b(voice\s*)?engine\b/i.test(normalized) && /\b(switch|change|set|use)\b/i.test(normalized)) {
+    let engine = '';
+    if (/\b(companion|qwen|cerebras|local)\b/i.test(normalized)) {
+      engine = 'companion-realtime-voice';
+    } else if (/\b(stt|speech\s*to\s*text|tts|turn[-\s]*based)\b/i.test(normalized)) {
+      engine = 'stt-gpt-tts';
+    } else if (/\b(gpt[-\s]*realtime[-\s]*2|realtime[-\s]*2|rt2|direct realtime)\b/i.test(normalized)) {
+      engine = 'gpt-realtime-2';
+    }
+    if (engine) {
+      return {
+        name: 'iphone_confirm_voice_engine_switch',
+        reply: 'Switching voice engines.',
+        arguments: { engine, reason: trimmed },
+      };
+    }
+  }
   if (/\b(safari|browser|website|web\s*site|url|link)\b/i.test(normalized)) {
     const urlMatch = trimmed.match(/\bhttps?:\/\/[^\s]+/i) || trimmed.match(/\b([a-z0-9.-]+\.[a-z]{2,})(\/[^\s]*)?/i);
     return {
@@ -2784,14 +2873,22 @@ function companionVoiceFallbackIPhoneTool(text = '') {
     };
   }
   if (/\b(map|maps|directions|navigate)\b/i.test(normalized)) {
+    const mode = /\b(direction|directions|navigate|route|how\s+(?:do\s+)?(?:i\s+)?(?:get|go|drive|walk))\b/i.test(normalized) ? 'directions' : 'search';
+    const destination = mode === 'directions' ? companionVoiceExtractMapsDestination(trimmed) : trimmed;
     return {
       name: 'iphone_external_action',
       arguments: {
         action: 'open_maps',
-        mode: /\b(direction|directions|navigate|route)\b/i.test(normalized) ? 'directions' : 'search',
-        query: trimmed,
-        destination: trimmed,
+        mode,
+        query: destination,
+        destination,
       },
+    };
+  }
+  if (/\b(where am i|current location|my location|show me where i am)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_current_location',
+      arguments: { purpose: trimmed },
     };
   }
   if (/\b(search|look up|google|web)\b/i.test(normalized)) {
@@ -2803,7 +2900,7 @@ function companionVoiceFallbackIPhoneTool(text = '') {
   if (/\b(call|phone)\b/i.test(normalized)) {
     return {
       name: 'iphone_external_action',
-      arguments: { action: 'start_phone_call', query: trimmed },
+      arguments: { action: 'phone_call', query: trimmed },
     };
   }
   if (/\b(text|message|sms)\b/i.test(normalized)) {
@@ -2827,7 +2924,7 @@ function companionVoiceFallbackIPhoneTool(text = '') {
   if (/\b(shortcut|shortcuts)\b/i.test(normalized)) {
     return {
       name: 'iphone_external_action',
-      arguments: { action: 'run_shortcut', name: trimmed },
+      arguments: { action: 'run_shortcut', shortcut_name: trimmed },
     };
   }
   if (/\b(settings)\b/i.test(normalized)) {
@@ -2904,9 +3001,10 @@ function companionVoiceIPhoneToolMatchesRequest(name = '', text = '') {
     return /\b(speaker|speakerphone|audio|headphones|airpods|handset)\b/i.test(normalized);
   case 'iphone_restart_voice_session':
   case 'iphone_confirm_voice_route_switch':
+  case 'iphone_confirm_voice_engine_switch':
   case 'iphone_cancel_voice_route_switch':
   case 'iphone_end_voice_session':
-    return /\b(restart|reconnect|switch|route|mode|end|hang up|disconnect|stop listening)\b/i.test(normalized);
+    return /\b(restart|reconnect|switch|route|mode|engine|voice engine|end|hang up|disconnect|stop listening)\b/i.test(normalized);
   case 'iphone_current_location':
     return /\b(location|where am i|nearby|near me|directions|navigate)\b/i.test(normalized);
   case 'iphone_lookup_contact':
@@ -3030,6 +3128,14 @@ function companionVoiceDirectReply(text = '') {
   if (/^(can|do|did) you hear what i (said|was saying)\b/.test(normalized)) {
     return "Yes, I heard you.";
   }
+  if (/\b(what|which|list|tell me|show me).*\b(voice engines?|engine options?)\b/.test(normalized)
+    || /\b(voice engines?|engine options?).*\b(available|can i use|options)\b/.test(normalized)) {
+    return "Voice engines: GPT-Realtime-2, STT + GPT + TTS, and Companion Realtime Voice.";
+  }
+  if (/\b(what|which|list|tell me|show me).*\b(voice routes?|route options?|modes?)\b/.test(normalized)
+    || /\b(voice routes?|route options?).*\b(available|can i use|options)\b/.test(normalized)) {
+    return "Voice routes: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, and Hermes HTTPS Tunnel.";
+  }
   return '';
 }
 
@@ -3136,7 +3242,10 @@ Decision policy:
 - Default to call_route=false and answer in final_answer.
 - Answer locally for greetings, mic checks, simple factual questions, arithmetic, definitions, brief explanations, short jokes, simple advice, short drafting, and ordinary conversation.
 - For explicit iPhone/app actions, set iphone_tool_name and iphone_tool_arguments instead of saying you cannot do it. Good default: iphone_external_action.
-- Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, and iphone_end_voice_session for VoiceClaw session/route controls.
+- Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, and iphone_end_voice_session for VoiceClaw session/route/engine controls.
+- If the user asks what voice engines are available, answer concisely: GPT-Realtime-2, STT + GPT + TTS, and Companion Realtime Voice. If the user asks what voice routes are available, answer concisely: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, and Hermes HTTPS Tunnel.
+- Location, nearby, Maps, route, and directions requests are iPhone-side actions. Do not send them to OpenClaw/Hermes unless the user explicitly asks the Mac agent to handle them.
+- For directions from "here", "my current location", or "where I am", use iphone_external_action or iphone_open_maps with mode "directions", destination set to the actual destination only, and origin omitted so Apple Maps uses the iPhone's current location.
 - Use call_route=true for explicit OpenClaw/Hermes/computer work, private/current/user-specific state, files/attachments, Mac/computer control, long research/analysis, or when the user explicitly asks to use the selected route.
 - Do not set call_route=true for iPhone app-opening or iOS handoff actions unless the user asks OpenClaw/Hermes/the Mac to do it.
 - If call_route=true, final_answer should be a brief spoken acknowledgement and route_message should be the complete task for the selected bottom route.
@@ -3148,8 +3257,11 @@ iPhone action examples:
 - The examples below are format examples only. Do not copy their URLs, names, addresses, or text unless the user actually said them.
 - "Open apple.com in Safari" -> {"call_route":false,"route_message":"","final_answer":"Opening that now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"open_url","url":"https://apple.com"}}
 - "Open directions to 11 Madison Avenue in Apple Maps" -> {"call_route":false,"route_message":"","final_answer":"Opening Maps now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"open_maps","mode":"directions","destination":"11 Madison Avenue"}}
+- "Show me my current location and how to get from there to Soho House in Tel Aviv" -> {"call_route":false,"route_message":"","final_answer":"Opening Maps from your current location.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"open_maps","mode":"directions","destination":"Soho House in Tel Aviv"}}
+- "Where am I?" -> {"call_route":false,"route_message":"","final_answer":"Checking your location now.","iphone_tool_name":"iphone_current_location","iphone_tool_arguments":{"purpose":"The user asked where they are."}}
 - "Search the web for Qwen 3.5" -> {"call_route":false,"route_message":"","final_answer":"Searching now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"search_web","query":"Qwen 3.5"}}
 - "Text Sam that I am late" -> {"call_route":false,"route_message":"","final_answer":"Opening a message draft now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"draft_message","recipients":["Sam"],"body":"I am late"}}
+- "Switch the voice engine to Companion Realtime Voice" -> {"call_route":false,"route_message":"","final_answer":"Switching voice engines.","iphone_tool_name":"iphone_confirm_voice_engine_switch","iphone_tool_arguments":{"engine":"companion-realtime-voice"}}
 - "What files are on my Mac desktop?" in an OpenClaw or Hermes route -> {"call_route":true,"route_message":"What files are on my Mac desktop?","final_answer":"Checking that now.","iphone_tool_name":"","iphone_tool_arguments":{}}`;
 }
 
@@ -3194,6 +3306,56 @@ async function runQwen35Planner(prompt, { signal, timeoutMs = 12000, qwenThinkin
       throw new Error(`Ollama ${COMPANION_VOICE_QWEN_MODEL} planner returned unreadable JSON`);
     }
     return String(object?.message?.content || object?.response || '').trim();
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
+async function runCerebrasPlanner(prompt, { signal, timeoutMs = 12000, brainMode = '', payload = {} } = {}) {
+  const apiKey = cerebrasKeyForCompanionVoice(payload);
+  if (!apiKey) {
+    throw new Error('Cerebras API key is not configured.');
+  }
+  const model = companionVoiceCerebrasModelID(brainMode, payload);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  try {
+    const body = {
+      model,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are VoiceClaw. Return only valid JSON matching the requested planner object. Be assistant-first; route only when required.',
+        },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0,
+      response_format: { type: 'json_object' },
+    };
+    if (model === 'gpt-oss-120b') {
+      body.reasoning_effort = 'low';
+    }
+    const response = await fetch(`${CEREBRAS_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Cerebras ${model} planner returned HTTP ${response.status}: ${text.slice(0, 300)}`);
+    }
+    let object;
+    try { object = JSON.parse(text); } catch {
+      throw new Error(`Cerebras ${model} planner returned unreadable JSON`);
+    }
+    return String(object?.choices?.[0]?.message?.content || '').trim();
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener('abort', abort);
@@ -3326,6 +3488,36 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
         ? localPlan
         : { callRoute: false, routeMessage: '', finalAnswer: "I heard you, but my local voice brain had trouble answering that. Try that again." };
       return finalizeCompanionVoicePlan(fallbackPlan, text, routeMode, 'local-after-qwen35-2b-error');
+    }
+  }
+  if (String(brainMode || '').startsWith('cerebras:')) {
+    const cerebrasModel = companionVoiceCerebrasModelID(brainMode, payload);
+    try {
+      const raw = await runCerebrasPlanner(prompt, {
+        signal,
+        timeoutMs: plannerTimeoutMs,
+        brainMode,
+        payload,
+      });
+      const plan = extractCompanionVoicePlan(raw);
+      if (plan.callRoute !== false && !plan.routeMessage) {
+        return finalizeCompanionVoicePlan(localPlan, text, routeMode, `local-after-empty-cerebras-${cerebrasModel}-planner`);
+      }
+      return finalizeCompanionVoicePlan(plan, text, routeMode, `cerebras:${cerebrasModel}`);
+    } catch (error) {
+      await appendRealtimeLog({
+        kind: 'companion_realtime_voice_planner_fallback',
+        sessionToken,
+        routeMode,
+        brainMode,
+        cerebrasModel,
+        plannerTimeoutMs,
+        error: error?.message || String(error),
+      });
+      const fallbackPlan = localPlan.callRoute === true || String(localPlan.finalAnswer || '').trim()
+        ? localPlan
+        : { callRoute: false, routeMessage: '', finalAnswer: "I heard you, but the Cerebras middle brain had trouble answering that. Try that again." };
+      return finalizeCompanionVoicePlan(fallbackPlan, text, routeMode, `local-after-cerebras-${cerebrasModel}-planner-error`);
     }
   }
   try {
@@ -3700,7 +3892,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low'], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, ttsDefault: 'piper-ryan-high', routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', `cerebras:${COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL}`, 'cerebras:gpt-oss-120b'], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: 'piper-ryan-high', routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;

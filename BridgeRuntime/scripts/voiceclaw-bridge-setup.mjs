@@ -726,6 +726,7 @@ async function main() {
     tailscaleDNSName: dnsName || existing.tailscaleDNSName || '',
     realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'openclaw-oauth'),
     realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? false,
+    cerebrasAPIKey: existing.cerebrasAPIKey || '',
   };
   config.tailscaleBaseURL = config.tailscaleDNSName ? `https://${config.tailscaleDNSName}:${config.port}` : (existing.tailscaleBaseURL || '');
 

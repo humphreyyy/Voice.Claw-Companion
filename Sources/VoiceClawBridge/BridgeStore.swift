@@ -79,6 +79,7 @@ enum CompanionUpdateCheckInterval: String, CaseIterable, Identifiable {
 final class BridgeStore: ObservableObject {
     private enum DefaultsKeys {
         static let includeOpenAIAPIKeyInPairing = "voiceclaw.includeOpenAIAPIKeyInPairing"
+        static let includeCerebrasAPIKeyInPairing = "voiceclaw.includeCerebrasAPIKeyInPairing"
         static let watchPublicBridgeURL = "voiceclaw.watchPublicBridgeURL"
         static let openClawAgentName = "voiceclaw.openClawAgentName"
         static let realtimeAuthMode = "voiceclaw.realtimeAuthMode"
@@ -104,11 +105,25 @@ final class BridgeStore: ObservableObject {
         didSet {
             CompanionKeychainStore.save(openAIAPIKey, account: "openai.apiKey")
             refreshPairingPayloadSecrets()
+            Task { await persistBridgeAuthDefaults() }
+        }
+    }
+    @Published var cerebrasAPIKey: String = "" {
+        didSet {
+            CompanionKeychainStore.save(cerebrasAPIKey, account: "cerebras.apiKey")
+            refreshPairingPayloadSecrets()
+            Task { await persistBridgeAuthDefaults() }
         }
     }
     @Published var includeOpenAIAPIKeyInPairing: Bool = true {
         didSet {
             UserDefaults.standard.set(includeOpenAIAPIKeyInPairing, forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
+            refreshPairingPayloadSecrets()
+        }
+    }
+    @Published var includeCerebrasAPIKeyInPairing: Bool = true {
+        didSet {
+            UserDefaults.standard.set(includeCerebrasAPIKeyInPairing, forKey: DefaultsKeys.includeCerebrasAPIKeyInPairing)
             refreshPairingPayloadSecrets()
         }
     }
@@ -218,8 +233,12 @@ final class BridgeStore: ObservableObject {
     init() {
         sparkleUpdaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
         openAIAPIKey = CompanionKeychainStore.load(account: "openai.apiKey") ?? ""
+        cerebrasAPIKey = CompanionKeychainStore.load(account: "cerebras.apiKey") ?? ""
         if UserDefaults.standard.object(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing) != nil {
             includeOpenAIAPIKeyInPairing = UserDefaults.standard.bool(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
+        }
+        if UserDefaults.standard.object(forKey: DefaultsKeys.includeCerebrasAPIKeyInPairing) != nil {
+            includeCerebrasAPIKeyInPairing = UserDefaults.standard.bool(forKey: DefaultsKeys.includeCerebrasAPIKeyInPairing)
         }
         watchPublicBridgeURL = UserDefaults.standard.string(forKey: DefaultsKeys.watchPublicBridgeURL) ?? ""
         if let savedMode = UserDefaults.standard.string(forKey: DefaultsKeys.realtimeAuthMode),
@@ -706,6 +725,12 @@ final class BridgeStore: ObservableObject {
         } else {
             updated.removeValue(forKey: "OpenAIAPIKey")
         }
+        let trimmedCerebrasKey = cerebrasAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if includeCerebrasAPIKeyInPairing, !trimmedCerebrasKey.isEmpty {
+            updated["CerebrasAPIKey"] = trimmedCerebrasKey
+        } else {
+            updated.removeValue(forKey: "CerebrasAPIKey")
+        }
         updated["RealtimeAuthMode"] = realtimeAuthMode.rawValue
         updated["RealtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
         updated["OpenClawAgent"] = normalizedOpenClawAgentName
@@ -744,6 +769,12 @@ final class BridgeStore: ObservableObject {
         object["realtimeAuthMode"] = realtimeAuthMode.rawValue
         object["realtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
         object["openClawAgentName"] = normalizedOpenClawAgentName
+        let trimmedCerebrasKey = cerebrasAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedCerebrasKey.isEmpty {
+            object.removeValue(forKey: "cerebrasAPIKey")
+        } else {
+            object["cerebrasAPIKey"] = trimmedCerebrasKey
+        }
 
         guard let output = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]) else { return }
         try? output.write(to: configURL, options: [.atomic])
@@ -1102,6 +1133,7 @@ final class BridgeStore: ObservableObject {
             "InstantWebSearch": true,
             "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
             "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? false,
+            "CerebrasAPIKey": config["cerebrasAPIKey"] as? String ?? "",
             "WatchPublicBridgeURL": "",
             "CompanionVersion": Self.currentCompanionVersion ?? "",
             "CompanionBuild": Self.currentCompanionBuild ?? "",
@@ -1128,6 +1160,9 @@ final class BridgeStore: ObservableObject {
         }
         if let key = object["OpenAIAPIKey"] as? String, !key.isEmpty {
             object["OpenAIAPIKey"] = "••••••••••••\(key.suffix(4))"
+        }
+        if let key = object["CerebrasAPIKey"] as? String, !key.isEmpty {
+            object["CerebrasAPIKey"] = "••••••••••••\(key.suffix(4))"
         }
 
         guard let redacted = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]),

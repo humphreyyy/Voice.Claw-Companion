@@ -1,67 +1,107 @@
 # VoiceClaw Companion
 
-**VoiceClaw Companion is the Mac app that lets VoiceClaw on iPhone and Apple
-Watch reach your own Mac agent tools.** It installs a small local bridge, starts
-it at login, and publishes it privately through Tailscale Serve so your phone can
-talk to OpenClaw or Hermes Agent on this Mac.
+VoiceClaw Companion is the macOS bridge for VoiceClaw on iPhone and Apple Watch.
+It lets the mobile app reach agent tools that run on your own Mac, including
+OpenClaw and Hermes Agent, through a private Tailscale URL.
 
-It is designed for people who want VoiceClaw to use their own Mac, their own
-tailnet, and their own API credentials. It does not route your VoiceClaw setup
-through another person's computer or account.
+The Companion app installs a small local Node.js bridge, keeps it running with a
+user LaunchAgent, configures Tailscale Serve, and gives VoiceClaw a QR code or
+setup link for pairing. It is meant for people who want VoiceClaw to use their
+own Mac, their own tailnet, and their own API credentials instead of routing work
+through someone else's computer.
 
 ![VoiceClaw Companion setup screen](docs/assets/voiceclaw-companion-github.png)
 
-## What It Does
+## Who This Is For
 
-- Connects VoiceClaw on iPhone and Apple Watch to OpenClaw routes on your Mac.
-- Connects VoiceClaw to Hermes Agent routes when the `hermes` command is
-  installed and working in Terminal.
-- Publishes the local bridge through a private Tailscale HTTPS URL.
-- Generates a QR code and setup link for pairing the iPhone app.
-- Stores the local bridge config in your home folder and can start the bridge
-  automatically at login.
-- Checks GitHub Releases for signed VoiceClaw Companion updates.
-- Reports setup, Tailscale, Realtime, and Companion Realtime Voice readiness from
-  the Diagnostics screen.
+Use VoiceClaw Companion if you want to:
+
+- Talk to OpenClaw from VoiceClaw on iPhone or Apple Watch.
+- Route spoken requests to Hermes Agent when the `hermes` CLI is installed.
+- Use VoiceClaw Realtime iOS/watchOS with a Mac-side bridge for private computer
+  access.
+- Keep the bridge local to your Mac and reachable only through your Tailscale
+  tailnet by default.
+- Pair, diagnose, and update the Mac bridge without manually editing local
+  launch agents or Tailscale Serve mappings.
+
+You probably do not need this app if you only want a standalone iPhone voice
+assistant and do not need your phone or watch to reach agent tools on a Mac.
+
+## How It Fits Together
+
+```text
+VoiceClaw on iPhone / Apple Watch
+        |
+        | private HTTPS URL from Tailscale Serve
+        v
+VoiceClaw Companion on Mac
+        |
+        | local bridge on 127.0.0.1, default port 12321
+        v
+OpenClaw, Hermes Agent, GPT-Realtime-2, or Companion Realtime Voice
+```
+
+The iPhone/watch app owns the mobile voice experience. VoiceClaw Companion owns
+the Mac-side bridge. Tailscale supplies the private network path between them.
+
+The bridge can expose several route types to VoiceClaw:
+
+- **Tailscale/OpenClaw**: sends requests to an OpenClaw install on this Mac,
+  usually at `~/.openclaw`.
+- **Tailscale/Hermes**: sends requests to Hermes Agent through the `hermes`
+  command or `HERMES_BIN`.
+- **GPT-Realtime-2 Live**: uses OpenAI Realtime from the mobile app, with the
+  Companion available for Mac-side tools and auth setup.
+- **Companion Realtime Voice**: runs a local speech pipeline on the Mac using
+  local speech dependencies and optional OpenClaw/Hermes routing.
+
+Realtime should handle ordinary conversation directly when it can. OpenClaw or
+Hermes should be used when the request needs the Mac, local files, local tools,
+or a specific agent route.
 
 ## Requirements
 
-Before installing, you need:
+Before installing, prepare:
 
-- A Mac with macOS 13 Ventura or later. Current release builds are for Apple
-  silicon.
+- A Mac running macOS 13 Ventura or later. Current release builds are intended
+  for Apple silicon Macs.
 - [Tailscale for Mac](https://tailscale.com/download/mac), signed in to the same
-  tailnet your iPhone uses.
-- Tailscale HTTPS certificates enabled for your tailnet. If you are not the
-  tailnet owner/admin, ask that person to enable them.
-- Node.js installed on the Mac. The app looks in normal Homebrew and system
+  tailnet as the iPhone.
+- Tailscale HTTPS certificates enabled for the tailnet. If you are not the
+  tailnet owner or admin, ask that person to enable them.
+- Node.js installed on the Mac. Companion checks common Homebrew and system
   locations.
-- The VoiceClaw iPhone app installed and signed in.
-- At least one local agent route:
+- VoiceClaw installed on iPhone and signed in.
+- At least one Mac-side agent route:
   - OpenClaw installed on the Mac, usually at `~/.openclaw`, with
-    `openclaw.json` inside that folder.
-  - Or Hermes Agent installed so `hermes` works from Terminal. Hermes routes use
-    the `hermes` command and `HERMES_HOME`; there is no Hermes path field in the
-    Companion app.
+    `openclaw.json` in that folder.
+  - Or Hermes Agent installed so `hermes --help` works in Terminal.
 
-For **GPT-Realtime-2 Live** sessions, use API Key mode for now. Pair with an
-OpenAI API key included in the QR code, enter the key on iPhone, or make the key
-available to the Companion runtime. The OpenClaw OAuth option is reserved for
-future Sign in with ChatGPT Realtime support.
+For **GPT-Realtime-2 Live**, use API Key mode for current sessions. You can
+include the OpenAI API key in the setup QR, enter it on iPhone, or make it
+available to the Companion runtime. The OpenClaw OAuth option is present for
+future Sign in with ChatGPT Realtime support and should not be treated as the
+default path today.
 
-For **Companion Realtime Voice**, the bridge also checks for local speech
-dependencies:
+For **Companion Realtime Voice**, the Diagnostics screen checks the additional
+local speech stack:
 
 - `ffmpeg`
 - `whisper-cli`
 - a Whisper model at `~/.openclaw/models/ggml-small.bin` or
   `~/.openclaw/models/ggml-medium.bin`, unless `WHISPER_MODEL` is set
-- Ollama running with `qwen3.5:2b` installed (`ollama pull qwen3.5:2b`)
+- Ollama running with `qwen3.5:2b` installed:
+
+```sh
+ollama pull qwen3.5:2b
+```
+
 - a TTS option: OpenAI TTS key in OpenClaw config, a supported Piper model, or
   macOS `say`
 
-The normal OpenClaw/Hermes bridge can still be useful before every Companion
-Realtime Voice dependency is ready.
+The normal OpenClaw and Hermes bridge routes can still work before every
+Companion Realtime Voice dependency is ready.
 
 ## Install
 
@@ -69,58 +109,126 @@ Realtime Voice dependency is ready.
 2. Download the `.dmg` attached to the release.
 3. Open the DMG and drag **VoiceClaw Companion** into **Applications**.
 4. Open **VoiceClaw Companion**.
-5. If macOS asks for permission to open the app, approve it.
+5. Approve the macOS open prompt if one appears.
+6. Click **Install and Start**.
 
-After the app opens, click **Install and Start**. This creates the local bridge
-config, installs the user LaunchAgent, starts the bridge, and configures
-Tailscale Serve for the selected port.
+**Install and Start** creates `~/.voiceclaw/bridge.json`, installs
+`~/Library/LaunchAgents/ai.voiceclaw.bridge.plist`, starts the bridge, and
+configures Tailscale Serve for the selected port.
 
-By default, the bridge uses port `12321`. You normally should leave it alone.
-Use **Fresh Test Port** only when you are testing a clean pairing flow or you
-know the default port is already in use. If you change the port, pair the iPhone
-again with the new QR code.
+The default bridge port is `12321`. Leave it unchanged unless that port is
+already in use or you are deliberately testing a fresh pairing. If you change
+the port, pair the iPhone again with the new QR code.
 
 ## Pair iPhone
 
-1. Complete **Install and Start** on the Mac.
+1. Finish **Install and Start** on the Mac.
 2. Open **Pair Phone** in VoiceClaw Companion.
-3. Open VoiceClaw settings on iPhone and scan the QR code, or copy the setup
-   link/JSON if scanning is inconvenient.
-4. Leave **Include API Key in Setup QR** on if you want the iPhone to receive
-   your OpenAI API key during pairing. The app stores the key securely and
-   redacts it in the setup preview.
-5. In VoiceClaw on iPhone, choose the route you want to use: Tailscale/OpenClaw,
-   Tailscale/Hermes, GPT-Realtime-2, Companion Realtime Voice, or another
-   available route.
+3. Open VoiceClaw settings on iPhone.
+4. Scan the QR code, or copy the setup link/JSON if scanning is inconvenient.
+5. Choose the route you want in VoiceClaw, such as Tailscale/OpenClaw,
+   Tailscale/Hermes, GPT-Realtime-2, or Companion Realtime Voice.
 
-The Tailscale bridge URL is private to your tailnet. Do not put a public HTTPS
-tunnel in the **Non-Tailscale HTTPS Bridge** field unless you intentionally want
-the phone or watch to reach this Mac through a public tunnel instead of
-Tailscale.
+The **Include API Key in Setup QR** toggle controls whether the setup payload
+includes your OpenAI API key. When enabled, the iPhone can store the key in its
+Keychain during pairing. The Companion preview redacts the key so you can inspect
+the setup payload without displaying the full secret.
+
+The **Non-Tailscale HTTPS Bridge** field is optional and advanced. Leave it empty
+for the normal private Tailscale setup. Only enter a public HTTPS tunnel if you
+intentionally want VoiceClaw to reach this Mac outside Tailscale and you
+understand the exposure.
+
+## What The App Provides
+
+- Native macOS setup, pairing, Tailscale, and diagnostics screens.
+- A menu bar item for status checks, setup copying, update checks, and app
+  access.
+- Private Tailscale Serve publishing for the local bridge.
+- QR code, setup link, and setup JSON generation for iPhone pairing.
+- OpenClaw path configuration for installs that are not at `~/.openclaw`.
+- Hermes routing through the existing CLI environment rather than a separate
+  Hermes path field.
+- Readiness checks for the local bridge, Tailscale Serve, Realtime auth, app
+  updates, and Companion Realtime Voice dependencies.
+- Signed update checks through GitHub Releases.
+- Reset actions that remove only VoiceClaw Companion state and, when proven safe,
+  only the matching Tailscale Serve mapping.
+
+## OpenClaw And Hermes Routes
+
+### OpenClaw
+
+Set **OpenClaw Install Path** to the folder that directly contains
+`openclaw.json`. The usual value is:
+
+```text
+~/.openclaw
+```
+
+VoiceClaw Companion uses this path when creating the bridge configuration and
+when reporting readiness. Do not point the field at a parent folder unless that
+parent folder itself contains `openclaw.json`.
+
+### Hermes
+
+VoiceClaw Companion does not have a Hermes install path field. The bridge calls
+Hermes through the Mac user's command-line environment.
+
+Check Hermes in Terminal first:
+
+```sh
+hermes --help
+```
+
+If `hermes` is installed somewhere unusual, set `HERMES_BIN` for the bridge
+environment. Hermes can also use `HERMES_HOME` when your Hermes setup requires
+it.
+
+## Privacy And Local Runtime
+
+VoiceClaw Companion is designed around local ownership:
+
+- The bridge listens locally on `127.0.0.1` and is forwarded by Tailscale Serve.
+- The Tailscale URL is private to your tailnet by default.
+- Bridge configuration is stored at `~/.voiceclaw/bridge.json`.
+- The user LaunchAgent is stored at
+  `~/Library/LaunchAgents/ai.voiceclaw.bridge.plist`.
+- The OpenAI API key is stored by the Companion app in Keychain.
+- Setup QR codes and setup links can include secrets if you choose to include
+  them.
+- Setup previews redact the API key, but screenshots, logs, setup JSON, setup
+  links, and bridge URLs may still reveal private tailnet hostnames or tokens.
+
+Do not share setup payloads, bridge URLs, screenshots, or logs unless you have
+checked that they do not contain private hostnames, tokens, or API keys.
+
+VoiceClaw Companion does not make your Mac public unless you intentionally
+configure a separate public HTTPS tunnel and put that URL into the advanced
+Non-Tailscale field.
 
 ## Updates
 
 VoiceClaw Companion checks GitHub Releases for signed updates. Automatic checks
-are on by default and can be adjusted in **Diagnostics**.
+are enabled by default and can be adjusted in **Diagnostics**.
 
-When a signed update is available, the main window and menu bar item show it.
-Use **Install Update** to let Sparkle download and install the signed release in
-the app. You can also open the GitHub release and download the notarized DMG
+When an update is available, the main window and menu bar item show it. Use the
+in-app update action or open the GitHub release and download the notarized DMG
 manually.
 
 ## Troubleshooting
 
-### The phone cannot connect after scanning the QR code
+### Phone cannot connect after scanning
 
-- Make sure Tailscale is installed and signed in on both Mac and iPhone.
+- Confirm Tailscale is installed and signed in on both Mac and iPhone.
 - Confirm both devices are in the same tailnet.
-- Enable Tailscale HTTPS certificates in the tailnet admin console.
-- In VoiceClaw Companion, click **Diagnostics** > **Check Again**.
-- If the selected port changed, scan the new QR code.
+- Confirm Tailscale HTTPS certificates are enabled in the tailnet admin console.
+- In VoiceClaw Companion, open **Diagnostics** and click **Check Again**.
+- If the bridge port changed, scan the current QR code again.
 
 ### Companion says the Tailscale command is missing
 
-Install Tailscale's command line integration:
+Install Tailscale's command-line integration:
 
 1. Open **Tailscale** on the Mac.
 2. Go to **Settings**.
@@ -132,41 +240,26 @@ Install Tailscale's command line integration:
 
 ### Setup says OpenClaw config was not found
 
-Set **OpenClaw Install Path** to the folder that contains `openclaw.json`. On
-most Macs this is:
-
-```text
-~/.openclaw
-```
-
-Do not point it at a parent folder unless that parent folder directly contains
-`openclaw.json`.
+Set **OpenClaw Install Path** to the folder that contains `openclaw.json`,
+usually `~/.openclaw`, then run **Install and Start** again.
 
 ### Hermes routes do not work
 
-VoiceClaw Companion does not ask for a Hermes install path. It starts the bridge,
-then calls the `hermes` CLI from the Mac user's `PATH`, or from `HERMES_BIN`
-when that is set.
-
-Check Hermes in Terminal first:
-
-```sh
-hermes --help
-```
-
-Then reopen VoiceClaw Companion and click **Install and Start** again.
+Run `hermes --help` in Terminal. If that fails, install or repair Hermes first.
+If it works only from a custom shell setup, configure `HERMES_BIN` for the bridge
+environment so Companion can call the same executable.
 
 ### GPT-Realtime-2 does not start
 
 Use **API Key** mode for current GPT-Realtime-2 Live sessions. Add an OpenAI API
-key in the Pair Phone screen and either include it in the setup QR or enter it
-on iPhone. OAuth is visible for future support, but current GPT-Realtime-2 Live
+key in **Pair Phone** and either include it in the setup QR or enter it on
+iPhone. OAuth is visible for future support, but current GPT-Realtime-2 Live
 sessions should not rely on Companion-minted OAuth.
 
 ### Companion Realtime Voice says it needs setup
 
-Open **Diagnostics** and read the Companion Realtime Voice row. It reports which
-local dependency is missing. Common fixes:
+Open **Diagnostics** and read the Companion Realtime Voice row. It reports the
+missing local dependency. Common fixes are:
 
 - Install `ffmpeg`.
 - Install `whisper-cli`.
@@ -190,21 +283,6 @@ remove Node.js, remove Hermes, or delete iPhone settings.
 mapping only when diagnostics prove that mapping points exactly to VoiceClaw's
 local bridge. It refuses to remove unrelated Serve mappings and does not run
 Tailscale's full `serve reset` command.
-
-## Privacy And Security
-
-- VoiceClaw Companion is meant to run on your Mac, with your own local agent
-  tools and credentials.
-- The Tailscale URL is private to your tailnet. Tailscale Serve forwards that
-  private URL to `127.0.0.1` on this Mac.
-- The bridge config is stored at `~/.voiceclaw/bridge.json`.
-- The setup QR/link can include your OpenAI API key when you choose to include
-  it. The preview redacts the key, and the paired iPhone stores it securely.
-- Do not share screenshots, setup JSON, setup links, bridge URLs, or logs if
-  they contain private tailnet hostnames, tokens, or API keys.
-- VoiceClaw Companion should not be used to expose your Mac publicly unless you
-  intentionally configure a separate public HTTPS tunnel and understand the
-  risk.
 
 ## More Documentation
 
