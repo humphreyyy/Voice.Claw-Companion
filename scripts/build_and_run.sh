@@ -14,8 +14,22 @@ cd "$ROOT_DIR"
 swift build
 
 rm -rf "$BUNDLE_DIR"
-mkdir -p "$BUNDLE_DIR/Contents/MacOS" "$BUNDLE_DIR/Contents/Resources"
+mkdir -p "$BUNDLE_DIR/Contents/MacOS" "$BUNDLE_DIR/Contents/Frameworks" "$BUNDLE_DIR/Contents/Resources"
 cp "$EXECUTABLE" "$BUNDLE_DIR/Contents/MacOS/$EXECUTABLE_NAME"
+
+SPARKLE_FRAMEWORK="$ROOT_DIR/.build/debug/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  SPARKLE_FRAMEWORK="$ROOT_DIR/.build/arm64-apple-macosx/debug/Sparkle.framework"
+fi
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  echo "Sparkle.framework was not found after swift build." >&2
+  exit 1
+fi
+rsync -a --delete "$SPARKLE_FRAMEWORK/" "$BUNDLE_DIR/Contents/Frameworks/Sparkle.framework/"
+if ! otool -l "$BUNDLE_DIR/Contents/MacOS/$EXECUTABLE_NAME" | grep -Fq "@executable_path/../Frameworks"; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$BUNDLE_DIR/Contents/MacOS/$EXECUTABLE_NAME"
+fi
+
 cat > "$BUNDLE_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -37,10 +51,12 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+codesign --force --deep --sign - "$BUNDLE_DIR" >/dev/null
+
 VOICECLAW_BRIDGE_ROOT="$RUNTIME_DIR" /usr/bin/open -n "$BUNDLE_DIR"
 
 if [[ "${1:-}" == "--verify" ]]; then
-  sleep 2
+  sleep 4
   pgrep -x "$EXECUTABLE_NAME" >/dev/null
   echo "$APP_NAME launched"
 fi

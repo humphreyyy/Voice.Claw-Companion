@@ -2,5 +2,5 @@
 .DS_Store
 dist/
 BridgeRuntime/node_modules/
+BridgeRuntime/ops-node/
 *.xcdistributionlogs/
-

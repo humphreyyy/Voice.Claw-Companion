@@ -5,8 +5,12 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
+import { executablePath, normalizeProcessPath } from './bin-paths.js';
 
-const WHISPER_CLI = process.env.WHISPER_CLI || 'whisper-cli';
+normalizeProcessPath();
+
+const WHISPER_CLI = executablePath(process.env.WHISPER_CLI || 'whisper-cli');
+const FFMPEG_BIN = executablePath(process.env.FFMPEG_BIN || 'ffmpeg');
 const WHISPER_SMALL_MODEL = join(os.homedir(), '.openclaw', 'models', 'ggml-small.bin');
 const WHISPER_MEDIUM_MODEL = join(os.homedir(), '.openclaw', 'models', 'ggml-medium.bin');
 const WHISPER_MODEL = process.env.WHISPER_MODEL || (existsSync(WHISPER_SMALL_MODEL) ? WHISPER_SMALL_MODEL : WHISPER_MEDIUM_MODEL);
@@ -57,7 +61,7 @@ async function toWavViaFfmpeg(inputBuffer, inputPath, wavPath, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error('aborted'));
 
-    const proc = spawn('ffmpeg', [
+    const proc = spawn(FFMPEG_BIN, [
       '-y', '-i', inputPath,
       '-ar', '16000', '-ac', '1', '-sample_fmt', 's16',
       wavPath

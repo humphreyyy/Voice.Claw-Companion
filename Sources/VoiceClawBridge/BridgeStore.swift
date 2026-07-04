@@ -23,9 +23,9 @@ enum CompanionRealtimeAuthMode: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .apiKey:
-            "Use the OpenAI API key from the paired phone or the bridge environment."
+            "Use the OpenAI API key from the paired phone or the bridge environment. This is currently required for GPT-Realtime-2 Live sessions."
         case .openClawOAuth:
-            "Use ChatGPT subscription auth for GPT-Realtime-2. A signed-in phone can mint its own short-lived client secret; otherwise the Companion can use the local OpenClaw ChatGPT/Codex login. Hermes Agent routes use the same GPT-Realtime-2 auth layer."
+            "Reserved for ChatGPT subscription auth after OpenAI re-enables GPT-Realtime-2 Sign-in-with-ChatGPT access. Current GPT-Realtime-2 Live sessions should use API Key mode."
         }
     }
 }
@@ -118,7 +118,7 @@ final class BridgeStore: ObservableObject {
             refreshPairingPayloadSecrets()
         }
     }
-    @Published var realtimeAuthMode: CompanionRealtimeAuthMode = .openClawOAuth {
+    @Published var realtimeAuthMode: CompanionRealtimeAuthMode = .apiKey {
         didSet {
             UserDefaults.standard.set(realtimeAuthMode.rawValue, forKey: DefaultsKeys.realtimeAuthMode)
             refreshPairingPayloadSecrets()
@@ -138,6 +138,7 @@ final class BridgeStore: ObservableObject {
     @Published var localBridgeSummary: String = "Not checked"
     @Published var realtimeRuntimeSummary: String = "Realtime runtime not checked."
     @Published var realtimeAuthStatusSummary: String = "OpenAI auth status not checked."
+    @Published var companionVoiceSummary: String = "Companion Realtime Voice dependencies not checked."
     @Published var pairingJSON: String = ""
     @Published var pairingPreview: String = ""
     @Published var pairingURL: String = ""
@@ -755,6 +756,7 @@ final class BridgeStore: ObservableObject {
             let diagnostics = try JSONDecoder().decode(BridgeDiagnostics.self, from: Data(output.utf8))
             localBridgeSummary = diagnostics.local.summary
             tailscaleSummary = diagnostics.tailscale.summary
+            companionVoiceSummary = diagnostics.companionVoice?.summary ?? "Companion Realtime Voice dependencies were not reported by this bridge runtime."
             setupAdvice = diagnostics.suggestedAction
             canResetTailscaleMapping = diagnostics.tailscale.canClearSafely ?? false
             await refreshRealtimeRuntimeStatus()
@@ -779,6 +781,7 @@ final class BridgeStore: ObservableObject {
             tailscaleSummary = Self.userFacingSetupError(error)
             realtimeRuntimeSummary = "Realtime runtime status could not be read because bridge diagnostics failed."
             realtimeAuthStatusSummary = "OpenAI auth status could not be read because bridge diagnostics failed."
+            companionVoiceSummary = "Companion Realtime Voice dependencies could not be checked because bridge diagnostics failed."
             setupAdvice = "Install Node.js and Tailscale if needed, then click Install and Start."
             canResetTailscaleMapping = false
             if !status.isWorking {
@@ -1043,7 +1046,7 @@ final class BridgeStore: ObservableObject {
     }
 
     private static func realtimeAuthStatusSummary(from object: [String: Any]) -> String {
-        let mode = object["mode"] as? String ?? CompanionRealtimeAuthMode.openClawOAuth.rawValue
+        let mode = object["mode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue
         let source = object["effectiveSource"] as? String ?? "unknown"
         let fallback = object["fallbackToAPIKey"] as? Bool ?? false
         let apiKeyAvailable = object["apiKeyAvailable"] as? Bool ?? false
@@ -1054,22 +1057,22 @@ final class BridgeStore: ObservableObject {
         let oauthError = oauth?["error"] as? String
 
         if mode != CompanionRealtimeAuthMode.openClawOAuth.rawValue, !oauthChecked {
-            return "API-key mode is selected from \(source). OpenAI API key available: \(apiKeyAvailable ? "yes" : "no"). Select OAuth (ChatGPT Subscription) and click Check Again to test subscription login."
+            return "API-key mode is selected from \(source). OpenAI API key available: \(apiKeyAvailable ? "yes" : "no"). This is the supported GPT-Realtime-2 Live path until OpenAI re-enables Sign-in-with-ChatGPT for GPT-Realtime-2."
         }
 
         if oauthAvailable {
             if probe == "passed" {
-                return "OAuth (ChatGPT Subscription) is ready: the Companion found the local OpenClaw ChatGPT/Codex login and minted a GPT-Realtime-2 client secret. A paired phone that is signed in to ChatGPT can also bring its own short-lived client secret. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+                return "OAuth can mint a GPT-Realtime-2 client secret, but current /realtime/calls signaling is not admitted with OAuth-minted secrets. Use API Key mode for Live sessions. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
             }
 
-            return "Local OpenClaw OAuth profile is available. Select OAuth (ChatGPT Subscription) and click Check Again to run the GPT-Realtime-2 client-secret test. If the phone is signed in to ChatGPT, it can use its own phone-minted client secret instead. API-key fallback \(fallback ? "on" : "off")."
+            return "Local OpenClaw OAuth profile is available, but GPT-Realtime-2 Live should use API Key mode until OpenAI re-enables subscription sign-in for Realtime signaling. API-key fallback \(fallback ? "on" : "off")."
         }
 
         if let oauthError, !oauthError.isEmpty {
-            return "Local Companion OAuth is not ready: \(oauthError) This only blocks Companion-minted GPT-Realtime-2 client secrets. A paired phone signed in to ChatGPT can still provide its own client secret for Realtime signaling. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+            return "Local Companion OAuth is not ready: \(oauthError) Use API Key mode for GPT-Realtime-2 Live sessions. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
         }
 
-        return "OAuth (ChatGPT Subscription) has not been checked yet. Select OAuth (ChatGPT Subscription) and click Check Again to test subscription login. API-key fallback \(fallback ? "on" : "off")."
+        return "OAuth (ChatGPT Subscription) has not been checked. Use API Key mode for GPT-Realtime-2 Live sessions until OpenAI re-enables subscription sign-in. API-key fallback \(fallback ? "on" : "off")."
     }
 
     private static func integerText(_ value: Any?) -> String? {
@@ -1097,7 +1100,7 @@ final class BridgeStore: ObservableObject {
             "RealtimeModel": "gpt-realtime-2",
             "InstantModel": "gpt-5-chat-latest",
             "InstantWebSearch": true,
-            "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.openClawOAuth.rawValue,
+            "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
             "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? false,
             "WatchPublicBridgeURL": "",
             "CompanionVersion": Self.currentCompanionVersion ?? "",
@@ -1183,6 +1186,7 @@ private struct BridgeDiagnostics: Decodable {
     let savedConfigExists: Bool
     let local: Component
     let tailscale: Component
+    let companionVoice: Component?
     let suggestedAction: String
 
     struct Component: Decodable {

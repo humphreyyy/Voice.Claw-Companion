@@ -1,10 +1,13 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 const HOME = homedir();
+const execFileAsync = promisify(execFile);
 const BRIDGE_CONFIG_FILE = join(HOME, '.voiceclaw', 'bridge.json');
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(HOME, '.openclaw', 'openclaw.json');
@@ -13,6 +16,7 @@ const OPENAI_CHATGPT_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const OPENAI_CHATGPT_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const OPENAI_REALTIME_CLIENT_SECRETS_URL = 'https://api.openai.com/v1/realtime/client_secrets';
 const OPENAI_OAUTH_REFRESH_SKEW_MS = 2 * 60 * 1000;
+const SQLITE3_BIN = process.env.SQLITE3_BIN || '/usr/bin/sqlite3';
 
 export const REALTIME_AUTH_MODE_API_KEY = 'api-key';
 export const REALTIME_AUTH_MODE_OPENCLAW_OAUTH = 'openclaw-oauth';
@@ -70,7 +74,100 @@ function isUsableOpenAIOAuthProfile(profile) {
     && (nonEmptyString(profile.access) || nonEmptyString(profile.refresh));
 }
 
-async function listOpenClawAuthProfileStorePaths() {
+async function listOpenClawAgentDirs(roots) {
+  const dirs = new Set();
+  const cfg = readOpenClawConfig();
+  const configuredAgents = Array.isArray(cfg?.agents?.list) ? cfg.agents.list : [];
+  for (const agent of configuredAgents) {
+    const agentDir = nonEmptyString(agent?.agentDir);
+    if (agentDir) dirs.add(agentDir);
+  }
+
+  for (const root of roots) {
+    dirs.add(join(root, 'agent'));
+    dirs.add(join(root, 'agents', 'main', 'agent'));
+
+    const agentsRoot = join(root, 'agents');
+    try {
+      for (const entry of await readdir(agentsRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) dirs.add(join(agentsRoot, entry.name, 'agent'));
+      }
+    } catch {
+      // Older OpenClaw installs may not have per-agent auth profile stores.
+    }
+  }
+
+  return [...dirs];
+}
+
+function sqliteLiteral(value = '') {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+async function readSqliteJsonRows(sqlitePath, sql) {
+  try {
+    const { stdout } = await execFileAsync(SQLITE3_BIN, ['-json', sqlitePath, sql], {
+      timeout: 5000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const trimmed = stdout.trim();
+    return trimmed ? JSON.parse(trimmed) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function runSqliteScript(sqlitePath, script) {
+  await new Promise((resolve, reject) => {
+    const proc = spawn(SQLITE3_BIN, [sqlitePath], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stderr = '';
+    const timeout = setTimeout(() => {
+      proc.kill('SIGTERM');
+      reject(new Error('sqlite3 update timed out'));
+    }, 5000);
+    proc.stderr.on('data', (chunk) => { stderr += chunk; });
+    proc.on('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`sqlite3 update failed with code ${code}: ${stderr.slice(0, 300)}`));
+      }
+    });
+    proc.stdin.end(script);
+  });
+}
+
+async function listOpenClawAuthSqliteStorePaths() {
+  const roots = new Set([
+    OPENCLAW_INSTALL_PATH,
+    dirname(OPENCLAW_CONFIG),
+    join(HOME, '.openclaw'),
+  ].map(nonEmptyString).filter(Boolean));
+  const paths = new Set();
+
+  if (process.env.OPENCLAW_AUTH_SQLITE_STORES) {
+    for (const item of process.env.OPENCLAW_AUTH_SQLITE_STORES.split(':')) {
+      const path = nonEmptyString(item);
+      if (path) paths.add(path);
+    }
+  }
+
+  for (const root of roots) {
+    paths.add(join(root, 'openclaw-agent.sqlite'));
+  }
+  for (const agentDir of await listOpenClawAgentDirs(roots)) {
+    paths.add(join(agentDir, 'openclaw-agent.sqlite'));
+  }
+
+  return [...paths].filter((path) => existsSync(path));
+}
+
+async function listOpenClawAuthJsonStorePaths() {
   const roots = new Set([
     OPENCLAW_INSTALL_PATH,
     dirname(OPENCLAW_CONFIG),
@@ -87,25 +184,46 @@ async function listOpenClawAuthProfileStorePaths() {
 
   for (const root of roots) {
     paths.add(join(root, 'auth-profiles.json'));
-    paths.add(join(root, 'agent', 'auth-profiles.json'));
-    paths.add(join(root, 'agents', 'main', 'agent', 'auth-profiles.json'));
-
-    const agentsRoot = join(root, 'agents');
-    try {
-      for (const entry of await readdir(agentsRoot, { withFileTypes: true })) {
-        if (entry.isDirectory()) paths.add(join(agentsRoot, entry.name, 'agent', 'auth-profiles.json'));
-      }
-    } catch {
-      // Older OpenClaw installs may not have per-agent auth profile stores.
-    }
+  }
+  for (const agentDir of await listOpenClawAgentDirs(roots)) {
+    paths.add(join(agentDir, 'auth-profiles.json'));
   }
 
   return [...paths];
 }
 
-async function loadOpenAIChatGPTOAuthProfiles() {
+async function loadOpenAIChatGPTOAuthProfilesFromSqlite() {
   const profiles = [];
-  for (const storePath of await listOpenClawAuthProfileStorePaths()) {
+  for (const storePath of await listOpenClawAuthSqliteStorePaths()) {
+    const rows = await readSqliteJsonRows(storePath, 'select rowid, store_json from auth_profile_store order by rowid;');
+    for (const row of rows) {
+      let store;
+      try {
+        store = JSON.parse(row.store_json || '{}');
+      } catch {
+        continue;
+      }
+
+      const entries = store?.profiles && typeof store.profiles === 'object' ? store.profiles : {};
+      for (const [profileId, profile] of Object.entries(entries)) {
+        if (!isUsableOpenAIOAuthProfile(profile)) continue;
+        profiles.push({
+          storeKind: 'sqlite',
+          storePath,
+          sqliteRowId: row.rowid,
+          profileId,
+          profile,
+          expiresMs: normalizeOpenAIAuthExpiryMs(profile.expires),
+        });
+      }
+    }
+  }
+  return profiles;
+}
+
+async function loadOpenAIChatGPTOAuthProfilesFromJson() {
+  const profiles = [];
+  for (const storePath of await listOpenClawAuthJsonStorePaths()) {
     let store;
     try {
       store = JSON.parse(await readFile(storePath, 'utf8'));
@@ -117,6 +235,7 @@ async function loadOpenAIChatGPTOAuthProfiles() {
     for (const [profileId, profile] of Object.entries(entries)) {
       if (!isUsableOpenAIOAuthProfile(profile)) continue;
       profiles.push({
+        storeKind: 'json',
         storePath,
         profileId,
         profile,
@@ -124,11 +243,19 @@ async function loadOpenAIChatGPTOAuthProfiles() {
       });
     }
   }
+  return profiles;
+}
+
+async function loadOpenAIChatGPTOAuthProfiles() {
+  const profiles = [
+    ...await loadOpenAIChatGPTOAuthProfilesFromSqlite(),
+    ...await loadOpenAIChatGPTOAuthProfilesFromJson(),
+  ];
 
   profiles.sort((left, right) => {
-    const leftValid = left.expiresMs > Date.now() + OPENAI_OAUTH_REFRESH_SKEW_MS ? 1 : 0;
-    const rightValid = right.expiresMs > Date.now() + OPENAI_OAUTH_REFRESH_SKEW_MS ? 1 : 0;
-    if (leftValid !== rightValid) return rightValid - leftValid;
+    const leftPriority = left.storeKind === 'sqlite' ? 0 : 1;
+    const rightPriority = right.storeKind === 'sqlite' ? 0 : 1;
+    if (leftPriority !== rightPriority) return leftPriority - rightPriority;
     return right.expiresMs - left.expiresMs;
   });
   return profiles;
@@ -136,6 +263,31 @@ async function loadOpenAIChatGPTOAuthProfiles() {
 
 async function persistRefreshedOpenAIChatGPTOAuthProfile(candidate, refreshed) {
   try {
+    if (candidate.storeKind === 'sqlite') {
+      const rows = await readSqliteJsonRows(
+        candidate.storePath,
+        `select rowid, store_json from auth_profile_store where rowid = ${Number(candidate.sqliteRowId) || 0};`
+      );
+      const row = rows[0];
+      if (!row) return;
+      const store = JSON.parse(row.store_json || '{}');
+      const current = store?.profiles?.[candidate.profileId];
+      if (!isUsableOpenAIOAuthProfile(current)) return;
+      store.profiles[candidate.profileId] = {
+        ...current,
+        access: refreshed.access,
+        refresh: refreshed.refresh,
+        expires: refreshed.expires,
+        accountId: refreshed.accountId || current.accountId,
+      };
+      await runSqliteScript(candidate.storePath, [
+        'begin immediate;',
+        `update auth_profile_store set store_json = ${sqliteLiteral(JSON.stringify(store))} where rowid = ${Number(candidate.sqliteRowId) || 0};`,
+        'commit;',
+      ].join('\n'));
+      return;
+    }
+
     const store = JSON.parse(await readFile(candidate.storePath, 'utf8'));
     const current = store?.profiles?.[candidate.profileId];
     if (!isUsableOpenAIOAuthProfile(current)) return;
@@ -174,7 +326,7 @@ async function refreshOpenAIChatGPTOAuthProfile(candidate) {
   const refresh = nonEmptyString(candidate.profile.refresh);
   if (!refresh) throw new Error('OpenAI OAuth profile has no refresh token');
 
-  const key = `${candidate.storePath}\0${candidate.profileId}`;
+  const key = `${candidate.storeKind || 'json'}\0${candidate.storePath}\0${candidate.sqliteRowId || ''}\0${candidate.profileId}`;
   if (openAIOAuthRefreshes.has(key)) return await openAIOAuthRefreshes.get(key);
 
   const refreshPromise = (async () => {
@@ -217,25 +369,36 @@ async function refreshOpenAIChatGPTOAuthProfile(candidate) {
   return await refreshPromise;
 }
 
-async function resolveOpenClawOAuthBearerFromProfileStore() {
+async function validateOpenClawOAuthToken(token, validateToken) {
+  if (/^sk-/.test(token)) {
+    throw new Error('OpenClaw returned an API-key auth profile, not a ChatGPT/Codex OAuth profile.');
+  }
+  if (validateToken) await validateToken(token);
+}
+
+async function resolveOpenClawOAuthBearerFromProfileStore(validateToken) {
   const profiles = await loadOpenAIChatGPTOAuthProfiles();
   const now = Date.now();
+  const refreshErrors = [];
 
   for (const candidate of profiles) {
     const access = nonEmptyString(candidate.profile.access);
     if (access && candidate.expiresMs > now + OPENAI_OAUTH_REFRESH_SKEW_MS) {
-      return access;
+      try {
+        await validateOpenClawOAuthToken(access, validateToken);
+        return access;
+      } catch (error) {
+        refreshErrors.push(`${candidate.profileId} (${candidate.storeKind || 'json'} access): ${error?.message || String(error)}`);
+      }
     }
-  }
 
-  const refreshErrors = [];
-  for (const candidate of profiles) {
     if (!nonEmptyString(candidate.profile.refresh)) continue;
     try {
       const refreshed = await refreshOpenAIChatGPTOAuthProfile(candidate);
+      await validateOpenClawOAuthToken(refreshed.access, validateToken);
       return refreshed.access;
     } catch (error) {
-      refreshErrors.push(`${candidate.profileId}: ${error?.message || String(error)}`);
+      refreshErrors.push(`${candidate.profileId} (${candidate.storeKind || 'json'} refresh): ${error?.message || String(error)}`);
     }
   }
 
@@ -304,7 +467,7 @@ async function loadOpenClawProviderAuthModule() {
   return providerAuthModulePromise;
 }
 
-async function resolveOpenClawOAuthBearerFromProviderModule() {
+async function resolveOpenClawOAuthBearerFromProviderModule(validateToken) {
   const providerAuth = await loadOpenClawProviderAuthModule();
   const cfg = readOpenClawConfig();
   let lastError = null;
@@ -312,7 +475,10 @@ async function resolveOpenClawOAuthBearerFromProviderModule() {
   for (const provider of ['openai-codex', 'openai']) {
     try {
       const token = await providerAuth.resolveProviderAuthProfileApiKey({ provider, cfg });
-      if (token) return token;
+      if (token) {
+        await validateOpenClawOAuthToken(token, validateToken);
+        return token;
+      }
     } catch (error) {
       lastError = error;
     }
@@ -322,14 +488,11 @@ async function resolveOpenClawOAuthBearerFromProviderModule() {
   return '';
 }
 
-async function resolveOpenClawOAuthBearer() {
+async function resolveOpenClawOAuthBearer(validateToken) {
   let profileStoreError = null;
   try {
-    const token = await resolveOpenClawOAuthBearerFromProfileStore();
+    const token = await resolveOpenClawOAuthBearerFromProfileStore(validateToken);
     if (token) {
-      if (/^sk-/.test(token)) {
-        throw new Error('OpenClaw profile store returned an API key, not a ChatGPT/Codex OAuth access token.');
-      }
       return token;
     }
   } catch (error) {
@@ -338,7 +501,7 @@ async function resolveOpenClawOAuthBearer() {
 
   let token = '';
   try {
-    token = await resolveOpenClawOAuthBearerFromProviderModule();
+    token = await resolveOpenClawOAuthBearerFromProviderModule(validateToken);
   } catch (error) {
     const profileMessage = profileStoreError ? ` Direct auth-profile fallback also failed: ${profileStoreError.message || String(profileStoreError)}` : '';
     throw new Error(`${error?.message || String(error)}${profileMessage}`);
@@ -347,10 +510,6 @@ async function resolveOpenClawOAuthBearer() {
   if (!token) {
     const profileMessage = profileStoreError ? ` Direct auth-profile fallback failed: ${profileStoreError.message || String(profileStoreError)}` : '';
     throw new Error(`No OpenClaw OpenAI OAuth profile is available. Run: openclaw models auth login --provider openai --set-default.${profileMessage}`);
-  }
-
-  if (/^sk-/.test(token)) {
-    throw new Error('OpenClaw returned an API-key auth profile, not a ChatGPT/Codex OAuth profile. Run: openclaw models auth login --provider openai --set-default');
   }
 
   return token;
@@ -416,10 +575,9 @@ export async function resolveRealtimeBearer({ req, session, apiKey }) {
   }
 
   try {
-    const oauthBearer = await resolveOpenClawOAuthBearer();
-    const clientSecret = await createRealtimeClientSecret({
-      authToken: oauthBearer,
-      session,
+    let clientSecret = null;
+    const oauthBearer = await resolveOpenClawOAuthBearer(async (authToken) => {
+      clientSecret = await createRealtimeClientSecret({ authToken, session });
     });
     return {
       bearer: clientSecret.value,
@@ -470,20 +628,23 @@ export async function buildRealtimeAuthStatus({ req, apiKey, probe = false, mode
 
   status.openClawOAuth.checked = true;
   try {
-    const oauthBearer = await resolveOpenClawOAuthBearer();
+    await resolveOpenClawOAuthBearer(probe
+      ? async (authToken) => {
+        await createRealtimeClientSecret({
+          authToken,
+          session: {
+            type: 'realtime',
+            model,
+            audio: {
+              output: { voice },
+            },
+          },
+        });
+      }
+      : undefined);
     status.openClawOAuth.available = true;
 
     if (probe) {
-      await createRealtimeClientSecret({
-        authToken: oauthBearer,
-        session: {
-          type: 'realtime',
-          model,
-          audio: {
-            output: { voice },
-          },
-        },
-      });
       status.openClawOAuth.clientSecretProbe = 'passed';
     }
   } catch (error) {

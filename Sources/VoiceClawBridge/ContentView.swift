@@ -514,7 +514,7 @@ private struct PairingPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Pair Phone", subtitle: "Scan this QR code in VoiceClaw Settings. It syncs the bridge URL, OpenClaw settings, Hermes-capable route support, and Realtime auth preferences; the paired phone can still override auth later.", symbol: "qrcode")
+            PanelHeader(title: "Pair Phone", subtitle: "Scan this QR code in VoiceClaw Settings. It syncs the bridge URL, OpenClaw settings, Hermes-capable route support, and Realtime auth preferences. GPT-Realtime-2 currently requires API Key mode until OpenAI re-enables Sign-in-with-ChatGPT access.", symbol: "qrcode")
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
                 GridRow {
@@ -536,7 +536,7 @@ private struct PairingPanel: View {
                             .toggleStyle(.checkbox)
                             .disabled(store.realtimeAuthMode != .openClawOAuth)
 
-                        Text("When the paired phone sends its own setting, the phone wins. If the phone is signed in to ChatGPT, it can bring its own short-lived GPT-Realtime-2 client secret to this bridge. If it is not signed in, the Companion tries the local OpenClaw ChatGPT/Codex login for OAuth. Fallback uses the phone's OpenAI API key if it was included in pairing or entered on the phone; otherwise the Companion can only use an API key already available to its local environment.")
+                        Text("When the paired phone sends its own setting, the phone wins. For current GPT-Realtime-2 Live sessions, use API Key mode with an OpenAI API key included in pairing, entered on the phone, or available to the Companion environment. OAuth is kept for future Sign-in-with-ChatGPT Realtime support, but Companion-minted OAuth client secrets are not presently admitted by Realtime signaling.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -574,7 +574,7 @@ private struct PairingPanel: View {
             }
 
             InfoCallout(symbol: "key.radiowaves.forward", title: "OpenAI Auth Status", bodyText: store.realtimeAuthStatusSummary)
-            InfoCallout(symbol: "point.3.connected.trianglepath.dotted", title: "Which Runtime Handles the Work", bodyText: "GPT-Realtime-2 always handles live speech. OpenClaw routes send substantive work to OpenClaw using the OpenClaw path and agent above. Hermes routes send substantive work to Hermes Agent through the hermes CLI; the OpenClaw path is not used for Hermes.")
+            InfoCallout(symbol: "point.3.connected.trianglepath.dotted", title: "Which Runtime Handles the Work", bodyText: "The selected iOS voice engine handles live speech. GPT-Realtime-2 uses OpenAI Realtime directly; Companion Realtime Voice uses this Mac for speech-to-text, the selected middle brain, and text-to-speech. OpenClaw routes send substantive work to OpenClaw using the OpenClaw path and agent above. Hermes routes send substantive work to Hermes Agent through the hermes CLI; the OpenClaw path is not used for Hermes.")
             InfoCallout(symbol: "square.grid.2x2", title: "iOS Widgets and Watch Extras", bodyText: "For iPhone users, add VoiceClaw widgets from the iOS Home Screen widget gallery for one-tap route launches. You can also add VoiceClaw to the iPhone Lock Screen or Control Center for a quick Live launch; those controls open VoiceClaw directly on the iPhone, while this Companion is needed for OpenClaw and Hermes Bridge/Tunnel routes.")
 
             HStack(alignment: .top, spacing: 18) {
@@ -736,6 +736,7 @@ private struct StatusPanel: View {
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
             StatusRow(title: "Realtime Runtime", value: store.realtimeRuntimeSummary, symbol: "waveform.path.ecg")
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
+            StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
             StatusRow(title: "Launch upon Startup", value: store.launchAtStartupSummary, symbol: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")

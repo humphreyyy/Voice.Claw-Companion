@@ -110,7 +110,15 @@ if [[ -f "$ICON_SOURCE" ]]; then
   rm -rf "$ICONSET"
 fi
 
-rsync -a --delete "$RUNTIME_SOURCE_DIR/" "$RUNTIME_DIR/"
+rsync -a --delete \
+  --exclude 'node_modules/' \
+  --exclude 'ops-node/' \
+  --exclude '.env' \
+  --exclude '.env.*' \
+  --exclude '*.log' \
+  --exclude '*.jsonl' \
+  --exclude '*.sqlite' \
+  "$RUNTIME_SOURCE_DIR/" "$RUNTIME_DIR/"
 (
   cd "$RUNTIME_DIR"
   npm ci --omit=dev --ignore-scripts

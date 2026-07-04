@@ -7,12 +7,16 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import { promisify } from 'node:util';
+import { executablePath, normalizeProcessPath } from './bin-paths.js';
 
 const execFile = promisify(execFileCb);
+normalizeProcessPath();
 
 const DEFAULT_PIPER_MODEL = process.env.PIPER_MODEL || join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-libritts-high.onnx');
 const DEFAULT_PIPER_LENGTH_SCALE = process.env.PIPER_LENGTH_SCALE || '0.7';
-const PIPER_BIN = process.env.PIPER_BIN || 'python3';
+const PIPER_BIN = executablePath(process.env.PIPER_BIN || 'python3');
+const FFMPEG_BIN = executablePath(process.env.FFMPEG_BIN || 'ffmpeg');
+const SAY_BIN = executablePath(process.env.SAY_BIN || 'say');
 const FALLBACK_RATE = process.env.TTS_RATE || '185';
 const DEFAULT_SPEED = process.env.TTS_SPEED || 'fastest';
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(os.homedir(), '.openclaw', 'openclaw.json');
@@ -375,7 +379,7 @@ async function synthesizeSay(text, { signal, sayVoice, rate } = {}) {
   try {
     await new Promise((resolve, reject) => {
       if (signal?.aborted) return reject(new Error('aborted'));
-      const proc = spawn('say', ['-v', sayVoice || 'Samantha', '-r', String(rate || FALLBACK_RATE), '-o', aiffPath, text], { stdio: 'ignore' });
+      const proc = spawn(SAY_BIN, ['-v', sayVoice || 'Samantha', '-r', String(rate || FALLBACK_RATE), '-o', aiffPath, text], { stdio: 'ignore' });
       const onAbort = () => { proc.kill('SIGTERM'); reject(new Error('aborted')); };
       signal?.addEventListener('abort', onAbort, { once: true });
       proc.on('close', code => {
@@ -388,7 +392,7 @@ async function synthesizeSay(text, { signal, sayVoice, rate } = {}) {
 
     await new Promise((resolve, reject) => {
       if (signal?.aborted) return reject(new Error('aborted'));
-      const proc = spawn('ffmpeg', ['-y', '-i', aiffPath, '-ar', '16000', '-ac', '1', '-sample_fmt', 's16', wavPath], { stdio: 'ignore' });
+      const proc = spawn(FFMPEG_BIN, ['-y', '-i', aiffPath, '-ar', '16000', '-ac', '1', '-sample_fmt', 's16', wavPath], { stdio: 'ignore' });
       const onAbort = () => { proc.kill('SIGTERM'); reject(new Error('aborted')); };
       signal?.addEventListener('abort', onAbort, { once: true });
       proc.on('close', code => {

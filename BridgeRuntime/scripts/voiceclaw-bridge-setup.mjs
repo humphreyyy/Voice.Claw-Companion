@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { createServer } from 'node:net';
@@ -19,6 +19,18 @@ const LAUNCH_AGENT_LABEL = 'ai.voiceclaw.bridge';
 const LAUNCH_AGENT_FILE = join(HOME, 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
 const DEFAULT_BRIDGE_PORT = 12321;
 const DEFAULT_OPENCLAW_AGENT_NAME = 'main';
+const DEFAULT_QWEN_MODEL = process.env.COMPANION_VOICE_QWEN_MODEL || 'qwen3.5:2b';
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+const RUNTIME_PATH = [
+  '/opt/homebrew/bin',
+  '/opt/homebrew/sbin',
+  '/usr/local/bin',
+  '/usr/local/sbin',
+  '/usr/bin',
+  '/bin',
+  '/usr/sbin',
+  '/sbin',
+].join(':');
 
 function parseArgs(argv) {
   const options = {
@@ -31,8 +43,8 @@ function parseArgs(argv) {
     diagnose: false,
     suggestPort: false,
     port: null,
-    openClawInstallPath: join(HOME, '.openclaw'),
-    openClawAgentName: DEFAULT_OPENCLAW_AGENT_NAME,
+    openClawInstallPath: null,
+    openClawAgentName: null,
     realtimeAuthMode: null,
     realtimeAuthFallbackToAPIKey: null,
   };
@@ -145,6 +157,79 @@ async function resolveNodePath() {
   const resolved = stdout.trim();
   if (!resolved) throw new Error('Node.js was not found.');
   return resolved;
+}
+
+async function resolveOptionalExecutable(name, explicitPath = '') {
+  const candidates = [];
+  if (explicitPath) candidates.push(explicitPath);
+  if (!String(name || '').includes('/')) {
+    for (const dir of RUNTIME_PATH.split(':')) {
+      candidates.push(join(dir, name));
+    }
+  } else {
+    candidates.push(name);
+  }
+  for (const candidate of candidates) {
+    try {
+      await execFileAsync('/usr/bin/test', ['-x', candidate], { timeout: 2000 });
+      return candidate;
+    } catch {}
+  }
+  try {
+    const { stdout } = await execFileAsync('/usr/bin/env', ['which', name], {
+      timeout: 3000,
+      env: { ...process.env, PATH: RUNTIME_PATH },
+    });
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+function httpJSON(urlString, { timeoutMs = 3000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlString);
+    const client = url.protocol === 'https:' ? null : http;
+    if (!client) {
+      reject(new Error(`Unsupported URL scheme ${url.protocol}`));
+      return;
+    }
+    const request = client.get({
+      hostname: url.hostname,
+      port: url.port || 80,
+      path: `${url.pathname}${url.search}`,
+      timeout: timeoutMs,
+    }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { body += chunk; });
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`HTTP ${response.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body || '{}'));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on('timeout', () => {
+      request.destroy();
+      reject(new Error('timeout'));
+    });
+    request.on('error', reject);
+  });
+}
+
+function hasOpenAITtsKey(openClawInstallPath) {
+  try {
+    const cfg = JSON.parse(readFileSync(join(openClawInstallPath, 'openclaw.json'), 'utf8'));
+    return !!cfg?.messages?.tts?.providers?.openai?.apiKey;
+  } catch {
+    return false;
+  }
 }
 
 async function resolveTailscalePath() {
@@ -378,7 +463,75 @@ async function suggestFreshPort() {
   throw new Error('Could not find an unused local test port.');
 }
 
+async function checkCompanionVoiceDependencies(openClawInstallPath) {
+  const ffmpegPath = await resolveOptionalExecutable('ffmpeg', process.env.FFMPEG_BIN || '');
+  const whisperPath = await resolveOptionalExecutable('whisper-cli', process.env.WHISPER_CLI || '');
+  const whisperSmallModel = join(HOME, '.openclaw', 'models', 'ggml-small.bin');
+  const whisperMediumModel = join(HOME, '.openclaw', 'models', 'ggml-medium.bin');
+  const configuredWhisperModel = process.env.WHISPER_MODEL || '';
+  const whisperModelPath = configuredWhisperModel
+    || (existsSync(whisperSmallModel) ? whisperSmallModel : whisperMediumModel);
+  const whisperModelReady = existsSync(whisperModelPath);
+  const sttReady = !!ffmpegPath && !!whisperPath && whisperModelReady;
+
+  let ollamaState = 'not_reachable';
+  let ollamaSummary = `Ollama is not reachable at ${OLLAMA_BASE_URL}. Install/open Ollama and run: ollama pull ${DEFAULT_QWEN_MODEL}.`;
+  let qwenReady = false;
+  try {
+    const tags = await httpJSON(`${OLLAMA_BASE_URL.replace(/\/+$/g, '')}/api/tags`, { timeoutMs: 3500 });
+    const models = Array.isArray(tags?.models) ? tags.models : [];
+    const names = models.flatMap((model) => [model?.name, model?.model]).filter(Boolean);
+    qwenReady = names.some((name) => name === DEFAULT_QWEN_MODEL || name === `${DEFAULT_QWEN_MODEL}:latest`);
+    ollamaState = qwenReady ? 'ready' : 'missing_model';
+    ollamaSummary = qwenReady
+      ? `Ollama is running and ${DEFAULT_QWEN_MODEL} is installed.`
+      : `Ollama is running, but ${DEFAULT_QWEN_MODEL} is not installed. Run: ollama pull ${DEFAULT_QWEN_MODEL}.`;
+  } catch {}
+
+  const piperRyanModel = join(HOME, '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx');
+  const piperLibriModel = join(HOME, '.openclaw', 'models', 'piper', 'en_US-libritts-high.onnx');
+  const sayPath = await resolveOptionalExecutable('say', process.env.SAY_BIN || '');
+  const ttsReady = hasOpenAITtsKey(openClawInstallPath) || existsSync(piperRyanModel) || existsSync(piperLibriModel) || !!sayPath;
+  const missing = [];
+  if (!ffmpegPath) missing.push('ffmpeg');
+  if (!whisperPath) missing.push('whisper-cli');
+  if (!whisperModelReady) missing.push(`Whisper model at ${whisperModelPath}`);
+  if (!qwenReady) missing.push(DEFAULT_QWEN_MODEL);
+  if (!ttsReady) missing.push('TTS voice: OpenAI TTS key, Piper model, or macOS say');
+
+  return {
+    state: sttReady && qwenReady && ttsReady ? 'ready' : 'needs_setup',
+    summary: sttReady && qwenReady && ttsReady
+      ? `Companion Realtime Voice is ready: STT, ${DEFAULT_QWEN_MODEL}, and TTS are available.`
+      : `Companion Realtime Voice needs setup: ${missing.join(', ')}. ${ollamaSummary}`,
+    stt: {
+      ready: sttReady,
+      ffmpeg: ffmpegPath || '',
+      whisperCli: whisperPath || '',
+      whisperModel: whisperModelReady ? whisperModelPath : '',
+      missingWhisperModel: whisperModelReady ? '' : whisperModelPath,
+    },
+    middleBrain: {
+      defaultMode: 'qwen3.5-2b',
+      qwenModel: DEFAULT_QWEN_MODEL,
+      ollamaBaseURL: OLLAMA_BASE_URL,
+      ollamaState,
+      ready: qwenReady,
+      summary: ollamaSummary,
+    },
+    tts: {
+      ready: ttsReady,
+      openaiConfigured: hasOpenAITtsKey(openClawInstallPath),
+      piperRyanModel: existsSync(piperRyanModel) ? piperRyanModel : '',
+      piperLibriModel: existsSync(piperLibriModel) ? piperLibriModel : '',
+      say: sayPath || '',
+    },
+  };
+}
+
 async function diagnoseBridge(port) {
+  const existing = await readBridgeConfig();
+  const openClawInstallPath = normalizeInstallPath(existing.openClawInstallPath);
   const local = await checkLocalBridge(port);
   let tailscale;
 
@@ -408,6 +561,7 @@ async function diagnoseBridge(port) {
     savedConfigExists: existsSync(CONFIG_FILE),
     local,
     tailscale,
+    companionVoice: await checkCompanionVoiceDependencies(openClawInstallPath),
     suggestedAction,
   };
 }
@@ -464,6 +618,8 @@ async function installLaunchAgent(config) {
     <string>${xmlEscape(config.openClawAgentName)}</string>
     <key>OPENCLAW_AGENT</key>
     <string>${xmlEscape(config.openClawAgentName)}</string>
+    <key>PATH</key>
+    <string>${xmlEscape(RUNTIME_PATH)}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

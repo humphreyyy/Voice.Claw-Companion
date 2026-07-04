@@ -5,12 +5,13 @@
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile, stat, mkdir, appendFile, readdir, writeFile, unlink } from 'node:fs/promises';
-import { accessSync, constants as fsConstants, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import WebSocket, { WebSocketServer } from 'ws';
+import { executablePath, normalizeProcessPath } from './bin-paths.js';
 import { transcribe } from './asr.js';
 import { synthesize, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
@@ -23,6 +24,7 @@ import {
 } from './realtime-auth.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
+normalizeProcessPath();
 const CLIENT_DIR = join(__dirname, '..', 'client');
 const PORT = parseInt(process.env.VB_PORT || '3100', 10);
 const BIND_HOST = (process.env.VB_BIND_HOST || process.env.HOST || '127.0.0.1').trim() || '127.0.0.1';
@@ -43,29 +45,6 @@ const MIME = {
   '.svg':  'image/svg+xml',
   '.ico':  'image/x-icon',
 };
-
-const EXECUTABLE_SEARCH_PATHS = [
-  '/opt/homebrew/bin',
-  '/usr/local/bin',
-  '/usr/bin',
-  '/bin',
-  '/opt/local/bin',
-];
-
-function executablePath(name) {
-  if (String(name || '').includes('/')) return name;
-  const pathEntries = String(process.env.PATH || '')
-    .split(':')
-    .filter(Boolean);
-  for (const dir of [...pathEntries, ...EXECUTABLE_SEARCH_PATHS]) {
-    try {
-      const candidate = join(dir, name);
-      accessSync(candidate, fsConstants.X_OK);
-      return candidate;
-    } catch {}
-  }
-  return name;
-}
 
 const REALTIME_MODEL = process.env.REALTIME_MODEL || 'gpt-realtime-2';
 const REALTIME_TRANSCRIPTION_MODEL = process.env.REALTIME_TRANSCRIPTION_MODEL || 'gpt-realtime-whisper';
@@ -89,7 +68,26 @@ const MIN_REALTIME_REPLY_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_REALTIME_OPENCLAW_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_WATCH_REALTIME_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_REALTIME_OPENCLAW_JOB_RETENTION_MS = 60 * 60 * 1000;
+const DEFAULT_COMPANION_VOICE_JOB_RETENTION_MS = 60 * 60 * 1000;
+const COMPANION_VOICE_QWEN_MODEL = process.env.COMPANION_VOICE_QWEN_MODEL || 'qwen3.5:2b';
+const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/+$/g, '');
+const COMPANION_VOICE_QWEN_KEEP_ALIVE = process.env.COMPANION_VOICE_QWEN_KEEP_ALIVE || '30m';
+const COMPANION_VOICE_QWEN_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_QWEN_PREWARM || '1').toLowerCase());
+const COMPANION_VOICE_TTS_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_TTS_PREWARM || '1').toLowerCase());
+const COMPANION_VOICE_PLANNER_SCHEMA = {
+  type: 'object',
+  properties: {
+    call_route: { type: 'boolean' },
+    route_message: { type: 'string' },
+    final_answer: { type: 'string' },
+    iphone_tool_name: { type: 'string' },
+    iphone_tool_arguments: { type: 'object', additionalProperties: true },
+  },
+  required: ['call_route', 'route_message', 'final_answer', 'iphone_tool_name', 'iphone_tool_arguments'],
+  additionalProperties: false,
+};
 const openClawRealtimeJobs = new Map();
+const companionVoiceJobs = new Map();
 const watchRealtimeJobs = new Map();
 const watchRealtimeSessions = new Map();
 
@@ -2601,8 +2599,8 @@ async function readRealtimeSessionRequest(req) {
   if (/multipart\/form-data/i.test(contentType)) {
     const body = await readRequestBuffer(req, Number(process.env.REALTIME_SESSION_MAX_MULTIPART_BYTES || 8_000_000));
     const { fields } = parseMultipartFormData(body, contentType);
-    const sdpOffer = String(fields.sdp || '').trim();
-    if (!sdpOffer) throw new Error('realtime session multipart request missing sdp');
+    const sdpOffer = String(fields.sdp || '');
+    if (!sdpOffer.trim()) throw new Error('realtime session multipart request missing sdp');
     let providedSession = null;
     if (fields.session) {
       try {
@@ -2614,7 +2612,22 @@ async function readRealtimeSessionRequest(req) {
     }
     return { sdpOffer, providedSession, transport: 'multipart' };
   }
-  return { sdpOffer: await readRequestBody(req), providedSession: null, transport: 'raw-sdp' };
+  let providedSession = null;
+  const debugSessionHeader = String(req.headers['x-voiceclaw-debug-realtime-session'] || '').trim();
+  if (debugSessionHeader) {
+    try {
+      const decoded = decodeURIComponent(debugSessionHeader);
+      const parsed = JSON.parse(decoded);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) providedSession = parsed;
+    } catch (error) {
+      throw new Error(`realtime debug session header has invalid JSON: ${error.message}`);
+    }
+  }
+  return {
+    sdpOffer: await readRequestBody(req),
+    providedSession,
+    transport: providedSession ? 'raw-sdp-debug-session' : 'raw-sdp',
+  };
 }
 
 async function readRequestBuffer(req, limitBytes = 2_000_000) {
@@ -2691,6 +2704,975 @@ function watchRealtimePayloadFromMultipart(buffer, contentType = '') {
   return metadata;
 }
 
+function companionVoicePayloadFromMultipart(buffer, contentType = '') {
+  const { fields, files } = parseMultipartFormData(buffer, contentType);
+  let metadata = {};
+  try { metadata = JSON.parse(fields.metadata || '{}'); } catch { metadata = {}; }
+  const audio = files.audio;
+  if (audio?.buffer?.length) {
+    metadata.audioBuffer = audio.buffer;
+    metadata.audioContentType = metadata.audioContentType || audio.mimeType || 'audio/m4a';
+    metadata.audioFilename = audio.filename || 'voiceclaw-companion-turn.m4a';
+    metadata.transport = 'multipart-file';
+    metadata.audioBytes = audio.buffer.length;
+  }
+  return metadata;
+}
+
+function normalizeCompanionVoiceRoute(raw = '') {
+  const value = String(raw || '').trim().toLowerCase();
+  if (['standalone', 'realtime-only', 'realtime', 'direct-realtime', 'voice-engine-standalone'].includes(value)) return 'standalone';
+  if (['gpt55-direct', 'gpt-55-direct', 'gpt55', 'gpt-5.5', 'direct'].includes(value)) return 'gpt55-direct';
+  if (['hermes', 'hermes-bridge', 'hermes-public-tunnel', 'hermes-tunnel', 'hermes-https'].includes(value)) return 'hermes';
+  if (['openclaw', 'openclaw-bridge', 'openclaw-public-tunnel', 'openclaw-tunnel', 'bridge', 'tunnel'].includes(value)) return 'openclaw';
+  return 'gpt55-direct';
+}
+
+function companionVoiceProcessingForRoute(routeMode, payload = {}, sessionToken = '') {
+  const route = normalizeCompanionVoiceRoute(routeMode);
+  if (route === 'gpt55-direct') {
+    return {
+      agent: 'gpt55-direct',
+      thinking: String(payload.gpt55DirectReasoning || 'low'),
+      fastMode: 'on',
+      runtime: 'openclaw',
+      sessionToken,
+    };
+  }
+  return {
+    agent: String(payload.openClawModel || payload.agent || ''),
+    thinking: String(payload.openClawReasoning || payload.reasoning || 'low'),
+    fastMode: 'on',
+    runtime: route === 'hermes' ? 'hermes' : 'openclaw',
+    sessionToken,
+  };
+}
+
+function normalizeCompanionVoiceBrainMode(raw = '') {
+  const value = String(raw || '').trim().toLowerCase();
+  if (['gpt55-fast-low', 'gpt-5.5', 'gpt55', 'gpt-55', 'gpt-5-5'].includes(value)) return 'gpt55-fast-low';
+  if (['local', 'local-router', 'deterministic'].includes(value)) return 'local';
+  return 'qwen3.5-2b';
+}
+
+function companionVoiceQwenThinkingEnabled(payload = {}) {
+  return parseRealtimeBoolean(payload.qwenThinking ?? payload.qwenThinkingEnabled ?? payload.qwenThinkingMode, false);
+}
+
+function companionVoiceLooksLikeIPhoneAction(text = '') {
+  const normalized = String(text || '').trim().toLowerCase();
+  if (!normalized) return false;
+  const hasActionVerb = /\b(open|show|search|map|maps|directions|navigate|call|phone|text|message|email|mail|whatsapp|share|shortcut|settings|remind|reminder|calendar|copy|clipboard|photo|camera|screenshot|transcript|speakerphone|mute|restart|switch route|switch mode|end session|stop listening)\b/i.test(normalized);
+  const hasPhoneSurface = /\b(iphone|phone|ios|safari|browser|website|url|link|apple maps|maps|message|text|email|mail|whatsapp|shortcut|settings|reminder|calendar|clipboard|photo|camera|screenshot|transcript|speakerphone|mic|voiceclaw)\b/i.test(normalized);
+  const hasWebTarget = /\bhttps?:\/\/[^\s]+/i.test(normalized) || /\b[a-z0-9.-]+\.[a-z]{2,}(\/[^\s]*)?/i.test(normalized);
+  return hasActionVerb && (hasPhoneSurface || hasWebTarget);
+}
+
+function companionVoiceFallbackIPhoneTool(text = '') {
+  const trimmed = String(text || '').trim();
+  const normalized = trimmed.toLowerCase();
+  if (!trimmed || !companionVoiceLooksLikeIPhoneAction(trimmed)) return null;
+  if (/\b(safari|browser|website|web\s*site|url|link)\b/i.test(normalized)) {
+    const urlMatch = trimmed.match(/\bhttps?:\/\/[^\s]+/i) || trimmed.match(/\b([a-z0-9.-]+\.[a-z]{2,})(\/[^\s]*)?/i);
+    return {
+      name: 'iphone_external_action',
+      arguments: {
+        action: 'open_url',
+        url: urlMatch ? (urlMatch[0].startsWith('http') ? urlMatch[0] : `https://${urlMatch[0]}`) : '',
+        query: trimmed,
+      },
+    };
+  }
+  if (/\b(map|maps|directions|navigate)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_external_action',
+      arguments: {
+        action: 'open_maps',
+        mode: /\b(direction|directions|navigate|route)\b/i.test(normalized) ? 'directions' : 'search',
+        query: trimmed,
+        destination: trimmed,
+      },
+    };
+  }
+  if (/\b(search|look up|google|web)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_external_action',
+      arguments: { action: 'search_web', query: trimmed },
+    };
+  }
+  if (/\b(call|phone)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_external_action',
+      arguments: { action: 'start_phone_call', query: trimmed },
+    };
+  }
+  if (/\b(text|message|sms)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_external_action',
+      arguments: { action: 'draft_message', recipients: [], body: trimmed },
+    };
+  }
+  if (/\b(email|mail)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_external_action',
+      arguments: { action: 'draft_email', to: [], subject: '', body: trimmed },
+    };
+  }
+  if (/\b(whatsapp|whats app)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_external_action',
+      arguments: { action: 'open_whatsapp', query: trimmed },
+    };
+  }
+  if (/\b(shortcut|shortcuts)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_external_action',
+      arguments: { action: 'run_shortcut', name: trimmed },
+    };
+  }
+  if (/\b(settings)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_external_action',
+      arguments: { action: 'open_settings' },
+    };
+  }
+  return null;
+}
+
+function companionVoiceRepairIPhoneTool({ name = '', argumentsObject = {}, text = '' } = {}) {
+  const fallback = companionVoiceFallbackIPhoneTool(text);
+  let repairedName = String(name || '').trim();
+  let repairedArguments = argumentsObject && typeof argumentsObject === 'object' && !Array.isArray(argumentsObject)
+    ? { ...argumentsObject }
+    : {};
+
+  if (!repairedName && fallback) {
+    return fallback;
+  }
+  if (!repairedName) {
+    return { name: '', arguments: {} };
+  }
+
+  const empty = (key) => !String(repairedArguments[key] || '').trim();
+  if (repairedName === 'iphone_external_action') {
+    if (empty('action') && fallback?.name === 'iphone_external_action') {
+      repairedArguments = { ...fallback.arguments, ...repairedArguments };
+    }
+    if (empty('action') && fallback) {
+      return fallback;
+    }
+    if (empty('action')) {
+      return { name: '', arguments: {} };
+    }
+  }
+  if (repairedName === 'iphone_open_url' && empty('url') && fallback?.arguments?.url) {
+    repairedArguments.url = fallback.arguments.url;
+  }
+  if (repairedName === 'iphone_search_web' && empty('query')) {
+    repairedArguments.query = String(text || '').trim();
+  }
+  if (repairedName === 'iphone_open_maps' && empty('query') && empty('destination')) {
+    repairedArguments.query = fallback?.arguments?.query || String(text || '').trim();
+    repairedArguments.destination = fallback?.arguments?.destination || repairedArguments.query;
+    repairedArguments.mode = repairedArguments.mode || fallback?.arguments?.mode || 'search';
+  }
+  if (repairedName === 'iphone_draft_message' && !Array.isArray(repairedArguments.recipients)) {
+    repairedArguments.recipients = [];
+  }
+  if (repairedName === 'iphone_draft_email' && !Array.isArray(repairedArguments.to)) {
+    repairedArguments.to = [];
+  }
+  return { name: repairedName, arguments: repairedArguments };
+}
+
+function companionVoiceIPhoneToolMatchesRequest(name = '', text = '') {
+  const toolName = String(name || '').trim();
+  const normalized = String(text || '').trim().toLowerCase();
+  if (!toolName) return false;
+  if (companionVoiceLooksLikeIPhoneAction(normalized)) return true;
+  switch (toolName) {
+  case 'wait_for_user':
+    return /\b(wait|pause|hold on|one sec|silence|quiet)\b/i.test(normalized);
+  case 'iphone_status':
+    return /\b(status|diagnostic|version|battery|permission|audio|microphone|mic|speaker|route|voiceclaw|phone|iphone|app)\b/i.test(normalized);
+  case 'iphone_set_transcript_visible':
+  case 'iphone_clear_transcript':
+    return /\b(transcript|caption|captions)\b/i.test(normalized);
+  case 'iphone_set_microphone_muted':
+    return /\b(mute|microphone|mic)\b/i.test(normalized);
+  case 'iphone_set_speakerphone_enabled':
+    return /\b(speaker|speakerphone|audio|headphones|airpods|handset)\b/i.test(normalized);
+  case 'iphone_restart_voice_session':
+  case 'iphone_confirm_voice_route_switch':
+  case 'iphone_cancel_voice_route_switch':
+  case 'iphone_end_voice_session':
+    return /\b(restart|reconnect|switch|route|mode|end|hang up|disconnect|stop listening)\b/i.test(normalized);
+  case 'iphone_current_location':
+    return /\b(location|where am i|nearby|near me|directions|navigate)\b/i.test(normalized);
+  case 'iphone_lookup_contact':
+    return /\b(contact|contacts|phone number|email address|call|text|message|email)\b/i.test(normalized);
+  case 'iphone_create_calendar_event':
+  case 'iphone_list_calendar_events':
+    return /\b(calendar|schedule|agenda|event|appointment|meeting|availability|available)\b/i.test(normalized);
+  case 'iphone_create_reminder':
+  case 'iphone_list_reminders':
+    return /\b(reminder|remind|todo|to-do|task|tasks)\b/i.test(normalized);
+  case 'iphone_draft_email':
+    return /\b(email|mail|draft)\b/i.test(normalized);
+  case 'iphone_draft_message':
+    return /\b(text|message|sms|draft)\b/i.test(normalized);
+  case 'iphone_share':
+    return /\b(share|send|save|notes?|handoff)\b/i.test(normalized);
+  case 'iphone_analyze_selected_media':
+  case 'iphone_capture_photo_for_analysis':
+  case 'iphone_analyze_clipboard_image':
+    return /\b(photo|picture|image|screenshot|camera|clipboard|copied|video|analy[sz]e|look at|what is in)\b/i.test(normalized);
+  case 'iphone_open_whatsapp':
+    return /\b(whatsapp|whats app)\b/i.test(normalized);
+  case 'iphone_run_shortcut':
+    return /\b(shortcut|shortcuts)\b/i.test(normalized);
+  case 'iphone_read_clipboard':
+  case 'iphone_copy_text':
+    return /\b(clipboard|copy|copied|paste)\b/i.test(normalized);
+  default:
+    return false;
+  }
+}
+
+function companionVoiceRequiresBottomRoute(text = '', routeMode = '') {
+  const trimmed = String(text || '').trim();
+  const normalized = trimmed.toLowerCase();
+  const route = normalizeCompanionVoiceRoute(routeMode);
+  if (!trimmed) return false;
+  if (route === 'standalone') return false;
+  if (companionVoiceLooksLikeIPhoneAction(trimmed)) return false;
+  if (/\b(openclaw|hermes|agent|selected route|bottom route)\b/i.test(normalized)) return true;
+  if (/\b(status|progress|still working|continue|resume)\b/i.test(normalized) && route !== 'gpt55-direct') return true;
+  if (/\b(my|this|current|latest|recent|today'?s|now)\b/i.test(normalized)
+    && /\b(files?|folders?|desktop|downloads?|documents?|calendar|messages?|email|mail|browser|tabs?|safari|maps?|location|photos?|attachments?|screen|computer|mac|phone|iphone|watch)\b/i.test(normalized)) {
+    return true;
+  }
+  if (/\b(open|send|call|schedule|remind|navigate|upload|download|attach|share|copy|paste|install|build|run|execute|control|launch|switch|restart|pair|sync|configure)\b/i.test(normalized)
+    && /\b(app|apps?|safari|maps?|browser|website|url|link|message|text|sms|email|mail|phone|iphone|watch|shortcut|calendar|reminder|file|attachment|photo|camera|computer|mac|terminal|shell|openclaw|hermes)\b/i.test(normalized)) {
+    return true;
+  }
+  if (/\b(search|look up|browse|web|internet)\b/i.test(normalized)
+    && /\b(latest|current|today|now|news|price|weather|score|recent|web|internet)\b/i.test(normalized)) {
+    return true;
+  }
+  return false;
+}
+
+function companionVoiceLocalPlan(text = '', routeMode = '') {
+  const trimmed = String(text || '').trim();
+  const normalized = trimmed.toLowerCase();
+  const route = normalizeCompanionVoiceRoute(routeMode);
+  if (!trimmed) return { callRoute: false, routeMessage: '', finalAnswer: "I didn't catch that. Say it again." };
+  const directReply = companionVoiceDirectReply(trimmed);
+  if (directReply) return { callRoute: false, routeMessage: '', finalAnswer: directReply };
+  const fallbackIPhoneTool = companionVoiceFallbackIPhoneTool(trimmed);
+  if (fallbackIPhoneTool?.name) {
+    return {
+      callRoute: false,
+      routeMessage: '',
+      finalAnswer: fallbackIPhoneTool.reply || 'Opening that now.',
+      iphoneToolName: fallbackIPhoneTool.name,
+      iphoneToolArguments: fallbackIPhoneTool.arguments || {},
+    };
+  }
+  if (/\b(status|progress|still working|what are you doing|what is openclaw doing|what is hermes doing)\b/i.test(normalized) && route !== 'gpt55-direct') {
+    return {
+      callRoute: true,
+      routeMessage: `VoiceClaw user asked for the current status of the active ${route === 'hermes' ? 'Hermes' : 'OpenClaw'} work. Report status concisely and include any latest result if available.`,
+      finalAnswer: '',
+    };
+  }
+  if (companionVoiceRequiresBottomRoute(trimmed, routeMode)) {
+    return { callRoute: true, routeMessage: trimmed, finalAnswer: '' };
+  }
+  return { callRoute: false, routeMessage: '', finalAnswer: '' };
+}
+
+function companionVoiceDirectReply(text = '') {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return "I didn't catch that. Say it again.";
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/[“”]/g, '"')
+    .replace(/[’]/g, "'")
+    .replace(/\s+/g, ' ')
+    .replace(/[.!?]+$/g, '')
+    .trim();
+  if (normalized.length > 140) return '';
+  const asksDate = /\b(what'?s|what is|tell me|give me|say)\b.*\b(date|today'?s date|day today)\b/i.test(normalized)
+    || /^(date|today'?s date|what date is it|what day is it|what day is today|what is today)$/.test(normalized);
+  const asksTime = /\b(what'?s|what is|tell me|give me|say)\b.*\b(time|current time)\b/i.test(normalized)
+    || /^(time|current time|what time is it)$/.test(normalized);
+  if (asksDate || asksTime) {
+    const now = new Date();
+    if (asksDate && asksTime) {
+      return `It is ${new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'short' }).format(now)}.`;
+    }
+    if (asksDate) {
+      return `Today is ${new Intl.DateTimeFormat(undefined, { dateStyle: 'full' }).format(now)}.`;
+    }
+    return `It is ${new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(now)}.`;
+  }
+  if (/^(hi|hello|hey|hey voiceclaw|yo|okay|ok|test|testing|mic check|microphone check)$/.test(normalized)) {
+    return "I'm here and listening.";
+  }
+  if (/^(are you there|you there|is this working|does this work|are we connected|are you listening)$/.test(normalized)) {
+    return "Yes, I'm here and listening.";
+  }
+  if (/^(can|do|did) you (hear|understand|get|receive) me\b/.test(normalized)) {
+    return "Yes, I can hear you.";
+  }
+  if (/^(can|do|did) you hear what i (said|was saying)\b/.test(normalized)) {
+    return "Yes, I heard you.";
+  }
+  return '';
+}
+
+function companionVoiceShouldPreferDirectPlan(text = '', routeMode = '', plan = {}) {
+  if (!String(text || '').trim() || !String(plan.finalAnswer || '').trim()) return false;
+  if (String(plan.routeMessage || '').trim().length > 260) return false;
+  return !companionVoiceRequiresBottomRoute(text, routeMode);
+}
+
+function finalizeCompanionVoicePlan(plan = {}, text = '', routeMode = '', planner = '') {
+  const finalAnswer = String(plan.finalAnswer || '').trim();
+  const routeMessage = String(plan.routeMessage || '').trim();
+  let iphoneToolName = String(plan.iphoneToolName || '').trim();
+  let iphoneToolArguments = plan.iphoneToolArguments && typeof plan.iphoneToolArguments === 'object' && !Array.isArray(plan.iphoneToolArguments)
+    ? plan.iphoneToolArguments
+    : {};
+  const callRoute = plan.callRoute !== false;
+  const requiresRoute = companionVoiceRequiresBottomRoute(text, routeMode);
+  if (requiresRoute) {
+    return {
+      callRoute: true,
+      routeMessage: routeMessage || String(text || '').trim(),
+      finalAnswer,
+      iphoneToolName: '',
+      iphoneToolArguments: {},
+      planner,
+    };
+  }
+  if (normalizeCompanionVoiceRoute(routeMode) === 'standalone' && callRoute) {
+    return {
+      callRoute: false,
+      routeMessage: '',
+      finalAnswer: finalAnswer || "I can answer directly here, but this standalone route is not connected to GPT-5.5, OpenClaw, or Hermes.",
+      iphoneToolName: '',
+      iphoneToolArguments: {},
+      planner,
+    };
+  }
+  const repairedIPhoneTool = companionVoiceRepairIPhoneTool({
+    name: iphoneToolName,
+    argumentsObject: iphoneToolArguments,
+    text,
+  });
+  iphoneToolName = repairedIPhoneTool.name;
+  iphoneToolArguments = repairedIPhoneTool.arguments;
+  if (iphoneToolName && !companionVoiceIPhoneToolMatchesRequest(iphoneToolName, text)) {
+    iphoneToolName = '';
+    iphoneToolArguments = {};
+  }
+  if (iphoneToolName) {
+    return {
+      callRoute: false,
+      routeMessage: '',
+      finalAnswer: finalAnswer || "I can do that.",
+      iphoneToolName,
+      iphoneToolArguments,
+      planner,
+    };
+  }
+  if (callRoute && finalAnswer && companionVoiceShouldPreferDirectPlan(text, routeMode, { finalAnswer, routeMessage })) {
+    return { callRoute: false, routeMessage: '', finalAnswer, iphoneToolName: '', iphoneToolArguments: {}, planner };
+  }
+  if (!callRoute && finalAnswer) {
+    return { callRoute: false, routeMessage: '', finalAnswer, iphoneToolName: '', iphoneToolArguments: {}, planner };
+  }
+  return { callRoute, routeMessage, finalAnswer, iphoneToolName: '', iphoneToolArguments: {}, planner };
+}
+
+function extractCompanionVoicePlan(raw = '') {
+  const trimmed = String(raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const jsonText = trimmed.match(/```json\s*([\s\S]*?)```/i)?.[1]
+    || trimmed.match(/({[\s\S]*})/)?.[1]
+    || trimmed;
+  try {
+    const object = JSON.parse(jsonText);
+    return {
+      callRoute: object.call_route !== false,
+      routeMessage: String(object.route_message || '').trim(),
+      finalAnswer: String(object.final_answer || '').trim(),
+      iphoneToolName: String(object.iphone_tool_name || '').trim(),
+      iphoneToolArguments: object.iphone_tool_arguments && typeof object.iphone_tool_arguments === 'object' && !Array.isArray(object.iphone_tool_arguments)
+        ? object.iphone_tool_arguments
+        : {},
+    };
+  } catch {
+    return { callRoute: false, routeMessage: '', finalAnswer: trimmed, iphoneToolName: '', iphoneToolArguments: {} };
+  }
+}
+
+function companionVoicePlannerPrompt(text, { routeMode, context } = {}) {
+  return `You are VoiceClaw's local middle-brain voice assistant. You are not just a router. Your default job is to answer the user directly in a concise spoken style. Use the selected bottom route only when the user asks for something you cannot responsibly do locally.
+
+Selected bottom route: ${normalizeCompanionVoiceRoute(routeMode)}
+Recent conversation context:
+${String(context || '').trim() || '(none)'}
+
+User said:
+${text}
+
+Return exactly one JSON object with these fields:
+{"call_route":false,"route_message":"","final_answer":"your concise spoken answer","iphone_tool_name":"","iphone_tool_arguments":{}}
+
+Decision policy:
+- Default to call_route=false and answer in final_answer.
+- Answer locally for greetings, mic checks, simple factual questions, arithmetic, definitions, brief explanations, short jokes, simple advice, short drafting, and ordinary conversation.
+- For explicit iPhone/app actions, set iphone_tool_name and iphone_tool_arguments instead of saying you cannot do it. Good default: iphone_external_action.
+- Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, and iphone_end_voice_session for VoiceClaw session/route controls.
+- Use call_route=true for explicit OpenClaw/Hermes/computer work, private/current/user-specific state, files/attachments, Mac/computer control, long research/analysis, or when the user explicitly asks to use the selected route.
+- Do not set call_route=true for iPhone app-opening or iOS handoff actions unless the user asks OpenClaw/Hermes/the Mac to do it.
+- If call_route=true, final_answer should be a brief spoken acknowledgement and route_message should be the complete task for the selected bottom route.
+- If call_route=false, route_message must be empty.
+- If iphone_tool_name is not empty, call_route must be false, route_message must be empty, and final_answer should be a short spoken acknowledgement like "Opening that now."
+- Never claim you have opened an app, used the current phone, inspected private files, or controlled a device unless you set the matching iphone_tool_name or set call_route=true for the selected route to do that work.
+
+iPhone action examples:
+- The examples below are format examples only. Do not copy their URLs, names, addresses, or text unless the user actually said them.
+- "Open apple.com in Safari" -> {"call_route":false,"route_message":"","final_answer":"Opening that now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"open_url","url":"https://apple.com"}}
+- "Open directions to 11 Madison Avenue in Apple Maps" -> {"call_route":false,"route_message":"","final_answer":"Opening Maps now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"open_maps","mode":"directions","destination":"11 Madison Avenue"}}
+- "Search the web for Qwen 3.5" -> {"call_route":false,"route_message":"","final_answer":"Searching now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"search_web","query":"Qwen 3.5"}}
+- "Text Sam that I am late" -> {"call_route":false,"route_message":"","final_answer":"Opening a message draft now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"draft_message","recipients":["Sam"],"body":"I am late"}}
+- "What files are on my Mac desktop?" in an OpenClaw or Hermes route -> {"call_route":true,"route_message":"What files are on my Mac desktop?","final_answer":"Checking that now.","iphone_tool_name":"","iphone_tool_arguments":{}}`;
+}
+
+async function runQwen35Planner(prompt, { signal, timeoutMs = 12000, qwenThinking = false } = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  try {
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: COMPANION_VOICE_QWEN_MODEL,
+        stream: false,
+        think: !!qwenThinking,
+        keep_alive: COMPANION_VOICE_QWEN_KEEP_ALIVE,
+        format: COMPANION_VOICE_PLANNER_SCHEMA,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are VoiceClaw. Return only valid JSON. Be assistant-first; route only when required.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        options: {
+          temperature: 0,
+          top_k: 10,
+          top_p: 0.7,
+          presence_penalty: 0,
+          num_ctx: 2048,
+        },
+      }),
+    });
+    const body = await response.text();
+    if (!response.ok) {
+      throw new Error(`Ollama ${COMPANION_VOICE_QWEN_MODEL} planner returned HTTP ${response.status}: ${body.slice(0, 240)}`);
+    }
+    let object;
+    try { object = JSON.parse(body); } catch {
+      throw new Error(`Ollama ${COMPANION_VOICE_QWEN_MODEL} planner returned unreadable JSON`);
+    }
+    return String(object?.message?.content || object?.response || '').trim();
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
+let qwen35PlannerPrewarmStarted = false;
+async function prewarmQwen35Planner() {
+  if (!COMPANION_VOICE_QWEN_PREWARM || qwen35PlannerPrewarmStarted) return;
+  qwen35PlannerPrewarmStarted = true;
+  const started = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45000);
+  try {
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: COMPANION_VOICE_QWEN_MODEL,
+        stream: false,
+        think: false,
+        keep_alive: COMPANION_VOICE_QWEN_KEEP_ALIVE,
+        messages: [{ role: 'user', content: 'Return only: OK' }],
+        options: {
+          temperature: 0,
+          top_k: 10,
+          top_p: 0.7,
+          presence_penalty: 0,
+          num_ctx: 512,
+        },
+      }),
+    });
+    const body = await response.text();
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.slice(0, 180)}`);
+    let object = {};
+    try { object = JSON.parse(body); } catch {}
+    await appendRealtimeLog({
+      kind: 'companion_realtime_voice_qwen_prewarm',
+      model: COMPANION_VOICE_QWEN_MODEL,
+      elapsedMs: Date.now() - started,
+      ok: true,
+      replyPreview: String(object?.message?.content || object?.response || '').slice(0, 40),
+    });
+  } catch (error) {
+    qwen35PlannerPrewarmStarted = false;
+    await appendRealtimeLog({
+      kind: 'companion_realtime_voice_qwen_prewarm',
+      model: COMPANION_VOICE_QWEN_MODEL,
+      elapsedMs: Date.now() - started,
+      ok: false,
+      error: error?.message || String(error),
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+let companionVoiceTtsPrewarmStarted = false;
+async function prewarmCompanionVoiceTts() {
+  if (!COMPANION_VOICE_TTS_PREWARM || companionVoiceTtsPrewarmStarted) return;
+  companionVoiceTtsPrewarmStarted = true;
+  const started = Date.now();
+  try {
+    const audio = await synthesize('Ready.', {
+      voice: 'piper-ryan-high',
+      speed: 'normal',
+    });
+    await appendRealtimeLog({
+      kind: 'companion_realtime_voice_tts_prewarm',
+      elapsedMs: Date.now() - started,
+      ok: true,
+      audioBytes: audio.length,
+    });
+  } catch (error) {
+    companionVoiceTtsPrewarmStarted = false;
+    await appendRealtimeLog({
+      kind: 'companion_realtime_voice_tts_prewarm',
+      elapsedMs: Date.now() - started,
+      ok: false,
+      error: error?.message || String(error),
+    });
+  }
+}
+
+async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken, context, payload, signal } = {}) {
+  const localPlan = companionVoiceLocalPlan(text, routeMode);
+  if (localPlan.callRoute === false && String(localPlan.finalAnswer || '').trim()) {
+    return { ...localPlan, planner: 'local-direct' };
+  }
+  if (brainMode === 'local') {
+    if (localPlan.callRoute === true) return { ...localPlan, planner: 'local-router' };
+    return {
+      callRoute: false,
+      routeMessage: '',
+      finalAnswer: "I heard you, but the local fallback planner is not enough for that request.",
+      planner: 'local-router',
+    };
+  }
+  const prompt = companionVoicePlannerPrompt(text, { routeMode, context });
+  const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
+  const defaultPlannerTimeoutMs = qwenThinking ? 90000 : 12000;
+  const requestedPlannerTimeoutMs = Number(process.env.COMPANION_VOICE_PLANNER_TIMEOUT_MS || defaultPlannerTimeoutMs);
+  const plannerTimeoutMs = Number.isFinite(requestedPlannerTimeoutMs)
+    ? Math.max(requestedPlannerTimeoutMs, 3000)
+    : defaultPlannerTimeoutMs;
+  if (brainMode === 'qwen3.5-2b') {
+    try {
+      const raw = await runQwen35Planner(prompt, {
+        signal,
+        timeoutMs: plannerTimeoutMs,
+        qwenThinking,
+      });
+      const plan = extractCompanionVoicePlan(raw);
+      if (plan.callRoute !== false && !plan.routeMessage) {
+        return finalizeCompanionVoicePlan(localPlan, text, routeMode, 'local-after-empty-qwen35-2b-planner');
+      }
+      return finalizeCompanionVoicePlan(plan, text, routeMode, 'qwen3.5-2b');
+    } catch (error) {
+      await appendRealtimeLog({
+        kind: 'companion_realtime_voice_planner_fallback',
+        sessionToken,
+        routeMode,
+        brainMode,
+        qwenThinking,
+        plannerTimeoutMs,
+        error: error?.message || String(error),
+      });
+      const fallbackPlan = localPlan.callRoute === true || String(localPlan.finalAnswer || '').trim()
+        ? localPlan
+        : { callRoute: false, routeMessage: '', finalAnswer: "I heard you, but my local voice brain had trouble answering that. Try that again." };
+      return finalizeCompanionVoicePlan(fallbackPlan, text, routeMode, 'local-after-qwen35-2b-error');
+    }
+  }
+  try {
+    const raw = await generateReply(prompt, {
+      signal,
+      processing: {
+        agent: 'gpt55-direct',
+        thinking: 'low',
+        fastMode: 'on',
+        runtime: 'openclaw',
+        sessionToken: `${sessionToken}-middle`,
+      },
+      timeoutMs: plannerTimeoutMs,
+    });
+    const plan = extractCompanionVoicePlan(raw);
+    if (plan.callRoute !== false && !plan.routeMessage) {
+      return finalizeCompanionVoicePlan(localPlan, text, routeMode, 'local-after-empty-gpt55-planner');
+    }
+    return finalizeCompanionVoicePlan(plan, text, routeMode, 'gpt55-fast-low');
+  } catch (error) {
+    await appendRealtimeLog({
+      kind: 'companion_realtime_voice_planner_fallback',
+      sessionToken,
+      routeMode,
+      brainMode,
+      plannerTimeoutMs,
+      error: error?.message || String(error),
+    });
+    const fallbackPlan = localPlan.callRoute === true || String(localPlan.finalAnswer || '').trim()
+      ? localPlan
+      : { callRoute: false, routeMessage: '', finalAnswer: "I heard you, but the GPT-5.5 middle brain had trouble answering that. Try that again." };
+    return finalizeCompanionVoicePlan(fallbackPlan, text, routeMode, 'local-after-gpt55-planner-error');
+  }
+}
+
+function cleanupCompanionVoiceJobs() {
+  const requestedRetentionMs = Number(process.env.COMPANION_VOICE_JOB_RETENTION_MS || DEFAULT_COMPANION_VOICE_JOB_RETENTION_MS);
+  const retentionMs = Number.isFinite(requestedRetentionMs)
+    ? Math.max(DEFAULT_COMPANION_VOICE_JOB_RETENTION_MS, requestedRetentionMs)
+    : DEFAULT_COMPANION_VOICE_JOB_RETENTION_MS;
+  const oldest = Date.now() - retentionMs;
+  for (const [jobID, job] of companionVoiceJobs.entries()) {
+    if (job.status === 'running') continue;
+    if ((job.updatedAt || job.createdAt || 0) < oldest) companionVoiceJobs.delete(jobID);
+  }
+}
+
+function companionVoiceJobID(routeMode = '', sessionToken = '') {
+  const route = normalizeCompanionVoiceRoute(routeMode);
+  const key = sanitizeRealtimeSessionToken(sessionToken || route || 'companion-voice').slice(0, 48) || 'companion-voice';
+  return `${route}-${key}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function companionVoiceTtsVoice(payload = {}) {
+  const requested = String(payload.localVoice || payload.voice || 'piper-ryan-high').trim();
+  return requested.startsWith('openai-') ? 'piper-ryan-high' : (requested || 'piper-ryan-high');
+}
+
+function companionVoiceRouteAck(routeMode = '', plan = {}) {
+  const route = normalizeCompanionVoiceRoute(routeMode);
+  if (route === 'hermes') return "I'm sending that to Hermes now.";
+  if (route === 'openclaw') return "I'm sending that to OpenClaw now.";
+  if (route === 'gpt55-direct') return "I'm asking GPT-5.5 now.";
+  return "I'm working on that now.";
+}
+
+async function synthesizeCompanionVoiceReply(reply, payload = {}) {
+  const audio = await synthesize(reply, {
+    voice: companionVoiceTtsVoice(payload),
+    speed: payload.ttsSpeed || 'normal',
+  });
+  return {
+    audioBase64: audio.toString('base64'),
+    audioContentType: 'audio/wav',
+    audioBytes: audio.length,
+  };
+}
+
+function publicCompanionVoiceJobResult(job) {
+  if (!job) return null;
+  const base = {
+    ok: job.status !== 'error',
+    async: true,
+    jobID: job.id,
+    status: job.status,
+    done: job.status !== 'running',
+    routeMode: job.routeMode,
+    brainMode: job.brainMode,
+    planner: job.planner,
+    sessionToken: job.sessionToken,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  };
+  if (job.status === 'done') {
+    return { ...base, ...(job.result || {}) };
+  }
+  if (job.status === 'error') {
+    return { ...base, error: job.error || 'Companion Realtime Voice route job failed.', ...(job.result || {}) };
+  }
+  return base;
+}
+
+function startCompanionVoiceRouteJob({ sessionToken, routeMode, brainMode, planner, transcript, routeMessage, processing, payload, asrMs, planningMs }) {
+  cleanupCompanionVoiceJobs();
+  const jobID = companionVoiceJobID(routeMode, sessionToken);
+  const job = {
+    id: jobID,
+    status: 'running',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    sessionToken,
+    routeMode,
+    brainMode,
+    planner,
+    transcript,
+    routeMessage,
+    result: null,
+    error: '',
+  };
+  companionVoiceJobs.set(jobID, job);
+
+  (async () => {
+    const routeStartedAt = Date.now();
+    try {
+      const routeReply = await generateReply(routeMessage, {
+        processing,
+        timeoutMs: timeoutAtLeastTenMinutes(process.env.COMPANION_VOICE_ROUTE_TIMEOUT_MS, DEFAULT_WATCH_REALTIME_TURN_TIMEOUT_MS),
+      });
+      const routeMs = Date.now() - routeStartedAt;
+      const reply = String(routeReply || '').trim() || "The selected route finished without a readable response.";
+      const ttsStartedAt = Date.now();
+      const audio = await synthesizeCompanionVoiceReply(reply, payload);
+      const ttsMs = Date.now() - ttsStartedAt;
+      const elapsedMs = Date.now() - job.createdAt;
+      job.status = 'done';
+      job.updatedAt = Date.now();
+      job.result = {
+        transcript,
+        routeMessage,
+        routeReply: String(routeReply || '').trim(),
+        reply,
+        elapsedMs,
+        asrMs,
+        planningMs,
+        routeMs,
+        ttsMs,
+        ...audio,
+      };
+      await appendRealtimeLog({
+        kind: 'companion_realtime_voice_route_job_complete',
+        jobID,
+        sessionToken,
+        routeMode,
+        brainMode,
+        planner,
+        routeMs,
+        ttsMs,
+        elapsedMs,
+        routeMessagePreview: routeMessage.slice(0, 300),
+        replyPreview: reply.slice(0, 300),
+        audioBytes: audio.audioBytes,
+      });
+    } catch (error) {
+      const message = error?.message || String(error);
+      const reply = `The selected route returned an error: ${message}`;
+      let audio = { audioBase64: '', audioContentType: '', audioBytes: 0 };
+      try {
+        audio = await synthesizeCompanionVoiceReply(reply, payload);
+      } catch {}
+      job.status = 'error';
+      job.error = message;
+      job.updatedAt = Date.now();
+      job.result = {
+        transcript,
+        routeMessage,
+        routeReply: '',
+        reply,
+        error: message,
+        elapsedMs: Date.now() - job.createdAt,
+        asrMs,
+        planningMs,
+        routeMs: Date.now() - routeStartedAt,
+        ttsMs: 0,
+        ...audio,
+      };
+      await appendRealtimeLog({
+        kind: 'companion_realtime_voice_route_job_error',
+        jobID,
+        sessionToken,
+        routeMode,
+        brainMode,
+        planner,
+        error: message,
+      });
+    }
+  })();
+
+  return job;
+}
+
+async function runCompanionVoiceTurn({ req, payload }) {
+  const startedAt = Date.now();
+  const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || req.headers['x-voice-session-token'] || `companion-voice-${Date.now().toString(36)}`);
+  const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
+  const context = String(payload.context || '').trim();
+  const textInput = String(payload.text || '').trim();
+  const audioBuffer = payload.audioBuffer || (payload.audioBase64 ? Buffer.from(String(payload.audioBase64), 'base64') : null);
+  if (!textInput && !audioBuffer?.length) throw new Error('Companion Realtime Voice turn needs audio or text.');
+
+  let transcript = textInput;
+  let asrMs = 0;
+  if (!transcript && audioBuffer?.length) {
+    const asrStart = Date.now();
+    const { text } = await transcribe(audioBuffer);
+    asrMs = Date.now() - asrStart;
+    transcript = String(text || '').trim();
+  }
+  if (!transcript) {
+    return {
+      ok: true,
+      routeMode,
+      brainMode,
+      sessionToken,
+      transcript: '',
+      reply: "I didn't catch that. Say it again.",
+      audioBase64: '',
+      audioContentType: '',
+      elapsedMs: Date.now() - startedAt,
+      asrMs,
+    };
+  }
+
+  const planningStartedAt = Date.now();
+  const plan = await planCompanionVoiceTurn(transcript, {
+    brainMode,
+    routeMode,
+    sessionToken,
+    context,
+    payload,
+  });
+  const planningMs = Date.now() - planningStartedAt;
+  const routeMessage = (plan.routeMessage || transcript).trim();
+  const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
+  const iphoneToolName = String(plan.iphoneToolName || '').trim();
+  const iphoneToolArguments = plan.iphoneToolArguments && typeof plan.iphoneToolArguments === 'object' && !Array.isArray(plan.iphoneToolArguments)
+    ? plan.iphoneToolArguments
+    : {};
+  const shouldCallRoute = !iphoneToolName && plan.callRoute !== false && !!routeMessage;
+  const routeJob = shouldCallRoute
+    ? startCompanionVoiceRouteJob({
+        sessionToken,
+        routeMode,
+        brainMode,
+        planner: plan.planner || '',
+        transcript,
+        routeMessage,
+        processing,
+        payload,
+        asrMs,
+        planningMs,
+      })
+    : null;
+  let routeReply = '';
+  let reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : String(plan.finalAnswer || '').trim();
+  if (!reply) reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : "I heard you.";
+
+  const ttsStart = Date.now();
+  const audio = await synthesizeCompanionVoiceReply(reply, payload);
+  const ttsMs = Date.now() - ttsStart;
+  const elapsedMs = Date.now() - startedAt;
+  await appendRealtimeLog({
+    kind: 'companion_realtime_voice_turn',
+    sessionToken,
+    routeMode,
+    brainMode,
+    qwenThinking,
+    planner: plan.planner,
+    iphoneToolName,
+    iphoneToolArguments,
+    transcriptPreview: transcript.slice(0, 300),
+    routeMessagePreview: routeMessage.slice(0, 300),
+    replyPreview: reply.slice(0, 300),
+    async: !!routeJob,
+    jobID: routeJob?.id || '',
+    asrMs,
+    planningMs,
+    routeMs: 0,
+    ttsMs,
+    elapsedMs,
+    audioBytes: audio.audioBytes,
+  });
+  return {
+    ok: true,
+    async: !!routeJob,
+    jobID: routeJob?.id || '',
+    jobStatus: routeJob?.status || 'done',
+    done: !routeJob,
+    routeMode,
+    brainMode,
+    qwenThinking,
+    planner: plan.planner,
+    iphoneToolName,
+    iphoneToolArguments,
+    sessionToken,
+    transcript,
+    routeMessage,
+    routeReply,
+    reply,
+    audioBase64: audio.audioBase64,
+    audioContentType: audio.audioContentType,
+    elapsedMs,
+    asrMs,
+    planningMs,
+    routeMs: 0,
+    ttsMs,
+  };
+}
+
+async function runCompanionVoiceTranscription({ req, payload }) {
+  const startedAt = Date.now();
+  const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || req.headers['x-voice-session-token'] || `companion-voice-${Date.now().toString(36)}`);
+  const audioBuffer = payload.audioBuffer || (payload.audioBase64 ? Buffer.from(String(payload.audioBase64), 'base64') : null);
+  if (!audioBuffer?.length) throw new Error('Companion Realtime Voice transcription needs audio.');
+
+  const asrStartedAt = Date.now();
+  const { text } = await transcribe(audioBuffer);
+  const asrMs = Date.now() - asrStartedAt;
+  const transcript = String(text || '').trim();
+  await appendRealtimeLog({
+    kind: 'companion_realtime_voice_transcription',
+    sessionToken,
+    transcriptPreview: transcript.slice(0, 300),
+    audioBytes: audioBuffer.length,
+    asrMs,
+    elapsedMs: Date.now() - startedAt,
+  });
+  return {
+    ok: true,
+    sessionToken,
+    transcript,
+    asrMs,
+    elapsedMs: Date.now() - startedAt,
+  };
+}
+
 // ── HTTP server (static files) ──────────────────────────────────────
 
 const httpServer = createServer(async (req, res) => {
@@ -2718,7 +3700,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low'], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, ttsDefault: 'piper-ryan-high', routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;
@@ -2738,6 +3720,68 @@ const httpServer = createServer(async (req, res) => {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));
       }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/companion-voice-turn`) {
+      const body = await readRequestBody(req, Number(process.env.COMPANION_VOICE_MAX_BODY_BYTES || 48_000_000));
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const result = await runCompanionVoiceTurn({ req, payload });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        await appendRealtimeLog({ kind: 'companion_realtime_voice_turn_error', error: error?.message || String(error) });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/companion-voice-turn-file`) {
+      try {
+        const body = await readRequestBuffer(req, Number(process.env.COMPANION_VOICE_MAX_MULTIPART_BYTES || 96_000_000));
+        const payload = companionVoicePayloadFromMultipart(body, req.headers['content-type'] || '');
+        const result = await runCompanionVoiceTurn({ req, payload });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ...result, transport: 'multipart-file' }));
+      } catch (error) {
+        await appendRealtimeLog({ kind: 'companion_realtime_voice_turn_file_error', error: error?.message || String(error) });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/companion-voice-transcribe-file`) {
+      try {
+        const body = await readRequestBuffer(req, Number(process.env.COMPANION_VOICE_MAX_MULTIPART_BYTES || 96_000_000));
+        const payload = companionVoicePayloadFromMultipart(body, req.headers['content-type'] || '');
+        const result = await runCompanionVoiceTranscription({ req, payload });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ...result, transport: 'multipart-file' }));
+      } catch (error) {
+        await appendRealtimeLog({ kind: 'companion_realtime_voice_transcription_error', error: error?.message || String(error) });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/companion-voice-turn/result`) {
+      cleanupCompanionVoiceJobs();
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const jobID = url.searchParams.get('jobID') || url.searchParams.get('jobId') || '';
+      const job = companionVoiceJobs.get(jobID);
+      if (!job) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, async: true, status: 'missing', done: true, error: 'Companion Realtime Voice job was not found.' }));
+        return;
+      }
+      const result = publicCompanionVoiceJobResult(job);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
       return;
     }
 
@@ -3123,6 +4167,7 @@ const httpServer = createServer(async (req, res) => {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${realtimeBearer.bearer}`,
+          Accept: 'application/sdp',
           ...(usesClientSecretSignaling ? { 'Content-Type': 'application/sdp' } : {}),
         },
         body: usesClientSecretSignaling ? sdpOffer : fd,
@@ -3130,6 +4175,44 @@ const httpServer = createServer(async (req, res) => {
       const body = await upstream.text();
       const location = upstream.headers.get('location') || upstream.headers.get('Location') || '';
       const sidebandStarted = hasServerOwnedRealtimeTools(routeMode) && upstream.ok && location ? await startRealtimeSideband(location, sessionToken, realtimeBearer.sidebandBearer || realtimeBearer.bearer) : false;
+      await appendRealtimeLog({
+        kind: upstream.ok ? 'realtime_signaling_upstream_ok' : 'realtime_signaling_upstream_error',
+        sessionToken: sanitizeRealtimeSessionToken(sessionToken),
+        routeMode,
+        clientPlatform,
+        clientProvidedSession: !!providedSession,
+        sessionTransport,
+        authSource: realtimeBearer.source,
+        authPreferenceSource: realtimeBearer.preferences.source,
+        fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey,
+        requestContentMode: usesClientSecretSignaling ? 'client-secret-raw-sdp' : 'api-key-multipart-session',
+        sdpBytes: Buffer.byteLength(sdpOffer || '', 'utf8'),
+        upstreamStatus: upstream.status,
+        upstreamContentType: upstream.headers.get('content-type') || '',
+        sidebandLocationHeader: !!location,
+        requestId: upstream.headers.get('x-request-id') || upstream.headers.get('openai-request-id') || '',
+        bodyPreview: upstream.ok ? '' : body.slice(0, 1200),
+        sessionSummary: {
+          type: realtimeSession?.type || '',
+          model: realtimeSession?.model || '',
+          hasInstructions: !!realtimeSession?.instructions,
+          instructionBytes: Buffer.byteLength(realtimeSession?.instructions || '', 'utf8'),
+          toolCount: Array.isArray(realtimeSession?.tools) ? realtimeSession.tools.length : 0,
+          toolChoice: realtimeSession?.tool_choice || '',
+          audioKeys: realtimeSession?.audio && typeof realtimeSession.audio === 'object' ? Object.keys(realtimeSession.audio) : [],
+          reasoningEffort: realtimeSession?.reasoning?.effort || '',
+        },
+        options: {
+          model: options.model,
+          voice: options.voice,
+          noiseReduction: options.noiseReduction,
+          captions: options.captions,
+          turnDetection: options.turnDetection,
+          vadSensitivity: options.vadSensitivity,
+          realtimeReasoning: options.realtimeReasoning,
+          transcriptionDelay: options.transcriptionDelay,
+        },
+      });
       realtimeSessionConfigs.set(options.sessionToken, {
         ...options,
         sessionStartedAt: new Date().toISOString(),
@@ -3936,4 +5019,10 @@ httpServer.listen(PORT, BIND_HOST, () => {
   console.log(`[voice-bridge] WebSocket endpoint: ws://localhost:${PORT}${WS_PATH}`);
   console.log(`[voice-bridge] health endpoint: http://localhost:${PORT}/healthz`);
   console.log(`[voice-bridge] wake phrase: ${JSON.stringify(WAKE_PHRASE)}`);
+  prewarmQwen35Planner().catch((error) => {
+    console.warn(`[voice-bridge] Qwen planner prewarm failed: ${error?.message || String(error)}`);
+  });
+  prewarmCompanionVoiceTts().catch((error) => {
+    console.warn(`[voice-bridge] Companion voice TTS prewarm failed: ${error?.message || String(error)}`);
+  });
 });
