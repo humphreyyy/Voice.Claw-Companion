@@ -164,6 +164,7 @@ else
 fi
 
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+"$ROOT_DIR/scripts/verify_companion_app.sh" "$APP_DIR"
 ditto -c -k --keepParent "$APP_DIR" "$ZIP_PATH"
 
 DMG_STAGING="$RELEASE_DIR/dmg"
