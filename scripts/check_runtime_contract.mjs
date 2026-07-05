@@ -109,10 +109,70 @@ const requiredPhrases = [
   'through the active VoiceClaw route when possible',
   'Do not use it for voice unmute requests',
   'say exactly: "Mic Muted"',
+  'hasCerebrasAPIKey',
+  'Cerebras API key is not configured',
 ];
 
 for (const phrase of requiredPhrases) {
   if (!source.includes(phrase)) fail(`required contract phrase missing: ${phrase}`);
+}
+
+function extractFunctionSource(name) {
+  const signature = `function ${name}`;
+  const start = source.indexOf(signature);
+  if (start === -1) {
+    fail(`missing function ${name}`);
+    return '';
+  }
+  const open = source.indexOf('{', start);
+  if (open === -1) {
+    fail(`missing body for function ${name}`);
+    return '';
+  }
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  fail(`unterminated function ${name}`);
+  return '';
+}
+
+try {
+  const fallbackHarness = Function(`
+${[
+  'companionVoiceLooksLikeMapsDirections',
+  'companionVoiceLooksLikeIPhoneAction',
+  'companionVoiceExtractMapsDestination',
+  'companionVoiceFallbackIPhoneTool',
+].map(extractFunctionSource).join('\n\n')}
+return { companionVoiceFallbackIPhoneTool };
+`)();
+
+  const mapsTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Show me my current location and how to get from there to Soho House in Tel Aviv');
+  if (mapsTool?.name !== 'iphone_external_action') {
+    fail('combined current-location directions phrase did not produce iphone_external_action');
+  }
+  if (mapsTool?.arguments?.action !== 'open_maps' || mapsTool?.arguments?.mode !== 'directions') {
+    fail('combined current-location directions phrase did not produce Maps directions');
+  }
+  if (mapsTool?.arguments?.destination !== 'Soho House in Tel Aviv') {
+    fail(`combined current-location directions destination parsed incorrectly: ${mapsTool?.arguments?.destination || '(empty)'}`);
+  }
+  if (Object.hasOwn(mapsTool?.arguments || {}, 'origin')) {
+    fail('combined current-location directions phrase should omit origin so Apple Maps can use current location');
+  }
+
+  const currentLocationTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Where am I?');
+  if (currentLocationTool?.name !== 'iphone_current_location') {
+    fail('plain current-location request no longer uses iphone_current_location');
+  }
+} catch (error) {
+  fail(`fallback behavior harness failed: ${error?.message || String(error)}`);
 }
 
 if (!process.exitCode) {

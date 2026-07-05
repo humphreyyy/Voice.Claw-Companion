@@ -207,6 +207,10 @@ function cerebrasKeyForCompanionVoice(payload = {}) {
   return configured || String(process.env.CEREBRAS_API_KEY || '').trim();
 }
 
+function hasCerebrasKeyForCompanionVoice(payload = {}) {
+  return !!cerebrasKeyForCompanionVoice(payload);
+}
+
 const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - wait_for_user keeps the session listening without a spoken reply when the latest audio is silence, background noise, TV/music, side conversation, speech not addressed to VoiceClaw, or likely echo of VoiceClaw's own previous speech.
 - iphone_status reads current iPhone and VoiceClaw app status, including app version, battery, thermal state, audio route, permission status, locale, timezone, selected GPT-Realtime-2 route, voice settings, and microphone mute state.
@@ -2818,14 +2822,24 @@ function companionVoiceLooksLikeIPhoneAction(text = '') {
   const hasPhoneSurface = /\b(iphone|phone|ios|safari|browser|website|url|link|apple maps|maps|map|directions|navigation|location|near me|nearby|message|text|email|mail|whatsapp|shortcut|settings|reminder|calendar|clipboard|photo|camera|screenshot|transcript|speakerphone|mic|voiceclaw|voice engine|voice route|gpt-realtime|realtime-2|stt|tts|companion realtime|companion voice|qwen|cerebras)\b/i.test(normalized);
   const hasWebTarget = /\bhttps?:\/\/[^\s]+/i.test(normalized) || /\b[a-z0-9.-]+\.[a-z]{2,}(\/[^\s]*)?/i.test(normalized);
   const asksLocation = /\b(where am i|current location|my location|show me where i am|near me|nearby)\b/i.test(normalized);
-  return (hasActionVerb && (hasPhoneSurface || hasWebTarget)) || asksLocation;
+  const asksDirections = companionVoiceLooksLikeMapsDirections(normalized);
+  return (hasActionVerb && (hasPhoneSurface || hasWebTarget)) || asksLocation || asksDirections;
+}
+
+function companionVoiceLooksLikeMapsDirections(text = '') {
+  const normalized = String(text || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return /\b(map|maps|directions|navigate|navigation|route)\b/i.test(normalized)
+    || /\bhow\s+(?:(?:do|can|should)\s+i\s+|to\s+)?(?:get|go|drive|walk|travel)\b/i.test(normalized)
+    || /\bget\s+(?:me\s+)?(?:from\s+.+?\s+)?to\s+.+/i.test(normalized)
+    || /\bfrom\s+.+?\s+to\s+.+/i.test(normalized);
 }
 
 function companionVoiceExtractMapsDestination(text = '') {
   const trimmed = String(text || '').trim().replace(/[?.!]+$/g, '');
   const patterns = [
     /\b(?:directions|navigation|navigate|route)\s+(?:me\s+)?(?:to|towards?)\s+(.+)$/i,
-    /\bhow\s+(?:do\s+)?(?:i\s+)?(?:get|go|drive|walk)\s+(?:from\s+.+?\s+)?to\s+(.+)$/i,
+    /\bhow\s+(?:(?:do|can|should)\s+i\s+|to\s+)?(?:get|go|drive|walk|travel)\s+(?:from\s+.+?\s+)?to\s+(.+)$/i,
     /\bget\s+(?:me\s+)?(?:from\s+.+?\s+)?to\s+(.+)$/i,
     /\bfrom\s+.+?\s+to\s+(.+)$/i,
   ];
@@ -2872,8 +2886,8 @@ function companionVoiceFallbackIPhoneTool(text = '') {
       },
     };
   }
-  if (/\b(map|maps|directions|navigate)\b/i.test(normalized)) {
-    const mode = /\b(direction|directions|navigate|route|how\s+(?:do\s+)?(?:i\s+)?(?:get|go|drive|walk))\b/i.test(normalized) ? 'directions' : 'search';
+  if (/\b(map|maps)\b/i.test(normalized) || companionVoiceLooksLikeMapsDirections(normalized)) {
+    const mode = companionVoiceLooksLikeMapsDirections(normalized) ? 'directions' : 'search';
     const destination = mode === 'directions' ? companionVoiceExtractMapsDestination(trimmed) : trimmed;
     return {
       name: 'iphone_external_action',
@@ -3492,6 +3506,9 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
   }
   if (String(brainMode || '').startsWith('cerebras:')) {
     const cerebrasModel = companionVoiceCerebrasModelID(brainMode, payload);
+    if (!hasCerebrasKeyForCompanionVoice(payload)) {
+      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras middle brain.');
+    }
     try {
       const raw = await runCerebrasPlanner(prompt, {
         signal,
@@ -3514,10 +3531,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
         plannerTimeoutMs,
         error: error?.message || String(error),
       });
-      const fallbackPlan = localPlan.callRoute === true || String(localPlan.finalAnswer || '').trim()
-        ? localPlan
-        : { callRoute: false, routeMessage: '', finalAnswer: "I heard you, but the Cerebras middle brain had trouble answering that. Try that again." };
-      return finalizeCompanionVoicePlan(fallbackPlan, text, routeMode, `local-after-cerebras-${cerebrasModel}-planner-error`);
+      throw new Error(`Cerebras ${cerebrasModel} middle brain failed: ${error?.message || String(error)}`);
     }
   }
   try {
@@ -3727,6 +3741,9 @@ async function runCompanionVoiceTurn({ req, payload }) {
   const context = String(payload.context || '').trim();
   const textInput = String(payload.text || '').trim();
   const audioBuffer = payload.audioBuffer || (payload.audioBase64 ? Buffer.from(String(payload.audioBase64), 'base64') : null);
+  if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
+    throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras middle brain.');
+  }
   if (!textInput && !audioBuffer?.length) throw new Error('Companion Realtime Voice turn needs audio or text.');
 
   let transcript = textInput;
@@ -3892,7 +3909,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', `cerebras:${COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL}`, 'cerebras:gpt-oss-120b'], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: 'piper-ryan-high', routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', `cerebras:${COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL}`, 'cerebras:gpt-oss-120b'], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: 'piper-ryan-high', routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;
