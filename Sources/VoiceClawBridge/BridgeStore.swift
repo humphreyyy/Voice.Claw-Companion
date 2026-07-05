@@ -494,7 +494,9 @@ final class BridgeStore: ObservableObject {
     }
 
     func installLatestUpdate() {
-        Task { await downloadLatestDMG() }
+        updateSummary = "Opening the signed VoiceClaw Companion updater..."
+        lastLog = "Opening Sparkle to download, verify, install, and relaunch VoiceClaw Companion."
+        sparkleUpdaterController.checkForUpdates(nil)
     }
 
     private func openSystemSettings(_ value: String) {
@@ -621,7 +623,7 @@ final class BridgeStore: ObservableObject {
 
             if Self.compareVersions(latestVersion, currentVersion) == .orderedDescending {
                 updateAvailable = true
-                updateSummary = "Update \(release.tagName) is available. Use Install Update to download the notarized DMG, verify its GitHub release checksum when available, and open it for installation. Notarized DMG: \(latestDMGName)."
+                updateSummary = "Update \(release.tagName) is available. Use Install Update to open the signed updater. If the updater cannot complete, open the GitHub release and install the notarized DMG manually: \(latestDMGName)."
             } else {
                 updateAvailable = false
                 updateSummary = "VoiceClaw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName). Automatic checks run \(automaticUpdateCheckInterval.label.lowercased()) when enabled."

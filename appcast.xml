@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.93</title>
+            <pubDate>Sun, 05 Jul 2026 23:52:57 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607052351</sparkle:version>
+            <sparkle:shortVersionString>0.1.93</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.93</h2><ul><li>Restores the in-app Install Update flow to use Sparkle, so signed Companion updates can download, verify, replace the app, and relaunch without requiring the user to manually drag the app from a DMG.</li><li>Keeps the GitHub release/DMG link available as a manual fallback.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.93/VoiceClawCompanion-0.1.93-202607052351.dmg" length="3435845" type="application/octet-stream" sparkle:edSignature="peg2crFYT3wA8ptPkB65cGQUzN9WsHEIf0HHRQB/tPdLpJ33sIIeNevJwi7/NkvjLgwgF/h5heh/0aRxqa2lAA=="/>
+        </item>
+        <item>
             <title>0.1.92</title>
             <pubDate>Sun, 05 Jul 2026 23:46:43 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>

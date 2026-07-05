@@ -305,12 +305,11 @@ private struct UpdateAvailableBanner: View {
                 Spacer(minLength: 16)
 
                 Button {
-                    Task { await store.downloadLatestDMG() }
+                    store.installLatestUpdate()
                 } label: {
                     Label("Install Update", systemImage: "arrow.down.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.isDownloadingUpdate)
 
                 Button {
                     Task { await store.checkForUpdates() }
@@ -1220,7 +1219,7 @@ private struct StatusPanel: View {
             StatusRow(
                 title: "Update Install",
                 value: store.automaticUpdateInstallsEnabled
-                    ? "Automatic Sparkle downloads are on. VoiceClaw still shows available updates, and visible Install Update buttons download and open the notarized GitHub DMG for installation."
+                    ? "Automatic Sparkle downloads are on. Visible Install Update buttons open the signed updater so VoiceClaw can download, verify, replace, and relaunch the app."
                     : "Automatic install is off. VoiceClaw will still show available updates, but you decide when to install them.",
                 symbol: store.automaticUpdateInstallsEnabled ? "arrow.down.app.fill" : "arrow.down.app"
             )
@@ -1288,12 +1287,11 @@ private struct StatusPanel: View {
 
                     if store.updateAvailable {
                         Button {
-                            Task { await store.downloadLatestDMG() }
+                            store.installLatestUpdate()
                         } label: {
                             Label("Install Update", systemImage: "arrow.down.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(store.isDownloadingUpdate)
 
                         Button {
                             store.openLatestRelease()
