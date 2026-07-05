@@ -72,10 +72,11 @@ private struct CompanionMenuBarView: View {
             }
 
             Button {
-                store.installLatestUpdate()
+                Task { await store.downloadLatestDMG() }
             } label: {
                 Label("Install Update", systemImage: "arrow.down.circle.fill")
             }
+            .disabled(store.isDownloadingUpdate)
 
             Button {
                 store.openLatestRelease()
@@ -114,10 +115,11 @@ private struct CompanionMenuBarView: View {
 
         if store.updateAvailable {
             Button {
-                store.installLatestUpdate()
+                Task { await store.downloadLatestDMG() }
             } label: {
                 Label("Install \(store.latestReleaseTag.isEmpty ? "Update" : store.latestReleaseTag)", systemImage: "arrow.down.circle.fill")
             }
+            .disabled(store.isDownloadingUpdate)
         } else {
             Label(updateModeLabel, systemImage: updateModeSymbol)
         }

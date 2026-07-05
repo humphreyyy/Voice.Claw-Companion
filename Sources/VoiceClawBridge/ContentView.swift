@@ -758,7 +758,13 @@ private struct StatusPanel: View {
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
             StatusRow(title: "Launch upon Startup", value: store.launchAtStartupSummary, symbol: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
             StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw checks for signed GitHub Release updates every \(store.automaticUpdateCheckInterval.shortLabel)." : "Automatic checks are off. The menu bar icon shows an update warning; use Check Updates when you want to compare against the latest release.", symbol: "clock.arrow.circlepath")
-            StatusRow(title: "Update Install", value: store.automaticUpdateInstallsEnabled ? "Automatic install is on. When Sparkle finds a signed update, it can download and install it in-app instead of making you open a DMG manually." : "Automatic install is off. VoiceClaw will still show available updates, but you decide when to install them.", symbol: store.automaticUpdateInstallsEnabled ? "arrow.down.app.fill" : "arrow.down.app")
+            StatusRow(
+                title: "Update Install",
+                value: store.automaticUpdateInstallsEnabled
+                    ? "Automatic Sparkle downloads are on. VoiceClaw still shows available updates, and visible Install Update buttons download and open the notarized GitHub DMG for installation."
+                    : "Automatic install is off. VoiceClaw will still show available updates, but you decide when to install them.",
+                symbol: store.automaticUpdateInstallsEnabled ? "arrow.down.app.fill" : "arrow.down.app"
+            )
 
             if let lastUpdateCheckDate = store.lastUpdateCheckDate {
                 StatusRow(title: "Updates Checked", value: lastUpdateCheckDate.formatted(date: .abbreviated, time: .standard), symbol: "calendar.badge.clock")
@@ -813,11 +819,12 @@ private struct StatusPanel: View {
 
                     if store.updateAvailable {
                         Button {
-                            store.installLatestUpdate()
+                            Task { await store.downloadLatestDMG() }
                         } label: {
                             Label("Install Update", systemImage: "arrow.down.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(store.isDownloadingUpdate)
 
                         Button {
                             store.openLatestRelease()
@@ -847,7 +854,7 @@ private struct StatusPanel: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Toggle("Automatically download and install signed updates", isOn: $store.automaticUpdateInstallsEnabled)
+                Toggle("Allow Sparkle to automatically download signed updates", isOn: $store.automaticUpdateInstallsEnabled)
                     .toggleStyle(.checkbox)
                     .font(.caption)
                     .foregroundStyle(.secondary)

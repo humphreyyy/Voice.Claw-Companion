@@ -431,9 +431,7 @@ final class BridgeStore: ObservableObject {
     }
 
     func installLatestUpdate() {
-        updateSummary = "Opening the VoiceClaw Companion updater. If a signed update is available, Sparkle can download and install it from inside the app."
-        sparkleUpdaterController.checkForUpdates(nil)
-        syncSparkleUpdatePreferences()
+        Task { await downloadLatestDMG() }
     }
 
     func downloadLatestDMG() async {

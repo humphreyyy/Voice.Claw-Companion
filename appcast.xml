@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.86</title>
+            <pubDate>Sun, 05 Jul 2026 09:54:45 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607050953</sparkle:version>
+            <sparkle:shortVersionString>0.1.86</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.86</h2><ul><li>Routes every visible Install Update action through the notarized GitHub DMG download path instead of Sparkle's modal installer.</li><li>Removes stale wording that implied the app would install updates entirely in-app.</li><li>Keeps Sparkle available for signed update checks while avoiding the stale modal error path that produced the improper-signing alert.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.86/VoiceClawCompanion-0.1.86-202607050953.zip" length="2956246" type="application/octet-stream" sparkle:edSignature="ovECc3iNbDb+lWlIwi8kV6ncesZPzT7ubDMBOWH75Yn2H+h3zTlzaL+VkFexwdioKjm4bcriZqNPYGucTm1UDw=="/>
+        </item>
+        <item>
             <title>0.1.85</title>
             <pubDate>Sun, 05 Jul 2026 09:40:46 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.84</h2><ul><li>Improves Companion Realtime Voice responsiveness by using a compact local Qwen planner prompt for spoken middle-brain turns.</li><li>Adds fast direct handling for simple repeat/say-exactly checks and common latency questions so those turns do not wait on a planner unnecessarily.</li><li>Keeps the notarized Sparkle updater package path and signed helper validation from the current release line.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.84/VoiceClawCompanion-0.1.84-202607050748.dmg" length="3227720" type="application/octet-stream" sparkle:edSignature="Kjh+OgwSg27uF552bqFg5rdlKRCrwjXKyktipYTBTYYw5qUQmAwIOB+t+1sGy6MvaVzbgKKGReJ2OfVU5bFAAQ=="/>
-        </item>
-        <item>
-            <title>0.1.83</title>
-            <pubDate>Sun, 05 Jul 2026 07:19:14 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607050718</sparkle:version>
-            <sparkle:shortVersionString>0.1.83</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.83</h2><ul><li>Refreshes the signed in-app updater package so Sparkle installs the notarized Companion release cleanly instead of retrying a cached failed 0.1.82 download.</li><li>Keeps the Companion runtime and streaming voice fixes from the current release line.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.83/VoiceClawCompanion-0.1.83-202607050718.dmg" length="3226276" type="application/octet-stream" sparkle:edSignature="jLhH0Sy1fmDQuMSOuJOZPaEIvebDMak57E5YhW53bkSxZR5iNDOdW5QsSC7e6FzrZSwnqbW/R4FoqSiCejgZDw=="/>
         </item>
     </channel>
 </rss>
