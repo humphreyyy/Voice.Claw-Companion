@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.76</title>
+            <pubDate>Sun, 05 Jul 2026 04:23:18 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607050418</sparkle:version>
+            <sparkle:shortVersionString>0.1.76</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.76</h2><ul><li>Filters local speech-recognition placeholder text such as blank audio, no speech detected, inaudible, and unintelligible before Companion Realtime Voice sends a turn to the middle brain.</li><li>Keeps Companion Realtime Voice aligned with the iOS placeholder/no-speech guard added for the latest phone build.</li><li>Preserves the Cerebras middle-brain and local iPhone action fixes from the prior releases.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.76/VoiceClawCompanion-0.1.76-202607050418.dmg" length="3221195" type="application/octet-stream" sparkle:edSignature="YdRc2qi8/j+W88Q2BNj8mdwatsODYpgfZciHqvginIr05sATSw7mpO52CRqu2YFsKLLDc7pbErn7F6/fjLnpDw=="/>
+        </item>
+        <item>
             <title>0.1.75</title>
             <pubDate>Sun, 05 Jul 2026 03:27:56 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.74</h2><ul><li>Hardens Companion Realtime Voice iPhone action repair so combined current-location plus Maps directions requests open Maps directions instead of stopping at a location read.</li><li>Advertises all current public Cerebras middle-brain models: Gemma 4 31B, GPT OSS 120B, and Z.ai GLM 4.7.</li><li>Uses fast structured planner settings for the Z.ai GLM 4.7 Cerebras middle brain.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.74/VoiceClawCompanion-0.1.74-202607050308.dmg" length="3216470" type="application/octet-stream" sparkle:edSignature="Y0+TXN1X49uoWcSKxqCNQ7sbJj7QZ5Kfb8vCqPiMh9g2NPbNtvaHdc+T9AHpJELxA1MwUlNOvQ1kgKhIq+u5BA=="/>
-        </item>
-        <item>
-            <title>0.1.73</title>
-            <pubDate>Sun, 05 Jul 2026 03:00:16 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607050256</sparkle:version>
-            <sparkle:shortVersionString>0.1.73</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.73</h2><ul><li>Fixes Companion Realtime Voice routing for combined current-location and Maps directions requests.</li><li>Adds Cerebras middle-brain readiness reporting for paired VoiceClaw Realtime clients.</li><li>Fails clearly when the Cerebras middle brain is selected without a configured Cerebras API key instead of silently falling back.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.73/VoiceClawCompanion-0.1.73-202607050256.dmg" length="3216115" type="application/octet-stream" sparkle:edSignature="s4Un7n8+BMeR0EgsOfMj36KIsHIwHSncl7jIW49u1cxzci3oqjo23seXjzEAEmSGOLHkDPMfHYtrhHe03DhhAQ=="/>
         </item>
     </channel>
 </rss>

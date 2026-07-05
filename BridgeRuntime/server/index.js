@@ -1222,10 +1222,24 @@ function normalizeActionText(text = '') {
   return String(text || '').trim().replace(/\s+/g, ' ');
 }
 
+function isAsrPlaceholderText(text = '') {
+  const clean = normalizeActionText(text);
+  const normalized = clean
+    .toLowerCase()
+    .replace(/_/g, ' ')
+    .replace(/^[\s[\](){}]+|[\s[\](){}]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized === 'blank audio'
+    || normalized === 'no speech detected'
+    || normalized === 'inaudible'
+    || normalized === 'unintelligible';
+}
+
 function actionability(text = '', { allowWake = false, allowShortCommand = true, context = 'turn' } = {}) {
   const clean = normalizeActionText(text);
   const normalized = clean.toLowerCase().replace(/[“”]/g, '"').replace(/[^a-z0-9א-ת\s?!.-]/gi, ' ').replace(/\s+/g, ' ').trim();
-  if (!normalized || normalized === '[blank_audio]') return { actionable: false, reason: 'blank', text: clean };
+  if (!normalized || isAsrPlaceholderText(clean)) return { actionable: false, reason: 'blank', text: clean };
   const noiseOnly = new Set(['you','thank you','thanks','thank','thank you thank you','okay thank you','uh','um','umm','hmm','mm','ah','oh','yeah yeah','no no','keyboard','typing','keyboard clacking','keyboard clicking','typing sounds','footsteps','step','steps','walking','machine noise','machine whirring','background noise','silence','inaudible','unintelligible','blank audio','music','beep']);
   if (noiseOnly.has(normalized)) return { actionable: false, reason: 'noise-only', text: clean };
   if (/^(?:\[?inaudible\]?|\[?unintelligible\]?|\(?no speech detected\)?|\[?blank audio\]?)$/i.test(clean)) return { actionable: false, reason: 'asr-placeholder', text: clean };
@@ -3788,6 +3802,22 @@ async function runCompanionVoiceTurn({ req, payload }) {
       audioContentType: '',
       elapsedMs: Date.now() - startedAt,
       asrMs,
+    };
+  }
+  if (isAsrPlaceholderText(transcript)) {
+    return {
+      ok: true,
+      routeMode,
+      brainMode,
+      sessionToken,
+      transcript,
+      reply: "I didn't catch that. Say it again.",
+      audioBase64: '',
+      audioContentType: '',
+      elapsedMs: Date.now() - startedAt,
+      asrMs,
+      filtered: true,
+      filterReason: 'asr-placeholder',
     };
   }
 

@@ -113,6 +113,8 @@ const requiredPhrases = [
   'Cerebras API key is not configured',
   'COMPANION_VOICE_CEREBRAS_MODELS',
   'zai-glm-4.7',
+  'isAsrPlaceholderText',
+  "filterReason: 'asr-placeholder'",
 ];
 
 for (const phrase of requiredPhrases) {
@@ -160,6 +162,21 @@ function extractFunctionSource(name) {
   }
   fail(`unterminated function ${name}`);
   return '';
+}
+
+try {
+  const placeholderHarness = Function(`
+${extractFunctionSource('normalizeActionText')}
+${extractFunctionSource('isAsrPlaceholderText')}
+return { isAsrPlaceholderText };
+`)();
+  for (const placeholder of ['[BLANK_AUDIO]', 'blank_audio', 'blank audio', 'No speech detected', '[inaudible]']) {
+    if (!placeholderHarness.isAsrPlaceholderText(placeholder)) {
+      fail(`ASR placeholder was not filtered: ${placeholder}`);
+    }
+  }
+} catch (error) {
+  fail(`ASR placeholder harness failed: ${error.message}`);
 }
 
 try {
