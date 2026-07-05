@@ -36,6 +36,8 @@ const expectedIphoneTools = [
   'iphone_run_shortcut',
   'iphone_search_web',
   'iphone_set_microphone_muted',
+  'iphone_set_companion_middle_brain',
+  'iphone_set_cerebras_model',
   'iphone_set_speakerphone_enabled',
   'iphone_set_transcript_visible',
   'iphone_share',
@@ -176,10 +178,11 @@ function extractFunctionSource(name) {
 try {
   const placeholderHarness = Function(`
 ${extractFunctionSource('normalizeActionText')}
+${extractFunctionSource('normalizedASRCaption')}
 ${extractFunctionSource('isAsrPlaceholderText')}
 return { isAsrPlaceholderText };
 `)();
-  for (const placeholder of ['[BLANK_AUDIO]', 'blank_audio', 'blank audio', 'No speech detected', '[inaudible]']) {
+  for (const placeholder of ['[BLANK_AUDIO]', 'blank_audio', 'blank audio', 'No speech detected', '[inaudible]', '[typing sounds]', '[no audio]']) {
     if (!placeholderHarness.isAsrPlaceholderText(placeholder)) {
       fail(`ASR placeholder was not filtered: ${placeholder}`);
     }
@@ -245,6 +248,26 @@ return { companionVoiceFallbackIPhoneTool, companionVoiceRepairIPhoneTool, compa
   const missingRecipientTextTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Draft a text saying I am late');
   if (missingRecipientTextTool?.name || missingRecipientTextTool?.reply !== 'Who should I send the text to?') {
     fail('text-message request without a recipient should ask for a recipient instead of producing a broken draft action');
+  }
+
+  const calendarTool = fallbackHarness.companionVoiceFallbackIPhoneTool("What's on my calendar today?");
+  if (calendarTool?.name !== 'iphone_list_calendar_events' || Object.hasOwn(calendarTool?.arguments || {}, 'range')) {
+    fail('calendar list fallback should use iphone_list_calendar_events without legacy range/query arguments');
+  }
+
+  const incompleteCalendarCreate = fallbackHarness.companionVoiceFallbackIPhoneTool('Schedule a meeting on my calendar');
+  if (incompleteCalendarCreate?.name || incompleteCalendarCreate?.reply !== 'When should I schedule it?') {
+    fail('calendar create fallback without a start time should ask for the time instead of emitting a malformed event');
+  }
+
+  const middleBrainTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Switch the Companion middle brain to Cerebras');
+  if (middleBrainTool?.name !== 'iphone_set_companion_middle_brain' || middleBrainTool?.arguments?.brain_mode !== 'cerebras') {
+    fail('middle-brain voice command should produce iphone_set_companion_middle_brain');
+  }
+
+  const cerebrasTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Use GPT OSS 120B as the Cerebras model');
+  if (cerebrasTool?.name !== 'iphone_set_cerebras_model' || cerebrasTool?.arguments?.model !== 'gpt-oss-120b') {
+    fail('Cerebras model voice command should produce iphone_set_cerebras_model');
   }
 
   const badDraft = fallbackHarness.companionVoiceRepairIPhoneTool({

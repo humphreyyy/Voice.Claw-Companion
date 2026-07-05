@@ -3,6 +3,7 @@ import { spawn, execFile as execFileCb } from 'node:child_process';
 import { readFile, unlink, access, readdir } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -18,6 +19,9 @@ const DEFAULT_PIPER_LENGTH_SCALE = process.env.PIPER_LENGTH_SCALE || '0.7';
 const PIPER_BIN = executablePath(process.env.PIPER_BIN || 'python3');
 const FFMPEG_BIN = executablePath(process.env.FFMPEG_BIN || 'ffmpeg');
 const SAY_BIN = executablePath(process.env.SAY_BIN || 'say');
+const HF_RUNTIME_PYTHON = process.env.VOICECLAW_HF_PYTHON || join(os.homedir(), '.voiceclaw', 'hf-runtime', 'bin', 'python');
+const DEFAULT_PYTHON_BIN = executablePath(process.env.PYTHON_BIN || 'python3');
+const KOKORO_HELPER = fileURLToPath(new URL('./kokoro_tts.py', import.meta.url));
 const FALLBACK_RATE = process.env.TTS_RATE || '185';
 const DEFAULT_SPEED = process.env.TTS_SPEED || 'fastest';
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(os.homedir(), '.openclaw', 'openclaw.json');
@@ -27,10 +31,10 @@ const OPENAI_TTS_FORMAT = process.env.OPENAI_TTS_FORMAT || 'wav';
 const OPENAI_TTS_CIRCUIT_MS = Number(process.env.OPENAI_TTS_CIRCUIT_MS || 120000);
 
 const TTS_SPEED_PRESETS = [
-  { id: 'slower', label: 'Slower', openai: 0.85, sayRate: 160, piperLengthScale: 0.82 },
-  { id: 'normal', label: 'Normal', openai: 1.0, sayRate: 185, piperLengthScale: 0.70 },
-  { id: 'faster', label: 'Faster', openai: 1.15, sayRate: 215, piperLengthScale: 0.60 },
-  { id: 'fastest', label: 'Fastest', openai: 1.3, sayRate: 245, piperLengthScale: 0.52 },
+  { id: 'slower', label: 'Slower', openai: 0.85, sayRate: 160, piperLengthScale: 0.82, kokoroSpeed: 0.90 },
+  { id: 'normal', label: 'Normal', openai: 1.0, sayRate: 185, piperLengthScale: 0.70, kokoroSpeed: 1.0 },
+  { id: 'faster', label: 'Faster', openai: 1.15, sayRate: 215, piperLengthScale: 0.60, kokoroSpeed: 1.10 },
+  { id: 'fastest', label: 'Fastest', openai: 1.3, sayRate: 245, piperLengthScale: 0.52, kokoroSpeed: 1.20 },
 ];
 
 function loadOpenAITtsConfig() {
@@ -250,12 +254,36 @@ async function loadSayVoices() {
   }
 }
 
+function uniquePythonCandidates() {
+  return Array.from(new Set([
+    process.env.VOICECLAW_HF_PYTHON || '',
+    HF_RUNTIME_PYTHON,
+    process.env.PYTHON_BIN || '',
+    DEFAULT_PYTHON_BIN,
+    'python3',
+  ].map((item) => String(item || '').trim()).filter(Boolean)));
+}
+
+async function pythonModuleProbe(moduleName, pythonCandidates = uniquePythonCandidates()) {
+  for (const pythonBin of pythonCandidates) {
+    try {
+      await execFile(executablePath(pythonBin), [
+        '-c',
+        `import importlib.util, sys; sys.exit(0 if importlib.util.find_spec(${JSON.stringify(moduleName)}) else 1)`,
+      ], { timeout: 8000, maxBuffer: 1024 * 64 });
+      return { available: true, python: executablePath(pythonBin) };
+    } catch {}
+  }
+  return { available: false, python: '' };
+}
+
 async function pythonModuleAvailable(moduleName) {
+  return (await pythonModuleProbe(moduleName)).available;
+}
+
+async function helperAvailable(path) {
   try {
-    await execFile(executablePath(process.env.PYTHON_BIN || 'python3'), [
-      '-c',
-      `import importlib.util, sys; sys.exit(0 if importlib.util.find_spec(${JSON.stringify(moduleName)}) else 1)`,
-    ], { timeout: 5000, maxBuffer: 1024 * 64 });
+    await access(path, fsConstants.R_OK);
     return true;
   } catch {
     return false;
@@ -263,25 +291,27 @@ async function pythonModuleAvailable(moduleName) {
 }
 
 async function buildBackendStatus() {
-  const [speechToSpeech, mlxAudio, kokoro, pocket, fasterWhisper, whisperMLX] = await Promise.all([
-    pythonModuleAvailable('speech_to_speech'),
-    pythonModuleAvailable('mlx_audio'),
-    pythonModuleAvailable('kokoro'),
-    pythonModuleAvailable('pocket_tts'),
-    pythonModuleAvailable('faster_whisper'),
-    pythonModuleAvailable('whisper_mlx'),
+  const [speechToSpeech, mlxAudio, nativeKokoro, pocket, fasterWhisper, whisperMLX, helper] = await Promise.all([
+    pythonModuleProbe('speech_to_speech'),
+    pythonModuleProbe('mlx_audio'),
+    pythonModuleProbe('kokoro'),
+    pythonModuleProbe('pocket_tts'),
+    pythonModuleProbe('faster_whisper'),
+    pythonModuleProbe('whisper_mlx'),
+    helperAvailable(KOKORO_HELPER),
   ]);
+  const kokoroInstalled = helper && (mlxAudio.available || nativeKokoro.available);
 
   return [
     { id: 'openai', label: 'OpenAI TTS', installed: !!OPENAI_TTS?.apiKey, selectable: !!OPENAI_TTS?.apiKey, role: 'tts' },
     { id: 'piper', label: 'Piper local TTS', installed: true, selectable: true, role: 'tts' },
     { id: 'macos-say', label: 'macOS system voices', installed: true, selectable: true, role: 'tts' },
-    { id: 'speech-to-speech', label: 'Hugging Face speech-to-speech runtime', installed: speechToSpeech, selectable: false, role: 'pipeline' },
-    { id: 'qwen3-tts-mlx', label: 'Qwen3-TTS via MLX Audio', installed: speechToSpeech && mlxAudio, selectable: false, role: 'tts' },
-    { id: 'kokoro-mlx', label: 'Kokoro via MLX Audio', installed: speechToSpeech && (mlxAudio || kokoro), selectable: false, role: 'tts' },
-    { id: 'pocket-tts', label: 'Pocket TTS', installed: speechToSpeech && pocket, selectable: false, role: 'tts' },
-    { id: 'faster-whisper', label: 'Faster Whisper STT', installed: fasterWhisper, selectable: false, role: 'stt' },
-    { id: 'whisper-mlx', label: 'Whisper MLX STT', installed: whisperMLX, selectable: false, role: 'stt' },
+    { id: 'speech-to-speech', label: 'Hugging Face speech-to-speech runtime', installed: speechToSpeech.available, selectable: false, role: 'pipeline', python: speechToSpeech.python || null },
+    { id: 'qwen3-tts-mlx', label: 'Qwen3-TTS via MLX Audio', installed: speechToSpeech.available && mlxAudio.available, selectable: false, role: 'tts', python: mlxAudio.python || null },
+    { id: 'kokoro-mlx', label: 'Kokoro via MLX Audio', installed: kokoroInstalled, selectable: kokoroInstalled, role: 'tts', python: mlxAudio.python || nativeKokoro.python || null },
+    { id: 'pocket-tts', label: 'Pocket TTS', installed: speechToSpeech.available && pocket.available, selectable: false, role: 'tts', python: pocket.python || null },
+    { id: 'faster-whisper', label: 'Faster Whisper STT', installed: fasterWhisper.available, selectable: false, role: 'stt', python: fasterWhisper.python || null },
+    { id: 'whisper-mlx', label: 'Whisper MLX STT', installed: whisperMLX.available, selectable: false, role: 'stt', python: whisperMLX.python || null },
   ];
 }
 
@@ -291,6 +321,31 @@ async function buildVoiceOptions() {
   cachedBackendStatus = await buildBackendStatus();
   const options = [];
   const seenPiperModelPaths = new Set();
+  const kokoroBackend = cachedBackendStatus.find((backend) => backend.id === 'kokoro-mlx' && backend.selectable);
+  if (kokoroBackend?.python) {
+    options.push(
+      {
+        id: 'kokoro-af-heart',
+        label: 'Kokoro Heart (MLX)',
+        engine: 'kokoro',
+        pythonBin: kokoroBackend.python,
+        model: process.env.KOKORO_MODEL || 'mlx-community/Kokoro-82M-bf16',
+        kokoroVoice: 'af_heart',
+        langCode: 'a',
+        default: false,
+      },
+      {
+        id: 'kokoro-bm-fable',
+        label: 'Kokoro Fable (MLX)',
+        engine: 'kokoro',
+        pythonBin: kokoroBackend.python,
+        model: process.env.KOKORO_MODEL || 'mlx-community/Kokoro-82M-bf16',
+        kokoroVoice: 'bm_fable',
+        langCode: 'b',
+        default: false,
+      },
+    );
+  }
 
   for (const candidate of [...CURATED_VOICES, ...dynamicPiperVoices]) {
     if (candidate.engine === 'piper') {
@@ -371,6 +426,9 @@ export async function resolveVoiceConfig(requestedVoiceId) {
     rate: selected.rate,
     model: selected.model,
     openaiVoice: selected.openaiVoice,
+    pythonBin: selected.pythonBin,
+    kokoroVoice: selected.kokoroVoice,
+    langCode: selected.langCode,
   };
 }
 
@@ -383,6 +441,28 @@ function piperSampleRate(modelPath) {
   } catch {
     return 22050;
   }
+}
+
+function pcmToWav(pcmBuffer, sampleRate = 16000, channels = 1, bitsPerSample = 16) {
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const dataSize = pcmBuffer.length;
+  const wav = Buffer.alloc(44 + dataSize);
+  wav.write('RIFF', 0);
+  wav.writeUInt32LE(36 + dataSize, 4);
+  wav.write('WAVE', 8);
+  wav.write('fmt ', 12);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(channels, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(byteRate, 28);
+  wav.writeUInt16LE(blockAlign, 32);
+  wav.writeUInt16LE(bitsPerSample, 34);
+  wav.write('data', 36);
+  wav.writeUInt32LE(dataSize, 40);
+  pcmBuffer.copy(wav, 44);
+  return wav;
 }
 
 /**
@@ -428,6 +508,26 @@ export async function synthesize(text, { signal, voice, speed } = {}) {
       const audio = await synthesizeSay(text, { signal, sayVoice: 'Samantha', rate: speedPreset.sayRate });
       lastEngine = 'say';
       return audio;
+    }
+  }
+
+  if (voiceCfg.engine === 'kokoro') {
+    try {
+      const audio = await synthesizeKokoro(text, {
+        signal,
+        pythonBin: voiceCfg.pythonBin,
+        model: voiceCfg.model,
+        kokoroVoice: voiceCfg.kokoroVoice,
+        langCode: voiceCfg.langCode,
+        speed: speedPreset.kokoroSpeed,
+      });
+      lastEngine = 'kokoro-mlx';
+      lastFallback = '';
+      return audio;
+    } catch (err) {
+      if (err.message === 'aborted') throw err;
+      console.warn(`[tts] Kokoro (${voiceCfg.id}) failed, falling back to Piper Ryan:`, err.message);
+      return await synthesizeLocalFallback(text, { signal, speedPreset, reason: 'kokoro-failed' });
     }
   }
 
@@ -511,6 +611,37 @@ export async function synthesizeStream(text, { signal, voice, speed, onStart, on
       const audio = await synthesizeSay(reply, { signal, sayVoice: 'Samantha', rate: speedPreset.sayRate });
       lastEngine = 'say';
       return { streamed: false, audio, audioContentType: 'audio/wav', audioBytes: audio.length, engine: 'say' };
+    }
+  }
+
+  if (voiceCfg.engine === 'kokoro') {
+    try {
+      const summary = await synthesizeKokoroPCMStreaming(reply, {
+        signal,
+        pythonBin: voiceCfg.pythonBin,
+        model: voiceCfg.model,
+        kokoroVoice: voiceCfg.kokoroVoice,
+        langCode: voiceCfg.langCode,
+        speed: speedPreset.kokoroSpeed,
+        onStart,
+        onChunk,
+        onEnd,
+      });
+      lastEngine = 'kokoro-mlx-streaming-pcm';
+      lastFallback = '';
+      return summary;
+    } catch (err) {
+      if (err.message === 'aborted') throw err;
+      console.warn(`[tts-stream] Kokoro streaming (${voiceCfg.id}) failed, falling back to Piper Ryan:`, err.message);
+      return await synthesizePiperPCMStreaming(reply, {
+        signal,
+        modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx'),
+        lengthScale: speedPreset.piperLengthScale,
+        fallbackReason: 'kokoro-stream-failed',
+        onStart,
+        onChunk,
+        onEnd,
+      });
     }
   }
 
@@ -616,6 +747,109 @@ async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScal
   }
   await onEnd?.(summary);
   return summary;
+}
+
+async function synthesizeKokoroPCMStreaming(text, { signal, pythonBin, model, kokoroVoice, langCode, speed, onStart, onChunk, onEnd } = {}) {
+  const py = executablePath(pythonBin || HF_RUNTIME_PYTHON || DEFAULT_PYTHON_BIN);
+  console.log(`[tts-stream] kokoro model=${model || 'mlx-community/Kokoro-82M-bf16'} voice=${kokoroVoice || 'af_heart'} python=${py}`);
+  const proc = spawn(py, [
+    KOKORO_HELPER,
+    '--model', model || 'mlx-community/Kokoro-82M-bf16',
+    '--voice', kokoroVoice || 'af_heart',
+    '--lang', langCode || 'a',
+    '--speed', String(speed || 1.0),
+  ], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  let total = 0;
+  let settled = false;
+  let started = false;
+
+  const closePromise = new Promise((resolve, reject) => {
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const onAbort = () => {
+      proc.kill('SIGTERM');
+      finish(() => reject(new Error('aborted')));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    proc.stderr.on('data', d => { stderr += d; });
+    proc.on('close', code => {
+      if (code !== 0) return finish(() => reject(new Error(`kokoro exited ${code}: ${stderr.slice(0, 400)}`)));
+      finish(resolve);
+    });
+    proc.on('error', err => finish(() => reject(err)));
+  });
+
+  if (signal?.aborted) {
+    proc.kill('SIGTERM');
+    throw new Error('aborted');
+  }
+
+  proc.stdin.write(text);
+  proc.stdin.end();
+
+  try {
+    for await (const chunk of proc.stdout) {
+      if (signal?.aborted) throw new Error('aborted');
+      if (!chunk?.length) continue;
+      const buffer = Buffer.from(chunk);
+      if (!started) {
+        started = true;
+        await onStart?.({
+          streamed: true,
+          engine: 'kokoro',
+          encoding: 'pcm_s16le',
+          sampleRate: 16000,
+          channels: 1,
+          contentType: 'audio/pcm',
+        });
+      }
+      total += buffer.length;
+      await onChunk?.(buffer);
+    }
+    await closePromise;
+  } catch (err) {
+    proc.kill('SIGTERM');
+    throw err;
+  }
+
+  if (!total) throw new Error(`kokoro returned no audio${stderr ? `: ${stderr.slice(0, 240)}` : ''}`);
+  const summary = {
+    streamed: true,
+    engine: 'kokoro',
+    encoding: 'pcm_s16le',
+    sampleRate: 16000,
+    channels: 1,
+    audioBytes: total,
+    audioContentType: 'audio/pcm',
+  };
+  await onEnd?.(summary);
+  return summary;
+}
+
+async function synthesizeKokoro(text, { signal, pythonBin, model, kokoroVoice, langCode, speed } = {}) {
+  const chunks = [];
+  let total = 0;
+  await synthesizeKokoroPCMStreaming(text, {
+    signal,
+    pythonBin,
+    model,
+    kokoroVoice,
+    langCode,
+    speed,
+    onChunk: async (chunk) => {
+      chunks.push(Buffer.from(chunk));
+      total += chunk.length;
+    },
+  });
+  if (!total) throw new Error('kokoro returned no audio');
+  return pcmToWav(Buffer.concat(chunks, total), 16000, 1, 16);
 }
 
 async function synthesizePiper(text, { signal, modelPath, lengthScale } = {}) {

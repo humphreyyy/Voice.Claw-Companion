@@ -227,6 +227,8 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_prepare_voice_route_switch is legacy compatibility only for route switches; prefer iphone_confirm_voice_route_switch for new calls.
 - iphone_confirm_voice_route_switch changes VoiceClaw's selected route after an explicit user request to switch VoiceClaw mode or route. Do not ask a confirmation question. Say briefly that VoiceClaw is switching, then use the tool immediately. There is no stop-to-cancel window.
 - iphone_confirm_voice_engine_switch changes VoiceClaw's selected voice engine after an explicit user request to switch voice engine to GPT-Realtime-2, STT + GPT + TTS, or Companion Realtime Voice. Do not ask a confirmation question when the target is clear. Say briefly that VoiceClaw is switching engines, then use the tool immediately.
+- iphone_set_companion_middle_brain changes the Companion Realtime Voice middle brain when the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, or Cerebras.
+- iphone_set_cerebras_model changes the Cerebras model used by the Companion Realtime Voice middle brain when the user explicitly asks for Gemma 4 31B, GPT OSS 120B, or Z.ai GLM 4.7.
 - iphone_cancel_voice_route_switch is legacy compatibility only. Route switches and restarts normally happen immediately, so there should not be a pending switch or restart to cancel.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
 - iphone_open_app_settings opens the iOS Settings page for VoiceClaw when the user asks to change app permissions.
@@ -756,6 +758,34 @@ const IPHONE_REALTIME_TOOLS = [
   },
   {
     type: 'function',
+    name: 'iphone_set_companion_middle_brain',
+    description: 'Set the Companion Realtime Voice middle brain after the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, or Cerebras for the Companion Realtime Voice voice engine. Do not use this for ordinary route switches or model-answer questions.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        brain_mode: { type: 'string', enum: ['qwen3.5-2b', 'gpt55-fast-low', 'cerebras'], description: 'Target Companion Realtime Voice middle brain.' },
+        reason: { type: 'string', description: 'Brief reason the user requested this middle-brain change.' }
+      },
+      required: ['brain_mode']
+    }
+  },
+  {
+    type: 'function',
+    name: 'iphone_set_cerebras_model',
+    description: 'Set the Cerebras model used by the Companion Realtime Voice middle brain after the user explicitly asks for Gemma 4 31B, GPT OSS 120B, or Z.ai GLM 4.7. This also selects Cerebras as the Companion middle brain.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        model: { type: 'string', enum: ['gemma-4-31b', 'gpt-oss-120b', 'zai-glm-4.7'], description: 'Target Cerebras model.' },
+        reason: { type: 'string', description: 'Brief reason the user requested this Cerebras model.' }
+      },
+      required: ['model']
+    }
+  },
+  {
+    type: 'function',
     name: 'iphone_cancel_voice_route_switch',
     description: 'Legacy compatibility tool for cancelling a pending VoiceClaw route switch or restart. Route switches and restarts normally happen immediately now, so there is usually nothing pending to cancel.',
     parameters: {
@@ -1223,25 +1253,40 @@ function normalizeActionText(text = '') {
   return String(text || '').trim().replace(/\s+/g, ' ');
 }
 
-function isAsrPlaceholderText(text = '') {
-  const clean = normalizeActionText(text);
-  const normalized = clean
+function normalizedASRCaption(text = '') {
+  return normalizeActionText(text)
     .toLowerCase()
     .replace(/_/g, ' ')
-    .replace(/^[\s[\](){}]+|[\s[\](){}]+$/g, '')
+    .replace(/^[\s[\](){}<>]+|[\s[\](){}<>.?!:;,"'`]+$/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isAsrPlaceholderText(text = '') {
+  const normalized = normalizedASRCaption(text);
   return normalized === 'blank audio'
+    || normalized === 'no audio'
     || normalized === 'no speech detected'
+    || normalized === 'silence'
     || normalized === 'inaudible'
-    || normalized === 'unintelligible';
+    || normalized === 'unintelligible'
+    || normalized === 'typing'
+    || normalized === 'typing sound'
+    || normalized === 'typing sounds'
+    || normalized === 'keyboard'
+    || normalized === 'keyboard clacking'
+    || normalized === 'keyboard clicking'
+    || normalized === 'background noise'
+    || normalized === 'background sounds'
+    || normalized === 'music'
+    || normalized === 'beep';
 }
 
 function actionability(text = '', { allowWake = false, allowShortCommand = true, context = 'turn' } = {}) {
   const clean = normalizeActionText(text);
-  const normalized = clean.toLowerCase().replace(/[“”]/g, '"').replace(/[^a-z0-9א-ת\s?!.-]/gi, ' ').replace(/\s+/g, ' ').trim();
+  const normalized = normalizedASRCaption(clean).replace(/[“”]/g, '"').replace(/[^a-z0-9א-ת\s?!.-]/gi, ' ').replace(/\s+/g, ' ').trim();
   if (!normalized || isAsrPlaceholderText(clean)) return { actionable: false, reason: 'blank', text: clean };
-  const noiseOnly = new Set(['you','thank you','thanks','thank','thank you thank you','okay thank you','uh','um','umm','hmm','mm','ah','oh','yeah yeah','no no','keyboard','typing','keyboard clacking','keyboard clicking','typing sounds','footsteps','step','steps','walking','machine noise','machine whirring','background noise','silence','inaudible','unintelligible','blank audio','music','beep']);
+  const noiseOnly = new Set(['you','thank you','thanks','thank','thank you thank you','okay thank you','uh','um','umm','hmm','mm','ah','oh','yeah yeah','no no','keyboard','typing','typing sound','typing sounds','keyboard clacking','keyboard clicking','footsteps','step','steps','walking','machine noise','machine whirring','background noise','background sounds','silence','inaudible','unintelligible','blank audio','no audio','no speech detected','music','beep']);
   if (noiseOnly.has(normalized)) return { actionable: false, reason: 'noise-only', text: clean };
   if (/^(?:\[?inaudible\]?|\[?unintelligible\]?|\(?no speech detected\)?|\[?blank audio\]?)$/i.test(clean)) return { actionable: false, reason: 'asr-placeholder', text: clean };
   const shortCommands = new Set(['stop','cancel','abort','wait','pause','hold on','yes','no','help','status','weather','calendar','time','timer','reminder','lights','email','mail','messages','dashboard','plate','mic','microphone','voice','realtime','what are you doing','never mind','nevermind']);
@@ -2877,7 +2922,55 @@ function companionVoiceExtractMapsDestination(text = '') {
 function companionVoiceFallbackIPhoneTool(text = '') {
   const trimmed = String(text || '').trim();
   const normalized = trimmed.toLowerCase();
-  if (!trimmed || !companionVoiceLooksLikeIPhoneAction(trimmed)) return null;
+  const looksLikeVoiceClawControl = /\b(mute|mic closed|close the mic|mute me|stop listening|voice\s*engine|middle\s*brain|cerebras|qwen|gpt[-\s]*5\.?5|gpt55|route|session|transcript)\b/i.test(normalized)
+    && /\b(switch|change|set|use|mute|close|restart|end|clear|show|hide|open|stop)\b/i.test(normalized);
+  if (!trimmed || (!companionVoiceLooksLikeIPhoneAction(trimmed) && !looksLikeVoiceClawControl)) return null;
+  if (/\b(ask|tell|use|send(?: it)? to|route(?: it)? to)\s+(?:openclaw|open claw|hermes|agent|the agent|my mac|the mac|computer)\b/i.test(normalized)
+      || /\b(openclaw|open claw|hermes)\b/i.test(normalized)) {
+    return null;
+  }
+  if (/\b(companion\s+)?middle\s*brain\b/i.test(normalized) && /\b(switch|change|set|use)\b/i.test(normalized)) {
+    let brainMode = '';
+    if (/\b(qwen|local)\b/i.test(normalized)) {
+      brainMode = 'qwen3.5-2b';
+    } else if (/\b(gpt[-\s]*5\.?5|gpt55|gpt[-\s]*55)\b/i.test(normalized)) {
+      brainMode = 'gpt55-fast-low';
+    } else if (/\bcerebras\b/i.test(normalized)) {
+      brainMode = 'cerebras';
+    }
+    if (brainMode) {
+      return {
+        name: 'iphone_set_companion_middle_brain',
+        reply: 'Switching the Companion middle brain.',
+        arguments: { brain_mode: brainMode, reason: trimmed },
+      };
+    }
+  }
+  if (/\bcerebras\b/i.test(normalized) && /\b(model|gemma|oss|glm|zai|switch|change|set|use)\b/i.test(normalized)) {
+    let model = '';
+    if (/\bgemma\b/i.test(normalized) || /\b31b\b/i.test(normalized)) {
+      model = 'gemma-4-31b';
+    } else if (/\bgpt[-\s]*oss\b/i.test(normalized) || /\boss[-\s]*120b\b/i.test(normalized) || /\b120b\b/i.test(normalized)) {
+      model = 'gpt-oss-120b';
+    } else if (/\bglm\b/i.test(normalized) || /\bzai\b/i.test(normalized) || /\b4\.7\b/i.test(normalized)) {
+      model = 'zai-glm-4.7';
+    }
+    if (model) {
+      return {
+        name: 'iphone_set_cerebras_model',
+        reply: 'Switching the Cerebras model.',
+        arguments: { model, reason: trimmed },
+      };
+    }
+  }
+  if (/\b(mute|mic closed|close the mic|mute me|mute the mic|stop listening)\b/i.test(normalized)
+      && /\b(mic|microphone|mute me|listening|voiceclaw|session)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_set_microphone_muted',
+      reply: 'Mic Muted',
+      arguments: { muted: true, reason: trimmed },
+    };
+  }
   if (/\b(voice\s*)?engine\b/i.test(normalized) && /\b(switch|change|set|use)\b/i.test(normalized)) {
     let engine = '';
     if (/\b(companion|qwen|cerebras|local)\b/i.test(normalized)) {
@@ -2931,12 +3024,6 @@ function companionVoiceFallbackIPhoneTool(text = '') {
       arguments: { action: 'search_web', query: trimmed },
     };
   }
-  if (/\b(call|phone)\b/i.test(normalized)) {
-    return {
-      name: 'iphone_external_action',
-      arguments: { action: 'phone_call', query: trimmed },
-    };
-  }
   if (/\b(text|message|sms)\b/i.test(normalized)) {
     const draft = companionVoiceExtractMessageDraft(trimmed);
     if (!draft.recipient) {
@@ -2967,6 +3054,38 @@ function companionVoiceFallbackIPhoneTool(text = '') {
     return {
       name: 'iphone_external_action',
       arguments: { action: 'run_shortcut', shortcut_name: trimmed },
+    };
+  }
+  if (/\b(calendar|schedule|agenda|events?|meetings?|availability|available)\b/i.test(normalized)) {
+    if (/\b(create|add|schedule|book|put)\b/i.test(normalized)) {
+      return {
+        name: '',
+        reply: 'When should I schedule it?',
+        arguments: {},
+      };
+    }
+    return {
+      name: 'iphone_list_calendar_events',
+      reply: 'Checking your calendar.',
+      arguments: { max_items: 10 },
+    };
+  }
+  if (/\b(reminders?|remind|todo|to-do|tasks?)\b/i.test(normalized)) {
+    if (/\b(create|add|set|remind me|make)\b/i.test(normalized)) {
+      return {
+        name: 'iphone_create_reminder',
+        arguments: { title: trimmed },
+      };
+    }
+    return {
+      name: 'iphone_list_reminders',
+      arguments: { query: trimmed },
+    };
+  }
+  if (/\b(call|phone)\b/i.test(normalized)) {
+    return {
+      name: 'iphone_external_action',
+      arguments: { action: 'phone_call', query: trimmed },
     };
   }
   if (/\b(settings)\b/i.test(normalized)) {
@@ -3061,6 +3180,13 @@ function companionVoiceRepairIPhoneTool({ name = '', argumentsObject = {}, text 
   if (repairedName === 'iphone_draft_email' && !Array.isArray(repairedArguments.to)) {
     repairedArguments.to = [];
   }
+  if (repairedName === 'iphone_list_calendar_events') {
+    delete repairedArguments.range;
+    delete repairedArguments.query;
+    if (!Number.isFinite(Number(repairedArguments.max_items))) {
+      repairedArguments.max_items = 10;
+    }
+  }
   return { name: repairedName, arguments: repairedArguments };
 }
 
@@ -3073,6 +3199,23 @@ function companionVoiceMissingDraftMessageRecipient(name = '', args = {}) {
   }
   return !Array.isArray(args?.recipients)
     || args.recipients.map((item) => String(item || '').trim()).filter(Boolean).length === 0;
+}
+
+function companionVoiceToolClarification(name = '', args = {}) {
+  const toolName = String(name || '').trim();
+  if (companionVoiceMissingDraftMessageRecipient(toolName, args)) {
+    return 'Who should I send the text to?';
+  }
+  if (toolName === 'iphone_create_calendar_event') {
+    const title = String(args?.title || '').trim();
+    const start = String(args?.start_iso8601 || '').trim();
+    if (!title) return 'What should I call the calendar event?';
+    if (!start) return 'When should I schedule it?';
+  }
+  if (toolName === 'iphone_create_reminder' && !String(args?.title || '').trim()) {
+    return 'What should I remind you about?';
+  }
+  return '';
 }
 
 function companionVoiceIPhoneToolMatchesRequest(name = '', text = '') {
@@ -3095,9 +3238,11 @@ function companionVoiceIPhoneToolMatchesRequest(name = '', text = '') {
   case 'iphone_restart_voice_session':
   case 'iphone_confirm_voice_route_switch':
   case 'iphone_confirm_voice_engine_switch':
+  case 'iphone_set_companion_middle_brain':
+  case 'iphone_set_cerebras_model':
   case 'iphone_cancel_voice_route_switch':
   case 'iphone_end_voice_session':
-    return /\b(restart|reconnect|switch|route|mode|engine|voice engine|end|hang up|disconnect|stop listening)\b/i.test(normalized);
+    return /\b(restart|reconnect|switch|route|mode|engine|voice engine|middle brain|brain|cerebras|model|qwen|gpt|gemma|oss|glm|end|hang up|disconnect|stop listening)\b/i.test(normalized);
   case 'iphone_current_location':
     return /\b(location|where am i|nearby|near me|directions|navigate)\b/i.test(normalized);
   case 'iphone_lookup_contact':
@@ -3136,8 +3281,8 @@ function companionVoiceRequiresBottomRoute(text = '', routeMode = '') {
   const route = normalizeCompanionVoiceRoute(routeMode);
   if (!trimmed) return false;
   if (route === 'standalone') return false;
+  if (/\b(openclaw|open claw|hermes|agent|selected route|bottom route)\b/i.test(normalized)) return true;
   if (companionVoiceLooksLikeIPhoneAction(trimmed)) return false;
-  if (/\b(openclaw|hermes|agent|selected route|bottom route)\b/i.test(normalized)) return true;
   if (/\b(status|progress|still working|continue|resume)\b/i.test(normalized) && route !== 'gpt55-direct') return true;
   if (/\b(my|this|current|latest|recent|today'?s|now)\b/i.test(normalized)
     && /\b(files?|folders?|desktop|downloads?|documents?|calendar|messages?|email|mail|browser|tabs?|safari|maps?|location|photos?|attachments?|screen|computer|mac|phone|iphone|watch)\b/i.test(normalized)) {
@@ -3255,6 +3400,18 @@ function companionVoiceShouldPreferDirectPlan(text = '', routeMode = '', plan = 
   return !companionVoiceRequiresBottomRoute(text, routeMode);
 }
 
+function companionVoiceLooksLikeHollowActionAnswer(answer = '', text = '') {
+  const normalizedAnswer = normalizeActionText(answer);
+  const normalizedText = normalizeActionText(text);
+  if (!normalizedAnswer || !normalizedText) return false;
+  const answerIsActionAck = /\b(checking|looking|searching|opening|starting|switching|changing|setting|asking|sending|drafting|creating|scheduling|adding|calling|running|routing|handing|sharing|muting|restarting|ending)\b/.test(normalizedAnswer)
+    || /\b(i(?:'|’)?ll|i will|let me)\b.*\b(check|look|search|open|start|switch|change|set|ask|send|draft|create|schedule|add|call|run|route|hand|share|mute|restart|end)\b/.test(normalizedAnswer);
+  if (!answerIsActionAck) return false;
+  return companionVoiceLooksLikeIPhoneAction(normalizedText)
+    || companionVoiceRequiresBottomRoute(normalizedText, '')
+    || /\b(openclaw|open claw|hermes|agent|calendar|schedule|reminder|message|text|email|maps?|safari|browser|website|url|shortcut|phone|call|voice\s*engine|middle\s*brain|cerebras|mic|mute)\b/.test(normalizedText);
+}
+
 function finalizeCompanionVoicePlan(plan = {}, text = '', routeMode = '', planner = '') {
   const finalAnswer = String(plan.finalAnswer || '').trim();
   const routeMessage = String(plan.routeMessage || '').trim();
@@ -3291,11 +3448,12 @@ function finalizeCompanionVoicePlan(plan = {}, text = '', routeMode = '', planne
   });
   iphoneToolName = repairedIPhoneTool.name;
   iphoneToolArguments = repairedIPhoneTool.arguments;
-  if (companionVoiceMissingDraftMessageRecipient(iphoneToolName, iphoneToolArguments)) {
+  const clarification = companionVoiceToolClarification(iphoneToolName, iphoneToolArguments);
+  if (clarification) {
     return {
       callRoute: false,
       routeMessage: '',
-      finalAnswer: 'Who should I send the text to?',
+      finalAnswer: clarification,
       iphoneToolName: '',
       iphoneToolArguments: {},
       planner,
@@ -3314,6 +3472,45 @@ function finalizeCompanionVoicePlan(plan = {}, text = '', routeMode = '', planne
       iphoneToolArguments,
       planner,
     };
+  }
+  if (finalAnswer && companionVoiceLooksLikeHollowActionAnswer(finalAnswer, text)) {
+    const localPlan = companionVoiceLocalPlan(text, routeMode);
+    const repairedLocalTool = companionVoiceRepairIPhoneTool({
+      name: localPlan.iphoneToolName,
+      argumentsObject: localPlan.iphoneToolArguments,
+      text,
+    });
+    const localClarification = companionVoiceToolClarification(repairedLocalTool.name, repairedLocalTool.arguments);
+    if (localClarification) {
+      return {
+        callRoute: false,
+        routeMessage: '',
+        finalAnswer: localClarification,
+        iphoneToolName: '',
+        iphoneToolArguments: {},
+        planner: `${planner || 'unknown'}-hollow-action-repaired`,
+      };
+    }
+    if (repairedLocalTool.name) {
+      return {
+        callRoute: false,
+        routeMessage: '',
+        finalAnswer: localPlan.finalAnswer || finalAnswer,
+        iphoneToolName: repairedLocalTool.name,
+        iphoneToolArguments: repairedLocalTool.arguments,
+        planner: `${planner || 'unknown'}-hollow-action-repaired`,
+      };
+    }
+    if (localPlan.callRoute) {
+      return {
+        callRoute: true,
+        routeMessage: localPlan.routeMessage || String(text || '').trim(),
+        finalAnswer: '',
+        iphoneToolName: '',
+        iphoneToolArguments: {},
+        planner: `${planner || 'unknown'}-hollow-action-routed`,
+      };
+    }
   }
   if (callRoute && finalAnswer && companionVoiceShouldPreferDirectPlan(text, routeMode, { finalAnswer, routeMessage })) {
     return { callRoute: false, routeMessage: '', finalAnswer, iphoneToolName: '', iphoneToolArguments: {}, planner };
@@ -3341,7 +3538,7 @@ function extractCompanionVoicePlan(raw = '') {
         : {},
     };
   } catch {
-    return { callRoute: false, routeMessage: '', finalAnswer: trimmed, iphoneToolName: '', iphoneToolArguments: {} };
+    return { callRoute: true, routeMessage: '', finalAnswer: trimmed, iphoneToolName: '', iphoneToolArguments: {}, invalidPlanner: true };
   }
 }
 
@@ -3362,12 +3559,15 @@ Decision policy:
 - Default to call_route=false and answer in final_answer.
 - Answer locally for greetings, mic checks, simple factual questions, arithmetic, definitions, brief explanations, short jokes, simple advice, short drafting, and ordinary conversation.
 - For explicit iPhone/app actions, set iphone_tool_name and iphone_tool_arguments instead of saying you cannot do it. Good default: iphone_external_action.
-- Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, and iphone_end_voice_session for VoiceClaw session/route/engine controls.
+- Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_current_location for current location; iphone_list_calendar_events and iphone_create_calendar_event for Calendar; iphone_list_reminders and iphone_create_reminder for Reminders; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, iphone_set_companion_middle_brain, iphone_set_cerebras_model, and iphone_end_voice_session for VoiceClaw session/route/engine/middle-brain controls.
 - For text/message drafts, only set iphone_tool_name when the recipient is clear. If the user asks to draft or send a text but does not say who it is for, leave iphone_tool_name empty and ask: "Who should I send the text to?"
 - If the user asks what voice engines are available, answer concisely: GPT-Realtime-2, STT + GPT + TTS, and Companion Realtime Voice. If the user asks what voice routes are available, answer concisely: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, and Hermes HTTPS Tunnel.
+- If the user asks what Companion middle brains are available, answer concisely: Local Qwen 3.5 2B, GPT-5.5, and Cerebras. If the user asks what Cerebras models are available, answer concisely: Gemma 4 31B, GPT OSS 120B, and Z.ai GLM 4.7.
 - Location, nearby, Maps, route, and directions requests are iPhone-side actions. Do not send them to OpenClaw/Hermes unless the user explicitly asks the Mac agent to handle them.
 - For directions from "here", "my current location", or "where I am", use iphone_external_action or iphone_open_maps with mode "directions", destination set to the actual destination only, and origin omitted so Apple Maps uses the iPhone's current location.
 - Use call_route=true for explicit OpenClaw/Hermes/computer work, private/current/user-specific state, files/attachments, Mac/computer control, long research/analysis, or when the user explicitly asks to use the selected route.
+- If the user explicitly asks you to ask OpenClaw, ask Hermes, use OpenClaw, send something to OpenClaw/Hermes, or check something through the Mac/agent, set call_route=true. Do not merely say "checking" unless call_route=true or an iphone_tool_name is set.
+- Calendar, reminder, location, contact, Maps, phone, message, email, clipboard, share, camera, photo, and app-opening requests are usually iPhone tools when the user does not explicitly ask OpenClaw/Hermes/the Mac to handle them.
 - Do not set call_route=true for iPhone app-opening or iOS handoff actions unless the user asks OpenClaw/Hermes/the Mac to do it.
 - If call_route=true, final_answer should be a brief spoken acknowledgement and route_message should be the complete task for the selected bottom route.
 - If call_route=false, route_message must be empty.
@@ -3383,7 +3583,12 @@ iPhone action examples:
 - "Search the web for Qwen 3.5" -> {"call_route":false,"route_message":"","final_answer":"Searching now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"search_web","query":"Qwen 3.5"}}
 - "Text Sam that I am late" -> {"call_route":false,"route_message":"","final_answer":"Opening a message draft now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"draft_message","recipients":["Sam"],"body":"I am late"}}
 - "Draft a text saying I am late" -> {"call_route":false,"route_message":"","final_answer":"Who should I send the text to?","iphone_tool_name":"","iphone_tool_arguments":{}}
+- "What's on my calendar today?" -> {"call_route":false,"route_message":"","final_answer":"Checking your calendar.","iphone_tool_name":"iphone_list_calendar_events","iphone_tool_arguments":{"range":"today"}}
+- "Ask OpenClaw what's on my calendar today" -> {"call_route":true,"route_message":"Check what is on my calendar today and summarize it concisely.","final_answer":"Checking with OpenClaw.","iphone_tool_name":"","iphone_tool_arguments":{}}
+- "Mute me" -> {"call_route":false,"route_message":"","final_answer":"Mic Muted","iphone_tool_name":"iphone_set_microphone_muted","iphone_tool_arguments":{"muted":true,"reason":"The user asked to mute the VoiceClaw microphone."}}
 - "Switch the voice engine to Companion Realtime Voice" -> {"call_route":false,"route_message":"","final_answer":"Switching voice engines.","iphone_tool_name":"iphone_confirm_voice_engine_switch","iphone_tool_arguments":{"engine":"companion-realtime-voice"}}
+- "Switch the Companion middle brain to Cerebras" -> {"call_route":false,"route_message":"","final_answer":"Switching the Companion middle brain.","iphone_tool_name":"iphone_set_companion_middle_brain","iphone_tool_arguments":{"brain_mode":"cerebras"}}
+- "Use GPT OSS 120B for Cerebras" -> {"call_route":false,"route_message":"","final_answer":"Switching the Cerebras model.","iphone_tool_name":"iphone_set_cerebras_model","iphone_tool_arguments":{"model":"gpt-oss-120b"}}
 - "What files are on my Mac desktop?" in an OpenClaw or Hermes route -> {"call_route":true,"route_message":"What files are on my Mac desktop?","final_answer":"Checking that now.","iphone_tool_name":"","iphone_tool_arguments":{}}`;
 }
 
@@ -3399,9 +3604,10 @@ Rules:
 - Default: answer directly in final_answer, call_route=false, route_message="".
 - Answer directly for greetings, mic checks, simple facts, math, definitions, brief explanations, ordinary chat, and short drafting.
 - Use iPhone tools for phone/app actions; do not say you cannot open apps. Good default: iphone_external_action.
-- Tool names: iphone_external_action, iphone_open_url, iphone_search_web, iphone_open_maps, iphone_draft_message, iphone_draft_email, iphone_start_phone_call, iphone_run_shortcut, iphone_share, iphone_read_clipboard, iphone_copy_text, iphone_set_transcript_visible, iphone_clear_transcript, iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, iphone_end_voice_session.
+- Tool names: iphone_external_action, iphone_open_url, iphone_search_web, iphone_open_maps, iphone_current_location, iphone_list_calendar_events, iphone_create_calendar_event, iphone_list_reminders, iphone_create_reminder, iphone_draft_message, iphone_draft_email, iphone_start_phone_call, iphone_run_shortcut, iphone_share, iphone_read_clipboard, iphone_copy_text, iphone_set_transcript_visible, iphone_clear_transcript, iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, iphone_set_companion_middle_brain, iphone_set_cerebras_model, iphone_end_voice_session.
+- For "mute me", "mute the mic", "close the mic", or "stop listening" when the user means this VoiceClaw microphone, use iphone_set_microphone_muted with {"muted":true}. Do not use a voice unmute command.
 - If drafting/sending a text and recipient is missing, no tool; final_answer="Who should I send the text to?"
-- Route only for explicit OpenClaw/Hermes/Mac/computer work, files, attachments, private/current user state, long research/analysis, or when the user explicitly asks the selected route/agent to do it.
+- Route only for explicit OpenClaw/Hermes/Mac/computer work, files, attachments, private/current user state, long research/analysis, or when the user explicitly asks the selected route/agent to do it. If the user says ask/use/send to OpenClaw or Hermes, set call_route=true.
 - If routing: call_route=true, route_message=complete task, final_answer=brief acknowledgement.
 - If using an iPhone tool: call_route=false, route_message="", final_answer=brief acknowledgement.
 - Engine options: GPT-Realtime-2, STT + GPT + TTS, Companion Realtime Voice.
@@ -3604,7 +3810,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
     ? companionVoiceCompactPlannerPrompt(text, { routeMode, context })
     : companionVoicePlannerPrompt(text, { routeMode, context });
   const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
-  const defaultPlannerTimeoutMs = qwenThinking ? 90000 : 12000;
+  const defaultPlannerTimeoutMs = qwenThinking ? 90000 : 30000;
   const requestedPlannerTimeoutMs = Number(process.env.COMPANION_VOICE_PLANNER_TIMEOUT_MS || defaultPlannerTimeoutMs);
   const plannerTimeoutMs = Number.isFinite(requestedPlannerTimeoutMs)
     ? Math.max(requestedPlannerTimeoutMs, 3000)
@@ -4034,13 +4240,14 @@ async function runCompanionVoiceTurn({ req, payload, signal } = {}) {
     signal,
   });
   const planningMs = Date.now() - planningStartedAt;
-  const routeMessage = (plan.routeMessage || transcript).trim();
-  const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
   const iphoneToolName = String(plan.iphoneToolName || '').trim();
   const iphoneToolArguments = plan.iphoneToolArguments && typeof plan.iphoneToolArguments === 'object' && !Array.isArray(plan.iphoneToolArguments)
     ? plan.iphoneToolArguments
     : {};
-  const shouldCallRoute = !iphoneToolName && plan.callRoute !== false && !!routeMessage;
+  const routeCandidate = !iphoneToolName && plan.callRoute !== false;
+  const routeMessage = routeCandidate ? (plan.routeMessage || transcript).trim() : '';
+  const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
+  const shouldCallRoute = routeCandidate && !!routeMessage;
   const routeJob = shouldCallRoute
     ? startCompanionVoiceRouteJob({
         sessionToken,
@@ -4770,6 +4977,7 @@ wss.on('connection', (ws) => {
   const session = {
     id: sessionId,
     audioChunks: [],          // collected binary audio buffers for real turns
+    audioBytesReceived: 0,
     wakeProbeChunks: [],      // short hands-free wake probe buffers
     bargeProbeChunks: [],     // short probes while response generation/playback is active
     bargeMode: 'generation',
@@ -4835,7 +5043,9 @@ wss.on('connection', (ws) => {
       } else if (session.collectingWakeProbe) {
         session.wakeProbeChunks.push(Buffer.from(data));
       } else {
-        session.audioChunks.push(Buffer.from(data));
+        const chunk = Buffer.from(data);
+        session.audioChunks.push(chunk);
+        session.audioBytesReceived += chunk.length;
       }
       return;
     }
@@ -4848,6 +5058,7 @@ wss.on('connection', (ws) => {
       case 'start_session': {
         cancelPipeline();
         session.audioChunks = [];
+        session.audioBytesReceived = 0;
         session.wakeProbeChunks = [];
         session.bargeProbeChunks = [];
         session.collectingWakeProbe = false;
@@ -4942,15 +5153,26 @@ wss.on('connection', (ws) => {
       case 'audio_end':
         // Client finished recording an utterance — process it
         session.collectingWakeProbe = false;
-        if (session.audioChunks.length === 0 && Number(msg.audioBytes || 0) > 0) {
-          console.log(`[ws] audio_end arrived before binary audio session=${session.id} clientBytes=${Number(msg.audioBytes || 0)}; waiting for frames`);
-          await sleep(140);
+        {
+          const expectedBytes = Number(msg.audioBytes || 0);
+          if (expectedBytes > session.audioBytesReceived) {
+            const start = Date.now();
+            while (Date.now() - start < 650 && expectedBytes > session.audioBytesReceived) {
+              if (session.audioChunks.length === 0) {
+                console.log(`[ws] audio_end arrived before binary audio session=${session.id} clientBytes=${expectedBytes}; waiting for frames`);
+              }
+              await sleep(35);
+            }
+            if (expectedBytes > session.audioBytesReceived) {
+              console.warn(`[ws] audio_end byte mismatch session=${session.id} expected=${expectedBytes} received=${session.audioBytesReceived}`);
+            }
+          }
         }
         if (session.audioChunks.length === 0) {
           send({ type: 'error', message: `No audio received for committed turn (clientBytes=${Number(msg.audioBytes || 0)})` });
           break;
         }
-        console.log(`[ws] audio_end session=${session.id} chunks=${session.audioChunks.length} clientBytes=${Number(msg.audioBytes || 0)}`);
+        console.log(`[ws] audio_end session=${session.id} chunks=${session.audioChunks.length} serverBytes=${session.audioBytesReceived} clientBytes=${Number(msg.audioBytes || 0)}`);
         await processUtterance(session, ws, send, cancelPipeline);
         break;
 
@@ -5201,6 +5423,7 @@ async function processUtterance(session, ws, send, cancelPipeline) {
   if (session.processing) {
     const busyAudio = Buffer.concat(session.audioChunks);
     session.audioChunks = [];
+    session.audioBytesReceived = 0;
     queueBusyUtterance(session, ws, send, busyAudio).catch((err) => console.error('[queue-busy]', err.message));
     return;
   }
@@ -5213,6 +5436,7 @@ async function processUtterance(session, ws, send, cancelPipeline) {
   const energy = shouldSkipAudio(rawAudio, MIN_TURN_RMS);
   console.log(`[turn] start session=${session.id} turn=${turnId} bytes=${rawAudio.length} rms=${Math.round(energy.rms)} peak=${energy.peak}`);
   session.audioChunks = [];
+  session.audioBytesReceived = 0;
   if (energy.skip) {
     console.log(`[turn] skipped low-energy audio turn=${turnId} rms=${Math.round(energy.rms)} threshold=${energy.threshold}`);
     send({ type: 'transcript', text: '(blank audio ignored)', final: true, filtered: true, reason: 'low-energy', turnId });
@@ -5256,6 +5480,53 @@ async function processUtterance(session, ws, send, cancelPipeline) {
   }
 }
 
+function sendCompanionVoiceFilteredTerminal(send, session, {
+  turnId,
+  transcript = '',
+  rawText = '',
+  reason = 'filtered',
+  startedAt = Date.now(),
+  transport = 'websocket-streaming',
+} = {}) {
+  const payload = {
+    ...(session?.companionVoicePayload || {}),
+    sessionToken: session?.companionVoicePayload?.sessionToken || session?.processingConfig?.sessionToken || `ws-${session?.id || Date.now().toString(36)}`,
+  };
+  const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || `companion-voice-${Date.now().toString(36)}`);
+  const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  send({
+    type: 'companion_voice_result',
+    turnId,
+    ok: true,
+    async: false,
+    done: true,
+    filtered: true,
+    filterReason: reason,
+    routeMode,
+    brainMode,
+    qwenThinking: companionVoiceQwenThinkingEnabled(payload),
+    planner: 'filter',
+    iphoneToolName: '',
+    iphoneToolArguments: {},
+    sessionToken,
+    transcript,
+    rawText,
+    routeMessage: '',
+    routeReply: '',
+    reply: '',
+    elapsedMs: Math.max(0, Date.now() - startedAt),
+    asrMs: 0,
+    planningMs: 0,
+    routeMs: 0,
+    ttsMs: 0,
+    audioBytes: 0,
+    audioStreamed: false,
+    audioContentType: '',
+    transport,
+  });
+}
+
 async function processCompanionVoiceStreamingUtterance(session, ws, send, cancelPipeline) {
   if (session.processing) {
     console.log('[companion-stream] replacing active turn with new user audio');
@@ -5267,10 +5538,13 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
   const turnStart = Date.now();
   const rawAudio = Buffer.concat(session.audioChunks);
   session.audioChunks = [];
+  session.audioBytesReceived = 0;
   const energy = shouldSkipAudio(rawAudio, MIN_TURN_RMS);
   console.log(`[companion-stream] start session=${session.id} turn=${turnId} bytes=${rawAudio.length} rms=${Math.round(energy.rms)} peak=${energy.peak}`);
   if (!rawAudio.length || energy.skip) {
-    send({ type: 'transcript', text: '(blank audio ignored)', final: true, filtered: true, reason: rawAudio.length ? 'low-energy' : 'empty', turnId });
+    const reason = rawAudio.length ? 'low-energy' : 'empty';
+    send({ type: 'transcript', text: '(blank audio ignored)', final: true, filtered: true, reason, turnId });
+    sendCompanionVoiceFilteredTerminal(send, session, { turnId, reason, startedAt: turnStart });
     send({ type: 'status', status: 'ready' });
     session.processing = false;
     return;
@@ -5295,7 +5569,15 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
     }
 
     if (!transcript || isAsrPlaceholderText(transcript)) {
-      send({ type: 'transcript', text: transcript || '(no speech detected)', final: true, filtered: true, reason: transcript ? 'asr-placeholder' : 'empty', turnId });
+      const reason = transcript ? 'asr-placeholder' : 'empty';
+      send({ type: 'transcript', text: transcript || '(no speech detected)', final: true, filtered: true, reason, turnId });
+      sendCompanionVoiceFilteredTerminal(send, session, {
+        turnId,
+        transcript,
+        rawText: transcript,
+        reason,
+        startedAt: turnStart,
+      });
       send({ type: 'status', status: 'ready', turnId });
       return;
     }
@@ -5303,6 +5585,13 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
     const gate = actionability(transcript, { allowWake: false, allowShortCommand: true, context: 'companion-stream' });
     if (!gate.actionable) {
       send({ type: 'transcript', text: gate.reason === 'noise-only' ? '(background noise ignored)' : '(unclear audio ignored)', rawText: transcript, final: true, filtered: true, reason: gate.reason, turnId });
+      sendCompanionVoiceFilteredTerminal(send, session, {
+        turnId,
+        transcript: gate.text || '',
+        rawText: transcript,
+        reason: gate.reason,
+        startedAt: turnStart,
+      });
       send({ type: 'status', status: 'ready', turnId });
       return;
     }
@@ -5341,13 +5630,23 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
       return;
     }
 
-    const routeMessage = (plan.routeMessage || routedTranscript).trim();
-    const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
     const iphoneToolName = String(plan.iphoneToolName || '').trim();
     const iphoneToolArguments = plan.iphoneToolArguments && typeof plan.iphoneToolArguments === 'object' && !Array.isArray(plan.iphoneToolArguments)
       ? plan.iphoneToolArguments
       : {};
-    const shouldCallRoute = !iphoneToolName && plan.callRoute !== false && !!routeMessage;
+    const routeCandidate = !iphoneToolName && plan.callRoute !== false;
+    const routeMessage = routeCandidate ? (plan.routeMessage || routedTranscript).trim() : '';
+    const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
+    const shouldCallRoute = routeCandidate && !!routeMessage;
+    const iphoneToolDispatchedEarly = !!iphoneToolName;
+    if (iphoneToolDispatchedEarly) {
+      send({
+        type: 'iphone_tool',
+        turnId,
+        iphoneToolName,
+        iphoneToolArguments,
+      });
+    }
     const routeJob = shouldCallRoute
       ? startCompanionVoiceRouteJob({
           sessionToken,
@@ -5392,6 +5691,7 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
       planner: plan.planner,
       iphoneToolName,
       iphoneToolArguments,
+      iphoneToolDispatchedEarly,
       sessionToken,
       transcript: routedTranscript,
       routeMessage,
@@ -5477,6 +5777,14 @@ async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = 
     const gate = actionability(trimmed, { allowWake: false, allowShortCommand: true, context: 'companion-stream-text' });
     if (!gate.actionable) {
       send({ type: 'transcript', text: gate.reason === 'noise-only' ? '(background noise ignored)' : '(unclear text ignored)', rawText: trimmed, final: true, filtered: true, reason: gate.reason, turnId });
+      sendCompanionVoiceFilteredTerminal(send, session, {
+        turnId,
+        transcript: gate.text || '',
+        rawText: trimmed,
+        reason: gate.reason,
+        startedAt,
+        transport: 'websocket-text-smoke',
+      });
       send({ type: 'status', status: 'ready', turnId });
       return;
     }
@@ -5508,13 +5816,14 @@ async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = 
     const planningMs = Date.now() - planningStartedAt;
     if (isTurnStale(session, turnId)) return;
 
-    const routeMessage = (plan.routeMessage || routedTranscript).trim();
-    const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
     const iphoneToolName = String(plan.iphoneToolName || '').trim();
     const iphoneToolArguments = plan.iphoneToolArguments && typeof plan.iphoneToolArguments === 'object' && !Array.isArray(plan.iphoneToolArguments)
       ? plan.iphoneToolArguments
       : {};
-    const shouldCallRoute = !iphoneToolName && plan.callRoute !== false && !!routeMessage;
+    const routeCandidate = !iphoneToolName && plan.callRoute !== false;
+    const routeMessage = routeCandidate ? (plan.routeMessage || routedTranscript).trim() : '';
+    const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
+    const shouldCallRoute = routeCandidate && !!routeMessage;
     const routeJob = shouldCallRoute
       ? startCompanionVoiceRouteJob({
           sessionToken,
