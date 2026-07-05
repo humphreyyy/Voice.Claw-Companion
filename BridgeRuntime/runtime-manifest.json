@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "product": "VoiceClaw Companion",
+  "version": "dev",
+  "build": "dev",
+  "runtimePackageVersion": "0.1.43",
+  "runtimeHash": "dev",
+  "entryPoint": "server/index.js",
+  "generatedAt": "development"
+}

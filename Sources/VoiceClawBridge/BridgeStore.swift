@@ -151,6 +151,7 @@ final class BridgeStore: ObservableObject {
     @Published var bridgeURL: String = ""
     @Published var tailscaleSummary: String = "Not checked"
     @Published var localBridgeSummary: String = "Not checked"
+    @Published var runtimeIntegritySummary: String = "Runtime identity has not been checked."
     @Published var realtimeRuntimeSummary: String = "Realtime runtime not checked."
     @Published var realtimeAuthStatusSummary: String = "OpenAI auth status not checked."
     @Published var companionVoiceSummary: String = "Companion Realtime Voice dependencies not checked."
@@ -208,6 +209,7 @@ final class BridgeStore: ObservableObject {
     private var automaticUpdateTask: Task<Void, Never>?
     private var isSyncingSparkleUpdatePreferences = false
     private var suppressTransientSetupWarningUntil: Date?
+    private var runtimeSelfHealAttempted = false
 
     enum BridgeStatus: Equatable {
         case idle
@@ -916,6 +918,7 @@ final class BridgeStore: ObservableObject {
             let diagnostics = try JSONDecoder().decode(BridgeDiagnostics.self, from: Data(output.utf8))
             localBridgeSummary = diagnostics.local.summary
             tailscaleSummary = diagnostics.tailscale.summary
+            runtimeIntegritySummary = diagnostics.runtimeIntegrity?.summary ?? "Runtime identity was not reported by this bridge runtime."
             companionVoiceState = diagnostics.companionVoice?.state ?? "not_reported"
             companionVoiceSummary = diagnostics.companionVoice?.summary ?? "Companion Realtime Voice dependencies were not reported by this bridge runtime."
             let installPlan = diagnostics.companionVoice?.installPlan
@@ -947,8 +950,14 @@ final class BridgeStore: ObservableObject {
             }
             await refreshRealtimeRuntimeStatus()
 
+            if await refreshLaunchAgentIfRuntimeStale(diagnostics) {
+                return
+            }
+
             guard !status.isWorking else { return }
-            if diagnostics.local.state == "running", diagnostics.tailscale.state == "voiceclaw_mapping" {
+            if diagnostics.runtimeIntegrity?.state == "stale" || diagnostics.runtimeIntegrity?.state == "needs_restart" {
+                status = .warning("Runtime Needs Refresh")
+            } else if diagnostics.local.state == "running", diagnostics.tailscale.state == "voiceclaw_mapping" {
                 status = .ready
                 suppressTransientSetupWarningUntil = nil
             } else if diagnostics.tailscale.state == "stale_voiceclaw_mapping" || diagnostics.tailscale.state == "occupied_by_other_mapping" || (diagnostics.savedConfigExists && diagnostics.tailscale.state == "not_available") {
@@ -965,6 +974,7 @@ final class BridgeStore: ObservableObject {
         } catch {
             localBridgeSummary = "Diagnostics could not run."
             tailscaleSummary = Self.userFacingSetupError(error)
+            runtimeIntegritySummary = "Runtime identity could not be checked because bridge diagnostics failed."
             realtimeRuntimeSummary = "Realtime runtime status could not be read because bridge diagnostics failed."
             realtimeAuthStatusSummary = "OpenAI auth status could not be read because bridge diagnostics failed."
             companionVoiceSummary = "Companion Realtime Voice dependencies could not be checked because bridge diagnostics failed."
@@ -980,6 +990,33 @@ final class BridgeStore: ObservableObject {
                 status = .warning("Diagnostics Need Attention")
             }
         }
+    }
+
+    private func refreshLaunchAgentIfRuntimeStale(_ diagnostics: BridgeDiagnostics) async -> Bool {
+        guard diagnostics.savedConfigExists,
+              diagnostics.runtimeIntegrity?.selfHealRecommended == true,
+              !runtimeSelfHealAttempted,
+              !status.isWorking
+        else { return false }
+
+        runtimeSelfHealAttempted = true
+        status = .working("Refreshing Bridge Runtime")
+        runtimeIntegritySummary = "Refreshing the LaunchAgent so the bridge uses this Companion app's packaged runtime."
+        lastLog = runtimeIntegritySummary
+
+        do {
+            let output = try await runSetupScript(arguments: ["--refresh-launch-agent", "--json", "--port", port])
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            lastLog = trimmed.isEmpty ? "Refreshed VoiceClaw bridge LaunchAgent from the current app runtime." : trimmed
+            status = .idle
+            await refreshBridgeDiagnostics()
+        } catch {
+            runtimeIntegritySummary = Self.userFacingSetupError(error)
+            lastLog = runtimeIntegritySummary
+            status = .warning("Runtime Refresh Failed")
+        }
+
+        return true
     }
 
     private func confirmCompanionVoiceDependencyInstall() -> Bool {
@@ -1413,6 +1450,7 @@ private struct BridgeDiagnostics: Decodable {
     let savedConfigExists: Bool
     let local: Component
     let tailscale: Component
+    let runtimeIntegrity: Component?
     let companionVoice: Component?
     let access: AccessDiagnostics?
     let suggestedAction: String
@@ -1421,6 +1459,7 @@ private struct BridgeDiagnostics: Decodable {
         let state: String
         let summary: String
         let canClearSafely: Bool?
+        let selfHealRecommended: Bool?
         let installPlan: InstallPlan?
     }
 

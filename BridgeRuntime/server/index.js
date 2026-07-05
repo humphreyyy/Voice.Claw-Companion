@@ -27,6 +27,8 @@ import {
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 normalizeProcessPath();
 const CLIENT_DIR = join(__dirname, '..', 'client');
+const RUNTIME_MANIFEST_PATH = join(__dirname, '..', 'runtime-manifest.json');
+const RUNTIME_MANIFEST = loadRuntimeManifest();
 const PORT = parseInt(process.env.VB_PORT || '12321', 10);
 const BIND_HOST = (process.env.VB_BIND_HOST || process.env.HOST || '127.0.0.1').trim() || '127.0.0.1';
 const RAW_BASE_PATH = (process.env.VB_BASE_PATH || '').trim();
@@ -46,6 +48,35 @@ const MIME = {
   '.svg':  'image/svg+xml',
   '.ico':  'image/x-icon',
 };
+
+function loadRuntimeManifest() {
+  try {
+    const parsed = JSON.parse(readFileSync(RUNTIME_MANIFEST_PATH, 'utf8'));
+    return {
+      schema: parsed.schema || 1,
+      product: String(parsed.product || 'VoiceClaw Companion'),
+      version: String(parsed.version || ''),
+      build: String(parsed.build || ''),
+      runtimePackageVersion: String(parsed.runtimePackageVersion || ''),
+      runtimeHash: String(parsed.runtimeHash || ''),
+      entryPoint: String(parsed.entryPoint || 'server/index.js'),
+      generatedAt: String(parsed.generatedAt || ''),
+      sourceCommit: String(parsed.sourceCommit || ''),
+    };
+  } catch {
+    return {
+      schema: 1,
+      product: 'VoiceClaw Companion',
+      version: '',
+      build: '',
+      runtimePackageVersion: '',
+      runtimeHash: '',
+      entryPoint: 'server/index.js',
+      generatedAt: '',
+      sourceCommit: '',
+    };
+  }
+}
 
 const REALTIME_MODEL = process.env.REALTIME_MODEL || 'gpt-realtime-2';
 const REALTIME_TRANSCRIPTION_MODEL = process.env.REALTIME_TRANSCRIPTION_MODEL || 'gpt-realtime-whisper';
@@ -1722,6 +1753,7 @@ function bridgeStatusSnapshot(sessionToken = '') {
   const sessionConfig = realtimeSessionConfigs.get(key) || null;
   return {
     generatedAt: new Date().toISOString(),
+    runtime: RUNTIME_MANIFEST,
     active: !!current,
     turnId: current?.turnId || null,
     activeForMs: current ? Date.now() - current.startedAt : 0,
@@ -4736,7 +4768,7 @@ const httpServer = createServer(async (req, res) => {
 
     if (urlPath === '/healthz') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, port: PORT, bindHost: BIND_HOST, basePath: BASE_PATH || '/', wakePhrase: WAKE_PHRASE, realtimeBridge: true, auth: bridgeAuthSummary(), tts: getTtsStatus() }));
+      res.end(JSON.stringify({ ok: true, port: PORT, bindHost: BIND_HOST, basePath: BASE_PATH || '/', wakePhrase: WAKE_PHRASE, realtimeBridge: true, runtime: RUNTIME_MANIFEST, auth: bridgeAuthSummary(), tts: getTtsStatus() }));
       return;
     }
 
@@ -4755,6 +4787,7 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({
         ok: true,
         product: 'VoiceClaw Companion',
+        runtime: RUNTIME_MANIFEST,
         auth: bridgeAuthSummary(),
         wsPath: `${BASE_PATH}/ws` || '/ws',
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',

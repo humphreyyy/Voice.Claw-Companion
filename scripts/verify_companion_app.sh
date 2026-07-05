@@ -55,6 +55,35 @@ SPARKLE_AUTOMATIC_UPDATES="$(plist_value "$INFO_PLIST" SUAutomaticallyUpdate)"
 MAIN_EXECUTABLE="$CONTENTS_DIR/MacOS/$EXECUTABLE_NAME"
 require_executable "$MAIN_EXECUTABLE"
 
+RUNTIME_MANIFEST="$CONTENTS_DIR/Resources/BridgeRuntime/runtime-manifest.json"
+require_path "$RUNTIME_MANIFEST"
+/usr/bin/python3 - "$RUNTIME_MANIFEST" "$SHORT_VERSION" "$BUNDLE_VERSION" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+expected_version = sys.argv[2]
+expected_build = sys.argv[3]
+manifest = json.loads(manifest_path.read_text())
+
+def fail(message):
+    print(f"VoiceClaw Companion app verification failed: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+if manifest.get("product") != "VoiceClaw Companion":
+    fail("runtime manifest product is wrong")
+if str(manifest.get("version", "")) != expected_version:
+    fail(f"runtime manifest version {manifest.get('version')} does not match app version {expected_version}")
+if str(manifest.get("build", "")) != expected_build:
+    fail(f"runtime manifest build {manifest.get('build')} does not match app build {expected_build}")
+runtime_hash = str(manifest.get("runtimeHash", ""))
+if len(runtime_hash) != 64 or any(ch not in "0123456789abcdef" for ch in runtime_hash):
+    fail("runtime manifest hash is missing or malformed")
+if manifest.get("entryPoint") != "server/index.js":
+    fail("runtime manifest entry point is not server/index.js")
+PY
+
 SPARKLE_BUNDLE="$CONTENTS_DIR/Frameworks/Sparkle.framework"
 require_path "$SPARKLE_BUNDLE"
 

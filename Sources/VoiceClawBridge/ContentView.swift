@@ -556,6 +556,7 @@ private struct AccessPanel: View {
                     StatusRow(title: "Access Summary", value: store.accessSummary, symbol: "checkmark.shield")
                     StatusRow(title: "Launch upon Startup", value: store.launchAtStartupSummary, symbol: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
                     StatusRow(title: "Local Bridge", value: store.localBridgeSummary, symbol: "server.rack")
+                    StatusRow(title: "Bridge Runtime", value: store.runtimeIntegritySummary, symbol: "checkmark.seal")
                     StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
                     StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
                     StatusRow(title: "OpenClaw Folder", value: store.openClawInstallPath, symbol: "folder")
@@ -1204,6 +1205,7 @@ private struct StatusPanel: View {
             PanelHeader(title: "Diagnostics", subtitle: "Use this when setup fails, pairing fails, or the phone cannot reach the Mac. Status checks also run automatically at launch and after setup.", symbol: "checklist")
 
             StatusRow(title: "Local Bridge", value: store.localBridgeSummary, symbol: "server.rack")
+            StatusRow(title: "Bridge Runtime", value: store.runtimeIntegritySummary, symbol: "checkmark.seal")
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
             StatusRow(title: "Realtime Runtime", value: store.realtimeRuntimeSummary, symbol: "waveform.path.ecg")
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")

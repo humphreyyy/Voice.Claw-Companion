@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { constants, existsSync, readFileSync } from 'node:fs';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -17,6 +17,7 @@ const PROJECT_ROOT = join(__dirname, '..');
 const HOME = process.env.HOME || '';
 const CONFIG_DIR = join(HOME, '.voiceclaw');
 const CONFIG_FILE = join(CONFIG_DIR, 'bridge.json');
+const RUNTIME_MANIFEST_FILE = join(PROJECT_ROOT, 'runtime-manifest.json');
 const LAUNCH_AGENT_LABEL = 'ai.voiceclaw.bridge';
 const LAUNCH_AGENT_FILE = join(HOME, 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
 const DEFAULT_BRIDGE_PORT = 12321;
@@ -45,6 +46,7 @@ function parseArgs(argv) {
     diagnose: false,
     suggestPort: false,
     installCompanionVoiceDependencies: false,
+    refreshLaunchAgent: false,
     port: null,
     openClawInstallPath: null,
     openClawAgentName: null,
@@ -63,6 +65,7 @@ function parseArgs(argv) {
     else if (arg === '--diagnose') options.diagnose = true;
     else if (arg === '--suggest-port') options.suggestPort = true;
     else if (arg === '--install-companion-voice-deps') options.installCompanionVoiceDependencies = true;
+    else if (arg === '--refresh-launch-agent') options.refreshLaunchAgent = true;
     else if (arg === '--port') options.port = Number(argv[++index]);
     else if (arg.startsWith('--port=')) options.port = Number(arg.slice('--port='.length));
     else if (arg === '--openclaw-path') options.openClawInstallPath = argv[++index] || options.openClawInstallPath;
@@ -102,6 +105,7 @@ Options:
   --suggest-port             Print a fresh unused test port without changing system state
   --install-companion-voice-deps
                              Install missing Companion Realtime Voice dependencies after app confirmation
+  --refresh-launch-agent     Reinstall and restart only VoiceClaw's LaunchAgent from the current app runtime
   --json                     Print only the phone setup JSON
   --port 12321               Bridge/Tailscale HTTPS port
   --openclaw-path PATH       OpenClaw install/config folder, usually ~/.openclaw
@@ -414,6 +418,67 @@ async function removeVoiceClawTailscaleServe(port) {
   };
 }
 
+function readRuntimeManifest(root = PROJECT_ROOT) {
+  const manifestPath = join(root, 'runtime-manifest.json');
+  try {
+    const parsed = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    return {
+      schema: parsed.schema || 1,
+      product: String(parsed.product || 'VoiceClaw Companion'),
+      version: String(parsed.version || ''),
+      build: String(parsed.build || ''),
+      runtimePackageVersion: String(parsed.runtimePackageVersion || ''),
+      runtimeHash: String(parsed.runtimeHash || ''),
+      entryPoint: String(parsed.entryPoint || 'server/index.js'),
+      generatedAt: String(parsed.generatedAt || ''),
+      sourceCommit: String(parsed.sourceCommit || ''),
+      manifestPath,
+    };
+  } catch {
+    let entryPointHash = '';
+    const entryPoint = join(root, 'server', 'index.js');
+    try {
+      entryPointHash = createHash('sha256').update(readFileSync(entryPoint)).digest('hex');
+    } catch {}
+    return {
+      schema: 1,
+      product: 'VoiceClaw Companion',
+      version: '',
+      build: '',
+      runtimePackageVersion: '',
+      runtimeHash: entryPointHash,
+      entryPoint: 'server/index.js',
+      generatedAt: '',
+      sourceCommit: '',
+      manifestPath,
+    };
+  }
+}
+
+function runtimeEntryPoint(root = PROJECT_ROOT) {
+  return join(root, readRuntimeManifest(root).entryPoint || 'server/index.js');
+}
+
+function normalizeComparablePath(value = '') {
+  return String(value || '').replace(/\/+$/g, '');
+}
+
+function runtimeVersionLabel(manifest = {}) {
+  const version = [manifest.version, manifest.build].filter(Boolean).join(' ');
+  const hash = manifest.runtimeHash ? `hash ${manifest.runtimeHash.slice(0, 12)}` : 'no hash';
+  return `${version || 'unknown version'} (${hash})`;
+}
+
+async function readLaunchAgentPlist() {
+  if (!existsSync(LAUNCH_AGENT_FILE)) return null;
+  try {
+    const { stdout } = await execFileAsync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', LAUNCH_AGENT_FILE], { timeout: 5000, maxBuffer: 256 * 1024 });
+    return JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+}
+
 async function checkLocalBridge(port) {
   return new Promise((resolve) => {
     const request = http.get({
@@ -438,10 +503,15 @@ async function checkLocalBridge(port) {
           const parsed = JSON.parse(body || '{}');
           if (parsed.ok === true) {
             const authRequired = parsed.auth?.required === true;
+            const runtime = parsed.runtime || null;
+            const runtimeSummary = runtime?.runtimeHash
+              ? ` Runtime ${runtimeVersionLabel(runtime)}.`
+              : ' Runtime identity not reported.';
             resolve({
               state: 'running',
-              summary: `Running on localhost:${port}, ${authRequired ? 'auth on' : 'auth off'}.`,
+              summary: `Running on localhost:${port}, ${authRequired ? 'auth on' : 'auth off'}.${runtimeSummary}`,
               authRequired,
+              runtime,
             });
             return;
           }
@@ -496,6 +566,11 @@ async function checkLaunchAgentAccess(local = {}) {
   const launchAgentsDir = join(HOME, 'Library', 'LaunchAgents');
   const dirWritable = await pathAccessible(launchAgentsDir, constants.W_OK).catch(() => false);
   const plistExists = existsSync(LAUNCH_AGENT_FILE);
+  const expectedRuntimeEntryPoint = runtimeEntryPoint(PROJECT_ROOT);
+  const plist = await readLaunchAgentPlist();
+  const programArguments = Array.isArray(plist?.ProgramArguments) ? plist.ProgramArguments : [];
+  const configuredRuntimeEntryPoint = programArguments[1] || '';
+  const runtimePathMatches = normalizeComparablePath(configuredRuntimeEntryPoint) === normalizeComparablePath(expectedRuntimeEntryPoint);
   let loaded = false;
   let printSummary = '';
   try {
@@ -511,11 +586,104 @@ async function checkLaunchAgentAccess(local = {}) {
     dirWritable,
     plistExists,
     loaded,
+    programArguments,
+    expectedRuntimeEntryPoint,
+    configuredRuntimeEntryPoint,
+    runtimePathMatches,
     summary: loaded
-      ? `LaunchAgent ${LAUNCH_AGENT_LABEL} is loaded.`
+      ? `LaunchAgent ${LAUNCH_AGENT_LABEL} is loaded${runtimePathMatches ? ' with the current runtime path' : ', but it points at an older runtime path'}.`
       : `${plistExists ? 'LaunchAgent plist exists' : 'LaunchAgent plist is not installed'}, but launchctl does not report it loaded.`,
     detail: printSummary,
     localBridgeRunning: local?.state === 'running',
+  };
+}
+
+function checkRuntimeIntegrity(local = {}, launchAgent = {}) {
+  const bundled = readRuntimeManifest(PROJECT_ROOT);
+  const running = local?.runtime || null;
+  const expectedRuntimeEntryPoint = launchAgent.expectedRuntimeEntryPoint || runtimeEntryPoint(PROJECT_ROOT);
+  const configuredRuntimeEntryPoint = launchAgent.configuredRuntimeEntryPoint || '';
+
+  if (!launchAgent.plistExists) {
+    return {
+      state: 'needs_setup',
+      summary: 'No VoiceClaw LaunchAgent is installed yet. Click Install and Start to install the current runtime.',
+      bundled,
+      running,
+      expectedRuntimeEntryPoint,
+      configuredRuntimeEntryPoint,
+      selfHealRecommended: false,
+    };
+  }
+
+  if (!launchAgent.runtimePathMatches) {
+    return {
+      state: 'stale',
+      summary: `LaunchAgent points at ${configuredRuntimeEntryPoint || 'an unknown runtime'}, not the current app runtime at ${expectedRuntimeEntryPoint}.`,
+      bundled,
+      running,
+      expectedRuntimeEntryPoint,
+      configuredRuntimeEntryPoint,
+      selfHealRecommended: true,
+    };
+  }
+
+  if (!launchAgent.loaded || local?.state !== 'running') {
+    return {
+      state: 'needs_restart',
+      summary: 'LaunchAgent is configured for the current runtime, but the bridge process is not running. Restart the LaunchAgent.',
+      bundled,
+      running,
+      expectedRuntimeEntryPoint,
+      configuredRuntimeEntryPoint,
+      selfHealRecommended: true,
+    };
+  }
+
+  if (!bundled.runtimeHash || bundled.runtimeHash === 'dev') {
+    return {
+      state: 'unknown',
+      summary: `Current runtime manifest is not a packaged release manifest. Running bridge: ${runtimeVersionLabel(running || {})}.`,
+      bundled,
+      running,
+      expectedRuntimeEntryPoint,
+      configuredRuntimeEntryPoint,
+      selfHealRecommended: false,
+    };
+  }
+
+  if (!running?.runtimeHash) {
+    return {
+      state: 'stale',
+      summary: `The running bridge does not report a runtime manifest. Current app runtime is ${runtimeVersionLabel(bundled)}.`,
+      bundled,
+      running,
+      expectedRuntimeEntryPoint,
+      configuredRuntimeEntryPoint,
+      selfHealRecommended: true,
+    };
+  }
+
+  if (running.runtimeHash !== bundled.runtimeHash || String(running.build || '') !== String(bundled.build || '')) {
+    return {
+      state: 'stale',
+      summary: `Running bridge is ${runtimeVersionLabel(running)}, but the current app bundle contains ${runtimeVersionLabel(bundled)}.`,
+      bundled,
+      running,
+      expectedRuntimeEntryPoint,
+      configuredRuntimeEntryPoint,
+      selfHealRecommended: true,
+    };
+  }
+
+  return {
+    state: 'ready',
+    summary: `Running bridge matches the current packaged runtime: ${runtimeVersionLabel(bundled)}.`,
+    bundled,
+    running,
+    expectedRuntimeEntryPoint,
+    configuredRuntimeEntryPoint,
+    selfHealRecommended: false,
   };
 }
 
@@ -620,8 +788,9 @@ async function checkNetworkAccess(port, tailscale = {}) {
   };
 }
 
-async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallPath, openClawAgentName, companionVoice }) {
-  const launchAgent = await checkLaunchAgentAccess(local);
+async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallPath, openClawAgentName, companionVoice, launchAgent, runtimeIntegrity }) {
+  launchAgent = launchAgent || await checkLaunchAgentAccess(local);
+  runtimeIntegrity = runtimeIntegrity || checkRuntimeIntegrity(local, launchAgent);
   const openClaw = await checkOpenClawAccess(openClawInstallPath, openClawAgentName);
   const hermes = await checkHermesAccess();
   const network = await checkNetworkAccess(port, tailscale);
@@ -656,6 +825,15 @@ async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallP
       detail: launchAgent.detail,
       path: LAUNCH_AGENT_FILE,
       action: 'Install and Start Bridge',
+    }),
+    statusItem({
+      id: 'runtime-integrity',
+      label: 'Bridge runtime identity',
+      state: runtimeIntegrity.state === 'ready' ? 'ready' : (runtimeIntegrity.selfHealRecommended ? 'needs_action' : 'manual'),
+      summary: runtimeIntegrity.summary,
+      detail: `Expected: ${runtimeIntegrity.expectedRuntimeEntryPoint || '(unknown)'}\nConfigured: ${runtimeIntegrity.configuredRuntimeEntryPoint || '(unknown)'}`,
+      path: runtimeIntegrity.expectedRuntimeEntryPoint || '',
+      action: runtimeIntegrity.selfHealRecommended ? 'Refresh Bridge Runtime' : 'Verify Everything',
     }),
     statusItem({
       id: 'mac-login-item',
@@ -1053,8 +1231,12 @@ async function diagnoseBridge(port) {
     };
   }
 
+  const launchAgent = await checkLaunchAgentAccess(local);
+  const runtimeIntegrity = checkRuntimeIntegrity(local, launchAgent);
   let suggestedAction = 'Click Install and Start to install the bridge and configure Tailscale Serve for this port.';
-  if (local.state === 'running' && tailscale.state === 'voiceclaw_mapping') {
+  if (runtimeIntegrity.selfHealRecommended) {
+    suggestedAction = 'The bridge is using an older runtime. VoiceClaw Companion will refresh the LaunchAgent from the current app bundle, then check again.';
+  } else if (local.state === 'running' && tailscale.state === 'voiceclaw_mapping') {
     suggestedAction = 'This port is ready. Pair the phone with the current QR code or setup link.';
   } else if (local.state !== 'running' && tailscale.state === 'stale_voiceclaw_mapping') {
     suggestedAction = 'This is a stale network mapping. Click Install and Start to reuse it, or use Reset App + Tailscale Mapping to remove it before testing first-run setup.';
@@ -1072,6 +1254,8 @@ async function diagnoseBridge(port) {
     openClawInstallPath,
     openClawAgentName,
     companionVoice,
+    launchAgent,
+    runtimeIntegrity,
   });
 
   return {
@@ -1079,6 +1263,7 @@ async function diagnoseBridge(port) {
     savedConfigExists: existsSync(CONFIG_FILE),
     local,
     tailscale,
+    runtimeIntegrity,
     companionVoice,
     access,
     suggestedAction,
@@ -1230,6 +1415,33 @@ async function main() {
       console.log(result.diagnostics?.companionVoice?.summary || result.diagnostics?.summary || 'Companion Realtime Voice dependency install completed.');
     }
     if (!result.ok) process.exitCode = 1;
+    return;
+  }
+
+  if (options.refreshLaunchAgent) {
+    const existing = await readBridgeConfig();
+    const port = options.port || existing.port || DEFAULT_BRIDGE_PORT;
+    const config = {
+      ...existing,
+      port,
+      openClawInstallPath: normalizeInstallPath(options.openClawInstallPath || existing.openClawInstallPath),
+      openClawAgentName: normalizeOpenClawAgentName(options.openClawAgentName || existing.openClawAgentName || existing.openClawAgent),
+      gatewayToken: existing.gatewayToken || generateToken(),
+      tailscaleDNSName: existing.tailscaleDNSName || '',
+      tailscaleBaseURL: existing.tailscaleBaseURL || '',
+      realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'openclaw-oauth'),
+      realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? false,
+      cerebrasAPIKey: existing.cerebrasAPIKey || '',
+    };
+    await writeBridgeConfig(config);
+    await installLaunchAgent(config);
+    await startLaunchAgent();
+    const diagnostics = await diagnoseBridge(port);
+    if (options.jsonOnly) {
+      console.log(JSON.stringify({ ok: true, refreshedLaunchAgent: true, diagnostics }, null, 2));
+    } else {
+      console.log(diagnostics.runtimeIntegrity?.summary || 'Refreshed VoiceClaw bridge LaunchAgent from the current app runtime.');
+    }
     return;
   }
 

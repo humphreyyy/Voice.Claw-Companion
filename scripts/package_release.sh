@@ -214,6 +214,68 @@ rsync -a --delete \
   npm ci --omit=dev --ignore-scripts
 )
 
+/usr/bin/python3 - "$RUNTIME_DIR" "$VERSION" "$BUILD_NUMBER" <<'PY'
+import hashlib
+import json
+import pathlib
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+runtime_dir = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
+build = sys.argv[3]
+
+package_path = runtime_dir / "package.json"
+try:
+    package = json.loads(package_path.read_text())
+except Exception:
+    package = {}
+
+source_commit = ""
+try:
+    source_commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+except Exception:
+    pass
+
+excluded_dirs = {"node_modules", "ops-node", ".git"}
+excluded_names = {"runtime-manifest.json", ".DS_Store"}
+included_roots = {"server", "scripts", "client"}
+included_files = {"package.json", "package-lock.json"}
+
+digest = hashlib.sha256()
+for path in sorted(runtime_dir.rglob("*")):
+    if not path.is_file():
+        continue
+    relative = path.relative_to(runtime_dir)
+    parts = set(relative.parts)
+    if parts & excluded_dirs:
+        continue
+    if path.name in excluded_names:
+        continue
+    if relative.parts[0] not in included_roots and str(relative) not in included_files:
+        continue
+    rel_text = relative.as_posix()
+    digest.update(rel_text.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(path.read_bytes())
+    digest.update(b"\0")
+
+manifest = {
+    "schema": 1,
+    "product": "VoiceClaw Companion",
+    "version": version,
+    "build": build,
+    "runtimePackageVersion": str(package.get("version", "")),
+    "runtimeHash": digest.hexdigest(),
+    "entryPoint": "server/index.js",
+    "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "sourceCommit": source_commit,
+}
+(runtime_dir / "runtime-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+print(f"Generated runtime manifest {manifest['runtimeHash']} for {version} ({build}).")
+PY
+
 if security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
   codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR"

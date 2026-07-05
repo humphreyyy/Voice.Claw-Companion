@@ -6,8 +6,10 @@ import { fileURLToPath } from 'url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const runtimePath = join(root, 'BridgeRuntime', 'server', 'index.js');
 const hfSidecarPath = join(root, 'BridgeRuntime', 'server', 'hf-realtime-sidecar.js');
+const manifestPath = join(root, 'BridgeRuntime', 'runtime-manifest.json');
 const source = readFileSync(runtimePath, 'utf8');
 const hfSidecarSource = readFileSync(hfSidecarPath, 'utf8');
+const manifestSource = readFileSync(manifestPath, 'utf8');
 
 const expectedIphoneTools = [
   'iphone_analyze_clipboard_image',
@@ -113,6 +115,14 @@ for (const item of staleRuntimePatterns) {
   if (item.pattern.test(hfSidecarSource)) fail(item.message);
 }
 
+try {
+  const manifest = JSON.parse(manifestSource);
+  if (manifest.product !== 'VoiceClaw Companion') fail('runtime manifest product is wrong');
+  if (manifest.entryPoint !== 'server/index.js') fail('runtime manifest entry point must be server/index.js');
+} catch (error) {
+  fail(`runtime manifest is missing or invalid JSON: ${error.message}`);
+}
+
 const requiredPhrases = [
   'OpenClaw is not a fallback, not escalation-only, and not only for computer/file/coding work',
   'If the user did not say "OpenClaw," still call openclaw_turn for substantive work',
@@ -139,6 +149,8 @@ const requiredPhrases = [
   'processCompanionVoiceStreamingTextTurn',
   'companion_voice_text_turn',
   'websocket-pcm-stream',
+  'RUNTIME_MANIFEST',
+  'runtime: RUNTIME_MANIFEST',
 ];
 
 for (const phrase of requiredPhrases) {
