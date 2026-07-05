@@ -1124,6 +1124,12 @@ const MAX_REALTIME_PENDING_TURNS = Number(process.env.VB_REALTIME_MAX_PENDING_TU
 const MIN_PROBE_RMS = Number(process.env.VB_PROBE_MIN_RMS || 140);
 const MIN_TURN_RMS = Number(process.env.VB_TURN_MIN_RMS || 90);
 const MIN_AUDIO_BYTES = Number(process.env.VB_MIN_AUDIO_BYTES || 1200);
+const COMPANION_SERVER_VAD_DEFAULT_ENABLED = !['0', 'false', 'off'].includes(String(process.env.VB_COMPANION_SERVER_VAD || '1').toLowerCase());
+const COMPANION_SERVER_VAD_SAMPLE_RATE = Number(process.env.VB_COMPANION_SERVER_VAD_SAMPLE_RATE || 16000);
+const COMPANION_SERVER_VAD_PRE_ROLL_MS = Number(process.env.VB_COMPANION_SERVER_VAD_PRE_ROLL_MS || 360);
+const COMPANION_SERVER_VAD_MIN_SPEECH_MS = Number(process.env.VB_COMPANION_SERVER_VAD_MIN_SPEECH_MS || 180);
+const COMPANION_SERVER_VAD_MAX_TURN_MS = Number(process.env.VB_COMPANION_SERVER_VAD_MAX_TURN_MS || 26000);
+const COMPANION_SERVER_VAD_MAX_PRE_SPEECH_MS = Number(process.env.VB_COMPANION_SERVER_VAD_MAX_PRE_SPEECH_MS || 3500);
 const REALTIME_SIDEBAND_ENABLED = !['0', 'false', 'off'].includes(String(process.env.REALTIME_SIDEBAND_ENABLED || '1').toLowerCase());
 const REALTIME_SIDEBAND_OPEN_TIMEOUT_MS = Number(process.env.REALTIME_SIDEBAND_OPEN_TIMEOUT_MS || 2500);
 const REALTIME_RESPONSE_CREATE_RETRY_MS = Number(process.env.REALTIME_RESPONSE_CREATE_RETRY_MS || 1700);
@@ -1326,6 +1332,197 @@ function audioEnergy(buffer) {
 function shouldSkipAudio(buffer, threshold = MIN_TURN_RMS) {
   const e = audioEnergy(buffer);
   return { skip: !e.container && (e.tooSmall || e.rms < threshold), ...e, threshold };
+}
+
+function parseCompanionServerVadBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+}
+
+function boundedNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function buildCompanionServerVADState(msg = {}) {
+  const payload = msg.companionVoicePayload && typeof msg.companionVoicePayload === 'object' ? msg.companionVoicePayload : {};
+  const raw = msg.serverVad && typeof msg.serverVad === 'object'
+    ? msg.serverVad
+    : (payload.serverVad && typeof payload.serverVad === 'object' ? payload.serverVad : {});
+  const enabled = parseCompanionServerVadBoolean(raw.enabled, !!msg.companionVoice && COMPANION_SERVER_VAD_DEFAULT_ENABLED);
+  const sensitivity = boundedNumber(raw.sensitivity ?? payload.vadSensitivity, 0.72, 0, 1);
+  const sampleRate = Math.max(8000, Math.min(48000, Math.round(Number(raw.sampleRate || COMPANION_SERVER_VAD_SAMPLE_RATE) || COMPANION_SERVER_VAD_SAMPLE_RATE)));
+  const silenceMs = Math.round(boundedNumber(raw.silenceDurationMs ?? raw.silenceMs ?? payload.vadSilenceMs, 850, 260, 2400));
+  const startRms = Math.round(boundedNumber(raw.startRms, 430 - (sensitivity * 250), 95, 900));
+  const continueRms = Math.round(boundedNumber(raw.continueRms, Math.max(70, startRms * 0.52), 45, startRms));
+  const ambientRise = Math.round(boundedNumber(raw.ambientRise, 170 - (sensitivity * 95), 35, 240));
+  const hotFramesToStart = Math.round(boundedNumber(raw.hotFramesToStart, sensitivity >= 0.72 ? 2 : 3, 1, 6));
+  const looseFramesToStart = Math.round(boundedNumber(raw.looseFramesToStart, sensitivity >= 0.72 ? 4 : 5, 2, 10));
+  const preRollBytes = Math.round((sampleRate * 2 * COMPANION_SERVER_VAD_PRE_ROLL_MS) / 1000);
+
+  return {
+    enabled,
+    mode: String(raw.mode || payload.turnDetection || 'server_vad'),
+    sampleRate,
+    sensitivity,
+    silenceMs,
+    startRms,
+    continueRms,
+    ambientRise,
+    hotFramesToStart,
+    looseFramesToStart,
+    minSpeechMs: Math.round(boundedNumber(raw.minSpeechMs, COMPANION_SERVER_VAD_MIN_SPEECH_MS, 80, 900)),
+    maxTurnMs: Math.round(boundedNumber(raw.maxTurnMs, COMPANION_SERVER_VAD_MAX_TURN_MS, 3000, 60000)),
+    maxPreSpeechMs: Math.round(boundedNumber(raw.maxPreSpeechMs, COMPANION_SERVER_VAD_MAX_PRE_SPEECH_MS, 800, 12000)),
+    preRollBytes,
+    preRollChunks: [],
+    preRollByteCount: 0,
+    active: false,
+    hotFrames: 0,
+    looseFrames: 0,
+    silenceMsAccum: 0,
+    speechStartedAt: 0,
+    lastSpeechAt: 0,
+    firstAudioAt: 0,
+    ambientRms: 90,
+    peakRms: 0,
+    commitInFlight: false,
+  };
+}
+
+function resetCompanionServerVADRuntime(vad, { keepPreRoll = false } = {}) {
+  if (!vad) return;
+  vad.active = false;
+  vad.hotFrames = 0;
+  vad.looseFrames = 0;
+  vad.silenceMsAccum = 0;
+  vad.speechStartedAt = 0;
+  vad.lastSpeechAt = 0;
+  vad.firstAudioAt = 0;
+  vad.peakRms = 0;
+  if (!keepPreRoll) {
+    vad.preRollChunks = [];
+    vad.preRollByteCount = 0;
+  }
+}
+
+function appendCompanionServerVADPreRoll(vad, chunk) {
+  vad.preRollChunks.push(chunk);
+  vad.preRollByteCount += chunk.length;
+  while (vad.preRollByteCount > vad.preRollBytes && vad.preRollChunks.length) {
+    const first = vad.preRollChunks.shift();
+    vad.preRollByteCount -= first?.length || 0;
+  }
+}
+
+function appendCompanionServerVADTurnAudio(session, chunk) {
+  session.audioChunks.push(chunk);
+  session.audioBytesReceived += chunk.length;
+}
+
+function promoteCompanionServerVADPreRoll(session) {
+  const vad = session.serverVad;
+  if (!vad?.preRollChunks?.length) return;
+  for (const chunk of vad.preRollChunks) appendCompanionServerVADTurnAudio(session, chunk);
+  vad.preRollChunks = [];
+  vad.preRollByteCount = 0;
+}
+
+function companionServerVADChunkDurationMs(chunk, vad) {
+  return Math.max(10, (chunk.length / 2 / Math.max(1, vad.sampleRate || COMPANION_SERVER_VAD_SAMPLE_RATE)) * 1000);
+}
+
+function handleCompanionServerVADChunk(session, chunk, send, cancelPipeline, commit) {
+  const vad = session.serverVad;
+  if (!vad?.enabled) {
+    appendCompanionServerVADTurnAudio(session, chunk);
+    return;
+  }
+
+  const now = Date.now();
+  const energy = audioEnergy(chunk);
+  const rms = Number.isFinite(energy.rms) ? energy.rms : 0;
+  const chunkMs = companionServerVADChunkDurationMs(chunk, vad);
+  if (!vad.firstAudioAt) vad.firstAudioAt = now;
+
+  if (!vad.active) {
+    appendCompanionServerVADPreRoll(vad, chunk);
+    const boundedQuietRms = Math.min(rms, Math.max(120, vad.ambientRms + vad.ambientRise));
+    vad.ambientRms = Math.min(420, (vad.ambientRms * 0.985) + (boundedQuietRms * 0.015));
+    const startThreshold = Math.max(vad.startRms, vad.ambientRms + vad.ambientRise);
+    const looseThreshold = Math.max(vad.continueRms + 20, vad.ambientRms + Math.max(35, vad.ambientRise * 0.45));
+    if (rms >= startThreshold) {
+      vad.hotFrames += 1;
+      vad.looseFrames = 0;
+    } else if (rms >= looseThreshold) {
+      vad.hotFrames = 0;
+      vad.looseFrames += 1;
+    } else {
+      vad.hotFrames = 0;
+      vad.looseFrames = 0;
+    }
+
+    const waitedTooLong = now - vad.firstAudioAt >= vad.maxPreSpeechMs && vad.preRollByteCount >= MIN_AUDIO_BYTES * 2;
+    const shouldStart = vad.hotFrames >= vad.hotFramesToStart || vad.looseFrames >= vad.looseFramesToStart || waitedTooLong;
+    if (!shouldStart) return;
+
+    if (session.processing && typeof cancelPipeline === 'function') {
+      console.log(`[companion-vad] barge-in start session=${session.id} rms=${Math.round(rms)} ambient=${Math.round(vad.ambientRms)} threshold=${Math.round(startThreshold)}`);
+      cancelPipeline();
+      send({ type: 'interrupted', reason: 'server-vad-barge-in' });
+    }
+
+    session.audioChunks = [];
+    session.audioBytesReceived = 0;
+    promoteCompanionServerVADPreRoll(session);
+    vad.active = true;
+    vad.speechStartedAt = now;
+    vad.lastSpeechAt = now;
+    vad.silenceMsAccum = 0;
+    vad.peakRms = Math.max(vad.peakRms, rms);
+    send({ type: 'status', status: 'user_speech_start', rms: Math.round(rms), ambientRms: Math.round(vad.ambientRms) });
+    console.log(`[companion-vad] speech_start session=${session.id} rms=${Math.round(rms)} ambient=${Math.round(vad.ambientRms)} start=${Math.round(startThreshold)} chunks=${session.audioChunks.length}`);
+    return;
+  }
+
+  appendCompanionServerVADTurnAudio(session, chunk);
+  vad.peakRms = Math.max(vad.peakRms, rms);
+  const continuingThreshold = Math.max(vad.continueRms, vad.ambientRms + Math.max(25, vad.ambientRise * 0.30));
+  if (rms >= continuingThreshold) {
+    vad.silenceMsAccum = 0;
+    vad.lastSpeechAt = now;
+  } else {
+    vad.silenceMsAccum += chunkMs;
+  }
+
+  const speechMs = now - (vad.speechStartedAt || now);
+  const shouldCommit = (speechMs >= vad.minSpeechMs && vad.silenceMsAccum >= vad.silenceMs)
+    || speechMs >= vad.maxTurnMs;
+  if (shouldCommit) {
+    console.log(`[companion-vad] speech_end session=${session.id} reason=${speechMs >= vad.maxTurnMs ? 'max-turn' : 'silence'} bytes=${session.audioBytesReceived} speechMs=${Math.round(speechMs)} silenceMs=${Math.round(vad.silenceMsAccum)} peak=${Math.round(vad.peakRms)}`);
+    commit(speechMs >= vad.maxTurnMs ? 'server_vad_max_turn' : 'server_vad_silence');
+  }
+}
+
+async function commitCompanionServerVADTurn(session, ws, send, cancelPipeline, reason = 'server_vad') {
+  const vad = session.serverVad;
+  if (vad?.commitInFlight) return;
+  if (vad) vad.commitInFlight = true;
+  try {
+    if (vad?.enabled && !vad.active && session.audioChunks.length === 0) {
+      promoteCompanionServerVADPreRoll(session);
+    }
+    resetCompanionServerVADRuntime(vad);
+    if (session.audioChunks.length === 0) {
+      send({ type: 'status', status: 'ready', reason: 'server-vad-empty' });
+      return;
+    }
+    console.log(`[companion-vad] commit session=${session.id} reason=${reason} chunks=${session.audioChunks.length} bytes=${session.audioBytesReceived}`);
+    await processUtterance(session, ws, send, cancelPipeline);
+  } finally {
+    if (vad) vad.commitInFlight = false;
+  }
 }
 
 function sleep(ms) {
@@ -4998,6 +5195,7 @@ wss.on('connection', (ws) => {
     voiceConfig: null,
     companionVoiceMode: false,
     companionVoicePayload: null,
+    serverVad: buildCompanionServerVADState({ companionVoice: false, serverVad: { enabled: false } }),
     pendingTextTurns: [],      // queued user turns captured while a prior turn is still running
     busyQueueSeq: 0,
     busyQueueEpoch: 0,
@@ -5044,8 +5242,14 @@ wss.on('connection', (ws) => {
         session.wakeProbeChunks.push(Buffer.from(data));
       } else {
         const chunk = Buffer.from(data);
-        session.audioChunks.push(chunk);
-        session.audioBytesReceived += chunk.length;
+        if (session.companionVoiceMode && session.serverVad?.enabled) {
+          handleCompanionServerVADChunk(session, chunk, send, cancelPipeline, (reason) => {
+            commitCompanionServerVADTurn(session, ws, send, cancelPipeline, reason)
+              .catch((err) => console.error('[companion-vad] commit failed:', err.message));
+          });
+        } else {
+          appendCompanionServerVADTurnAudio(session, chunk);
+        }
       }
       return;
     }
@@ -5076,6 +5280,7 @@ wss.on('connection', (ws) => {
         session.companionVoicePayload = session.companionVoiceMode && msg.companionVoicePayload && typeof msg.companionVoicePayload === 'object'
           ? { ...msg.companionVoicePayload, sessionToken: msg.sessionToken || msg.companionVoicePayload.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}` }
           : null;
+        session.serverVad = buildCompanionServerVADState(msg);
         session.ttsSpeed = getTtsSpeedOptions().defaultSpeed;
         if (msg.ttsSpeed) session.ttsSpeed = msg.ttsSpeed;
         send({ type: 'processing', processing: session.processingConfig });
@@ -5104,6 +5309,12 @@ wss.on('connection', (ws) => {
             sessionToken: msg.sessionToken || msg.companionVoicePayload.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
           };
         }
+        session.serverVad = buildCompanionServerVADState({
+          ...msg,
+          companionVoice: session.companionVoiceMode,
+          companionVoicePayload: session.companionVoicePayload,
+          serverVad: msg.serverVad || msg.companionVoicePayload?.serverVad,
+        });
         if (msg.ttsSpeed) session.ttsSpeed = msg.ttsSpeed;
         send({ type: 'processing', processing: session.processingConfig });
         send({
@@ -5153,6 +5364,10 @@ wss.on('connection', (ws) => {
       case 'audio_end':
         // Client finished recording an utterance — process it
         session.collectingWakeProbe = false;
+        if (session.companionVoiceMode && session.serverVad?.enabled) {
+          await commitCompanionServerVADTurn(session, ws, send, cancelPipeline, msg.reason || 'client_audio_end');
+          break;
+        }
         {
           const expectedBytes = Number(msg.audioBytes || 0);
           if (expectedBytes > session.audioBytesReceived) {

@@ -332,7 +332,7 @@ async function buildVoiceOptions() {
         model: process.env.KOKORO_MODEL || 'mlx-community/Kokoro-82M-bf16',
         kokoroVoice: 'af_heart',
         langCode: 'a',
-        default: false,
+        default: true,
       },
       {
         id: 'kokoro-bm-fable',
