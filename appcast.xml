@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.80</title>
+            <pubDate>Sun, 05 Jul 2026 06:31:37 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607050630</sparkle:version>
+            <sparkle:shortVersionString>0.1.80</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.80</h2><ul><li>Fixes update validation by moving runtime logs out of the signed app bundle.</li><li>Improves Companion Realtime Voice interruption handling so a new spoken turn replaces the active streamed turn instead of being dropped as busy.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.80/VoiceClawCompanion-0.1.80-202607050630.dmg" length="3226331" type="application/octet-stream" sparkle:edSignature="bIDuMWan6sFKIOJGu2zABL9RfOA9wY2EtfIQO3AYiIwX4xziOqrmw/CpgC7eJiBlLAzwRe2iaRJJlzW3T1RnAg=="/>
+        </item>
+        <item>
             <title>0.1.79</title>
             <pubDate>Sun, 05 Jul 2026 06:17:35 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.78</h2><ul><li>Adds the new Companion Realtime Voice streaming WebSocket transport used by VoiceClaw Realtime on iOS.</li><li>Keeps the legacy Companion turn upload path available for fallback and A/B testing.</li><li>Preserves Cerebras, GPT-5.5, and local Qwen middle-brain options for Companion Realtime Voice.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.78/VoiceClawCompanion-0.1.78-202607050457.dmg" length="3221561" type="application/octet-stream" sparkle:edSignature="CZygNQ2jNicsWFF0fsUPBRqDtRry95tA6r8ITv7ZBqfDzEuMPmdLZxmhsHDRx+MJczI3Ah2rQUKc2qDzap+HCw=="/>
-        </item>
-        <item>
-            <title>0.1.77</title>
-            <pubDate>Sun, 05 Jul 2026 04:44:47 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607050438</sparkle:version>
-            <sparkle:shortVersionString>0.1.77</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.77</h2><ul><li>Improves Companion Realtime Voice text-message handoffs so complete requests like “Text Sam that I am late” produce a Messages draft with the intended recipient and body.</li><li>Asks for the missing recipient when the user requests a text draft without saying who it is for, instead of sending a malformed iPhone action.</li><li>Keeps the placeholder/no-speech filtering and Cerebras/local middle-brain support from the prior release.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.77/VoiceClawCompanion-0.1.77-202607050438.dmg" length="3221473" type="application/octet-stream" sparkle:edSignature="QIuyJXjieUqpkqBtEB0pmKvsvkoSVAQf/E3dQyBZBsjz89/7Jjhho5eUrhnxg/l0BnfB6PPpAjgq/pevLgv9Bg=="/>
         </item>
     </channel>
 </rss>

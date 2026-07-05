@@ -56,7 +56,8 @@ const REALTIME_TURN_DETECTION_MODE = process.env.REALTIME_TURN_DETECTION_MODE ||
 const REALTIME_SEMANTIC_VAD_EAGERNESS = process.env.REALTIME_SEMANTIC_VAD_EAGERNESS || 'auto';
 const REALTIME_VOICE = process.env.REALTIME_VOICE || 'marin';
 const OPENCLAW_AGENT_NAME = process.env.INTERCOM_AGENT || process.env.OPENCLAW_AGENT || 'main';
-const REALTIME_LOG_DIR = process.env.REALTIME_LOG_DIR || join(__dirname, '..', 'ops-node', 'logs');
+const DEFAULT_APP_SUPPORT_DIR = join(homedir(), 'Library', 'Application Support', 'VoiceClaw Companion');
+const REALTIME_LOG_DIR = process.env.REALTIME_LOG_DIR || join(DEFAULT_APP_SUPPORT_DIR, 'logs');
 const REALTIME_TRANSCRIPT_LOG = join(REALTIME_LOG_DIR, 'realtime-transcripts.jsonl');
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(homedir(), '.openclaw', 'openclaw.json');
 const VOICECLAW_CONFIG = process.env.VOICECLAW_CONFIG || join(homedir(), '.voiceclaw', 'bridge.json');
@@ -4908,7 +4909,7 @@ wss.on('connection', (ws) => {
           send({ type: 'error', message: 'No audio received' });
           break;
         }
-        await processUtterance(session, ws, send);
+        await processUtterance(session, ws, send, cancelPipeline);
         break;
 
       case 'companion_voice_text_turn':
@@ -5150,9 +5151,9 @@ async function drainPendingTextTurns(session, ws, send) {
   }
 }
 
-async function processUtterance(session, ws, send) {
+async function processUtterance(session, ws, send, cancelPipeline) {
   if (session.companionVoiceMode) {
-    await processCompanionVoiceStreamingUtterance(session, ws, send);
+    await processCompanionVoiceStreamingUtterance(session, ws, send, cancelPipeline);
     return;
   }
   if (session.processing) {
@@ -5213,11 +5214,11 @@ async function processUtterance(session, ws, send) {
   }
 }
 
-async function processCompanionVoiceStreamingUtterance(session, ws, send) {
+async function processCompanionVoiceStreamingUtterance(session, ws, send, cancelPipeline) {
   if (session.processing) {
-    session.audioChunks = [];
-    send({ type: 'busy', message: 'Companion Realtime Voice is still finishing the previous streamed turn. Say stop or wait a moment.' });
-    return;
+    console.log('[companion-stream] replacing active turn with new user audio');
+    if (typeof cancelPipeline === 'function') cancelPipeline();
+    send({ type: 'interrupted', reason: 'new-user-turn' });
   }
   session.processing = true;
   const turnId = beginTurn(session);
