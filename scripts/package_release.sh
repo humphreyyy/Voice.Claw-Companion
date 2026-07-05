@@ -52,9 +52,22 @@ REQUIRED_SPARKLE_PATHS=(
   "$SPARKLE_BUNDLE/XPCServices/Downloader.xpc"
   "$SPARKLE_BUNDLE/XPCServices/Installer.xpc"
 )
+REQUIRED_SPARKLE_EXECUTABLES=(
+  "$SPARKLE_BUNDLE/Versions/Current/Autoupdate"
+  "$SPARKLE_BUNDLE/Versions/Current/Updater.app/Contents/MacOS/Updater"
+  "$SPARKLE_BUNDLE/Versions/Current/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"
+  "$SPARKLE_BUNDLE/Versions/Current/XPCServices/Installer.xpc/Contents/MacOS/Installer"
+)
 for required_sparkle_path in "${REQUIRED_SPARKLE_PATHS[@]}"; do
   if [[ ! -e "$required_sparkle_path" ]]; then
     echo "Required Sparkle updater helper is missing or points to a missing target: $required_sparkle_path" >&2
+    echo "Refusing to package an app whose in-app updater cannot launch the installer." >&2
+    exit 1
+  fi
+done
+for required_sparkle_executable in "${REQUIRED_SPARKLE_EXECUTABLES[@]}"; do
+  if [[ ! -x "$required_sparkle_executable" ]]; then
+    echo "Required Sparkle updater executable is missing or not executable: $required_sparkle_executable" >&2
     echo "Refusing to package an app whose in-app updater cannot launch the installer." >&2
     exit 1
   fi
