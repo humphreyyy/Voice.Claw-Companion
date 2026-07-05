@@ -16,7 +16,7 @@ const { default: WebSocket } = await import(require.resolve('ws', {
 
 const url = process.env.VOICECLAW_COMPANION_WS_URL || 'ws://127.0.0.1:12321/ws';
 const timeoutMs = Number(process.env.VOICECLAW_COMPANION_HF_SMOKE_TIMEOUT_MS || 180_000);
-const sampleRate = 24_000;
+const sampleRate = 16_000;
 const chunkMs = 40;
 const bytesPerChunk = Math.round(sampleRate * 2 * chunkMs / 1000);
 const skipAudio = /^(1|true|yes)$/i.test(process.env.VOICECLAW_HF_SMOKE_SKIP_AUDIO || '');

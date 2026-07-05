@@ -27,13 +27,16 @@ const HF_INSTALL_TIMEOUT_MS = Number.parseInt(process.env.VOICECLAW_HF_INSTALL_T
 const HF_START_TIMEOUT_MS = Number.parseInt(process.env.VOICECLAW_HF_START_TIMEOUT_MS || String(15 * 60 * 1000), 10);
 const HF_DEFAULT_LOCAL_MODEL = process.env.VOICECLAW_HF_LOCAL_MODEL || 'mlx-community/Qwen3.5-2B-4bit';
 const HF_DEFAULT_CEREBRAS_MODEL = process.env.VOICECLAW_HF_CEREBRAS_MODEL || 'gemma-4-31b';
-const HF_DEFAULT_TTS = process.env.VOICECLAW_HF_TTS || 'qwen3';
+const HF_DEFAULT_TTS = process.env.VOICECLAW_HF_TTS || 'auto';
 const HF_DEFAULT_STT_PROFILE = process.env.VOICECLAW_HF_STT_PROFILE || 'parakeet-live';
 const HF_DEFAULT_STT = process.env.VOICECLAW_HF_STT || '';
 const HF_DEFAULT_STT_MODEL = process.env.VOICECLAW_HF_STT_MODEL || 'mlx-community/parakeet-tdt-0.6b-v3';
 const HF_FASTER_WHISPER_MODEL = process.env.VOICECLAW_HF_FASTER_WHISPER_MODEL || 'base.en';
 const HF_MLX_AUDIO_WHISPER_MODEL = process.env.VOICECLAW_HF_MLX_AUDIO_WHISPER_MODEL || 'mlx-community/whisper-base';
 const HF_WHISPER_MLX_MODEL = process.env.VOICECLAW_HF_WHISPER_MLX_MODEL || 'base.en';
+const HF_DEFAULT_KOKORO_MODEL = process.env.VOICECLAW_HF_KOKORO_MODEL || 'mlx-community/Kokoro-82M-bf16';
+const HF_NATIVE_KOKORO_MODEL = process.env.VOICECLAW_HF_NATIVE_KOKORO_MODEL || 'hexgrad/Kokoro-82M';
+const HF_KOKORO_VOICE_MODEL = process.env.VOICECLAW_HF_KOKORO_VOICE_MODEL || 'prince-canuma/Kokoro-82M';
 const HF_DEFAULT_TTS_MODEL = process.env.VOICECLAW_HF_TTS_MODEL || 'mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit';
 const CEREBRAS_BASE_URL = (process.env.CEREBRAS_BASE_URL || 'https://api.cerebras.ai/v1').replace(/\/+$/g, '');
 const CEREBRAS_RESPONSES_ADAPTER_HOST = process.env.VOICECLAW_CEREBRAS_RESPONSES_ADAPTER_HOST || '127.0.0.1';
@@ -41,9 +44,10 @@ const CEREBRAS_RESPONSES_ADAPTER_PORT = Number.parseInt(process.env.VOICECLAW_CE
 const VOICECLAW_CONFIG = process.env.VOICECLAW_CONFIG_PATH
   || process.env.VOICECLAW_CONFIG
   || join(os.homedir(), '.voiceclaw', 'bridge.json');
-// The HF OpenAI-compatible realtime schema currently accepts PCM only at 24 kHz.
-const DEFAULT_HF_SAMPLE_RATE = 24_000;
-const RESPONSE_CREATE_FALLBACK_MS = Number.parseInt(process.env.VOICECLAW_HF_RESPONSE_CREATE_FALLBACK_MS || '3500', 10);
+// HF/Silero realtime VAD accepts 8 kHz or 16 kHz. VoiceClaw standardizes the
+// Companion Realtime Voice mic, VAD, STT, and local TTS transport on 16 kHz.
+const DEFAULT_HF_SAMPLE_RATE = 16_000;
+const TURN_WATCHDOG_MS = Number.parseInt(process.env.VOICECLAW_HF_TURN_WATCHDOG_MS || '45000', 10);
 
 const HF_STT_PROFILE_OPTIONS = [
   {
@@ -215,6 +219,64 @@ function requiredSTTModels(sttProfile = '') {
   }
 }
 
+function requiredTTSPythonModules(ttsConfig = {}) {
+  if (ttsConfig.engine === 'kokoro' && ttsConfig.device === 'cpu') {
+    return [
+      { module: 'kokoro', package: 'kokoro>=0.9.2', versionPackage: 'kokoro', label: 'Native Kokoro CPU text-to-speech runtime' },
+      { module: 'soundfile', package: 'soundfile', label: 'SoundFile audio writer for native Kokoro' },
+    ];
+  }
+  if (ttsConfig.engine === 'kokoro' && ttsConfig.device === 'mps') {
+    return [
+      { module: 'mlx_audio', package: 'mlx-audio', label: 'MLX Audio Kokoro text-to-speech runtime' },
+      { module: 'misaki', package: 'misaki', label: 'Kokoro phonemizer runtime' },
+    ];
+  }
+  return [];
+}
+
+function requiredTTSModels(ttsConfig = {}) {
+  if (ttsConfig.engine === 'qwen3') {
+    return [{
+      id: 'tts-qwen3',
+      label: 'Qwen3 local text-to-speech',
+      model: HF_DEFAULT_TTS_MODEL,
+    }];
+  }
+  if (ttsConfig.engine === 'kokoro') {
+    if (ttsConfig.device === 'cpu') {
+      return [
+        {
+          id: 'tts-kokoro-native',
+          label: 'Native Kokoro local text-to-speech',
+          model: ttsConfig.model || HF_NATIVE_KOKORO_MODEL,
+          allowPatterns: ['config.json', 'kokoro-v1_0.pth'],
+        },
+        {
+          id: 'tts-kokoro-native-voices',
+          label: 'Native Kokoro voice tensors',
+          model: ttsConfig.model || HF_NATIVE_KOKORO_MODEL,
+          allowPatterns: ['voices/*.pt'],
+        },
+      ];
+    }
+    return [
+      {
+        id: 'tts-kokoro',
+        label: 'Kokoro local text-to-speech',
+        model: ttsConfig.model || HF_DEFAULT_KOKORO_MODEL,
+      },
+      {
+        id: 'tts-kokoro-voices',
+        label: 'Kokoro voice tensors',
+        model: HF_KOKORO_VOICE_MODEL,
+        allowPatterns: ['voices/*.safetensors'],
+      },
+    ];
+  }
+  return [];
+}
+
 function normalizeBrainMode(value = '') {
   const clean = String(value || '').trim();
   if (!clean || clean === 'local' || clean === 'qwen' || clean === 'qwen35' || clean === 'qwen3.5') return 'qwen3.5-2b';
@@ -307,6 +369,173 @@ async function prefetchHFModel(modelID, allowPatterns = null) {
   });
 }
 
+async function warmNativeKokoroRuntime(ttsConfig = {}) {
+  if (ttsConfig.engine !== 'kokoro' || ttsConfig.device !== 'cpu') return;
+  const langCode = process.env.VOICECLAW_HF_KOKORO_LANG || 'a';
+  await runCommand(HF_PYTHON, ['-c', [
+    'from kokoro import KPipeline',
+    'import sys',
+    'KPipeline(lang_code=sys.argv[1])',
+  ].join('; '), langCode], {
+    timeoutMs: HF_INSTALL_TIMEOUT_MS,
+    env: hfRuntimeEnv(),
+  });
+}
+
+function hfRealtimePrepareProfiles(set = 'selected') {
+  const normalized = String(set || '').trim().toLowerCase();
+  if (!normalized || normalized === 'selected' || normalized === 'none') return [];
+  const profiles = [
+    {
+      id: 'local-qwen-parakeet-kokoro',
+      label: 'Local Qwen 3.5 2B + Parakeet Live STT + Kokoro TTS',
+      required: true,
+      options: { brainMode: 'qwen3.5-2b', sttProfile: 'parakeet-live', localVoice: 'kokoro-af-heart' },
+    },
+    {
+      id: 'local-qwen-fast-whisper-kokoro',
+      label: 'Local Qwen 3.5 2B + Faster Whisper Fast STT + Kokoro TTS',
+      required: false,
+      options: { brainMode: 'qwen3.5-2b', sttProfile: 'faster-whisper-fast', localVoice: 'kokoro-af-heart' },
+    },
+    {
+      id: 'local-qwen-balanced-whisper-kokoro',
+      label: 'Local Qwen 3.5 2B + Faster Whisper Balanced STT + Kokoro TTS',
+      required: false,
+      options: { brainMode: 'qwen3.5-2b', sttProfile: 'faster-whisper-balanced', localVoice: 'kokoro-af-heart' },
+    },
+  ];
+  if (normalized === 'full') {
+    profiles.push({
+      id: 'local-qwen-mlx-whisper-kokoro',
+      label: 'Local Qwen 3.5 2B + Whisper MLX Accurate STT + Kokoro TTS',
+      required: false,
+      options: { brainMode: 'qwen3.5-2b', sttProfile: 'mlx-whisper-accurate', localVoice: 'kokoro-af-heart' },
+    });
+  }
+  return profiles;
+}
+
+function dedupeInstallItems(items = []) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const key = `${item.id || ''}\n${item.command || ''}\n${item.label || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
+function defaultHFRealtimePrewarmPayload(options = {}) {
+  const profile = hfRealtimePrepareProfiles(options.prepareSet || 'recommended')[0];
+  return {
+    ...(profile?.options || { brainMode: 'qwen3.5-2b', sttProfile: 'parakeet-live', localVoice: 'kokoro-af-heart' }),
+    ...(options || {}),
+    prepareSet: '',
+  };
+}
+
+function hfRealtimeProfileKey(options = {}) {
+  return JSON.stringify({
+    brainMode: normalizeBrainMode(options.brainMode || 'qwen3.5-2b'),
+    sttProfile: normalizeSTTProfile(options.sttProfile || ''),
+    localVoice: String(options.localVoice || options.voice || 'kokoro-af-heart').trim().toLowerCase(),
+  });
+}
+
+function selectedHFRealtimeProfileOptions(options = {}) {
+  return {
+    brainMode: normalizeBrainMode(options.brainMode || 'qwen3.5-2b'),
+    sttProfile: normalizeSTTProfile(options.sttProfile || ''),
+    localVoice: String(options.localVoice || options.voice || 'kokoro-af-heart').trim() || 'kokoro-af-heart',
+  };
+}
+
+function hfRealtimeProfilesForPrepareSet(options = {}) {
+  const selectedOptions = selectedHFRealtimeProfileOptions(options);
+  const selectedKey = hfRealtimeProfileKey(selectedOptions);
+  const profiles = hfRealtimePrepareProfiles(options.prepareSet || 'recommended').map((profile) => ({
+    ...profile,
+    required: profile.required || hfRealtimeProfileKey(profile.options) === selectedKey,
+  }));
+  if (!profiles.some((profile) => hfRealtimeProfileKey(profile.options) === selectedKey)) {
+    profiles.unshift({
+      id: 'selected',
+      label: 'Selected Companion Realtime Voice configuration',
+      required: true,
+      options: selectedOptions,
+    });
+  }
+  return profiles;
+}
+
+async function getHFRealtimeProfileSetStatus(options = {}) {
+  const selectedKey = hfRealtimeProfileKey(selectedHFRealtimeProfileOptions(options));
+  const profiles = hfRealtimeProfilesForPrepareSet(options);
+  const preparedProfiles = [];
+  for (const profile of profiles) {
+    const status = await getHFRealtimeSingleStatus({ ...profile.options, prepareSet: '' });
+    preparedProfiles.push({
+      id: profile.id,
+      label: profile.label,
+      required: profile.required,
+      state: status.state,
+      summary: status.summary,
+      brainMode: status.brainMode,
+      sttProfile: status.sttProfile,
+      sttProfileLabel: status.sttProfileLabel,
+      ttsEngine: status.ttsEngine,
+      ttsDevice: status.ttsDevice,
+      ttsVoice: status.ttsVoice,
+      missingRequiredModels: status.missingRequiredModels || [],
+      missingSTTModules: status.missingSTTModules || [],
+      missingTTSModules: status.missingTTSModules || [],
+      installPlan: status.installPlan || null,
+    });
+  }
+
+  const primaryProfileIndex = Math.max(0, profiles.findIndex((profile) => hfRealtimeProfileKey(profile.options) === selectedKey));
+  const primaryProfile = profiles[primaryProfileIndex] || profiles[0];
+  const primary = primaryProfile
+    ? await getHFRealtimeSingleStatus({ ...primaryProfile.options, prepareSet: '' })
+    : await getHFRealtimeSingleStatus(options);
+  const requiredMissing = preparedProfiles.filter((profile) => profile.required && profile.state !== 'ready');
+  const allItems = dedupeInstallItems(preparedProfiles.flatMap((profile) => {
+    const items = Array.isArray(profile.installPlan?.items) ? profile.installPlan.items : [];
+    return items.map((item) => ({
+      ...item,
+      profileID: profile.id,
+      profileLabel: profile.label,
+    }));
+  }));
+  const installableCount = allItems.filter((item) => item.installable).length;
+  const state = requiredMissing.length ? 'needs_setup' : 'ready';
+  const summary = requiredMissing.length
+    ? `Companion Realtime Voice needs setup before the selected/default realtime stack can run: ${requiredMissing.map((profile) => profile.label).join(', ')}.`
+    : allItems.length
+      ? `Companion Realtime Voice selected/default local stack is ready. ${allItems.length} additional recommended voice runtime item${allItems.length === 1 ? '' : 's'} can be installed now so alternate STT profiles are ready before the phone needs them.`
+      : 'Companion Realtime Voice workstation is prepared: selected/default local realtime stack and recommended alternate STT profiles are installed.';
+
+  return {
+    ...primary,
+    state,
+    summary,
+    prepareSet: options.prepareSet || 'recommended',
+    preparedProfiles,
+    installPlan: {
+      needed: allItems.length > 0,
+      installable: true,
+      summary: allItems.length
+        ? `${allItems.length} Companion Realtime Voice preparation item${allItems.length === 1 ? '' : 's'} need attention; ${installableCount} can be installed automatically.`
+        : 'No Companion Realtime Voice preparation items need installation.',
+      installableCount,
+      items: allItems,
+    },
+  };
+}
+
 async function fetchJSON(url, { timeoutMs = 2500 } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -329,9 +558,15 @@ async function hfPoolHealth() {
 }
 
 export async function getHFRealtimeStatus(options = {}) {
+  if (options.prepareSet) return await getHFRealtimeProfileSetStatus(options);
+  return await getHFRealtimeSingleStatus(options);
+}
+
+async function getHFRealtimeSingleStatus(options = {}) {
   const brainMode = normalizeBrainMode(options.brainMode || process.env.VOICECLAW_HF_BRAIN_MODE || 'qwen3.5-2b');
   const sttProfile = normalizeSTTProfile(options.sttProfile || process.env.VOICECLAW_HF_STT_PROFILE || '');
   const sttConfig = sttProfileConfig(sttProfile);
+  const ttsConfig = ttsConfigForHF(options);
   const requireLocalMiddleBrain = localMiddleBrainRequired(brainMode);
   const requireCerebrasKey = cerebrasMiddleBrainRequired(brainMode);
   const pythonReady = await fileExecutable(HF_PYTHON);
@@ -344,7 +579,16 @@ export async function getHFRealtimeStatus(options = {}) {
     sttModuleStatuses.push({
       ...item,
       ready: await pythonCanImport(item.module),
-      version: await pythonPackageVersion(item.package),
+      version: await pythonPackageVersion(item.versionPackage || item.package),
+      required: true,
+    });
+  }
+  const ttsModuleStatuses = [];
+  for (const item of requiredTTSPythonModules(ttsConfig)) {
+    ttsModuleStatuses.push({
+      ...item,
+      ready: await pythonCanImport(item.module),
+      version: await pythonPackageVersion(item.versionPackage || item.package),
       required: true,
     });
   }
@@ -356,19 +600,27 @@ export async function getHFRealtimeStatus(options = {}) {
       required: true,
     });
   }
-  const ttsModelCached = pythonReady ? await hfModelCached(HF_DEFAULT_TTS_MODEL) : false;
+  const ttsRequiredModels = [];
+  for (const model of requiredTTSModels(ttsConfig)) {
+    ttsRequiredModels.push({
+      ...model,
+      cached: pythonReady ? await hfModelCached(model.model, model.allowPatterns || null) : false,
+      required: true,
+    });
+  }
   const localModelCached = pythonReady ? await hfModelCached(HF_DEFAULT_LOCAL_MODEL) : false;
   const health = await hfPoolHealth();
   const runtimeReady = pythonReady && cliReady && packageReady;
   const requiredModels = [
     ...sttRequiredModels,
-    { id: 'tts-qwen3', label: 'Qwen3 local text-to-speech', model: HF_DEFAULT_TTS_MODEL, cached: ttsModelCached, required: HF_DEFAULT_TTS === 'qwen3' },
+    ...ttsRequiredModels,
     { id: 'middle-qwen35-2b-local', label: 'Qwen 3.5 2B local Companion Realtime Voice LLM', model: HF_DEFAULT_LOCAL_MODEL, cached: localModelCached, required: requireLocalMiddleBrain },
   ];
   const cerebrasKeyReady = !requireCerebrasKey || !!cerebrasKeyFromPayload(options);
   const missingSTTModules = sttModuleStatuses.filter((item) => item.required && !item.ready);
+  const missingTTSModules = ttsModuleStatuses.filter((item) => item.required && !item.ready);
   const missingRequiredModels = requiredModels.filter((model) => model.required && !model.cached);
-  const ready = runtimeReady && missingSTTModules.length === 0 && missingRequiredModels.length === 0 && cerebrasKeyReady;
+  const ready = runtimeReady && missingSTTModules.length === 0 && missingTTSModules.length === 0 && missingRequiredModels.length === 0 && cerebrasKeyReady;
   const installItems = ready ? [] : [
     ...(!runtimeReady ? [{
       id: 'hf-speech-to-speech-runtime',
@@ -384,12 +636,21 @@ export async function getHFRealtimeStatus(options = {}) {
       installable: true,
       command: `${HF_PYTHON} -m pip install ${item.package}`,
     })),
+    ...missingTTSModules.map((item) => ({
+      id: item.module,
+      label: item.label,
+      detail: `Installs ${item.package}, required by the selected ${ttsConfig.engine} TTS runtime.`,
+      installable: true,
+      command: `${HF_PYTHON} -m pip install ${item.package}`,
+    })),
     ...missingRequiredModels.map((model) => ({
       id: model.id,
       label: model.label,
       detail: `Downloads ${model.model} into the local Hugging Face cache so first voice use does not stall.`,
       installable: true,
-      command: `${HF_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('${model.model}')"`,
+      command: model.allowPatterns
+        ? `${HF_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('${model.model}', allow_patterns=${JSON.stringify(model.allowPatterns)})"`
+        : `${HF_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('${model.model}')"`,
     })),
     ...(!cerebrasKeyReady ? [{
       id: 'cerebras-api-key',
@@ -420,9 +681,15 @@ export async function getHFRealtimeStatus(options = {}) {
     sttProfiles: HF_STT_PROFILE_OPTIONS,
     sttBackend: sttConfig.backend,
     liveTranscriptionEnabled: !!sttConfig.liveTranscription,
+    ttsEngine: ttsConfig.engine,
+    ttsVoice: ttsConfig.voice,
+    ttsDevice: ttsConfig.device || '',
+    ttsModel: ttsConfig.model || '',
     sttModules: sttModuleStatuses,
+    ttsModules: ttsModuleStatuses,
     requiredModels,
     missingSTTModules,
+    missingTTSModules,
     missingRequiredModels,
     host: HF_HOST,
     port: HF_PORT,
@@ -445,37 +712,57 @@ export async function getHFRealtimeStatus(options = {}) {
 export async function installHFRealtimeRuntime(options = {}) {
   if (installInFlight) return await installInFlight;
   installInFlight = (async () => {
-    await mkdir(HF_ROOT, { recursive: true });
-    const python3 = executablePath(process.env.PYTHON_BIN || 'python3');
-    if (!existsSync(HF_PYTHON)) {
-      await mkdir(HF_VENV, { recursive: true });
-      await runCommand(python3, ['-m', 'venv', HF_VENV], { timeoutMs: 10 * 60 * 1000 });
+    const profiles = options.prepareSet ? hfRealtimeProfilesForPrepareSet(options) : [];
+    if (profiles.length) {
+      for (const profile of profiles) {
+        await installHFRealtimeRuntimeForProfile(profile.options);
+      }
+      return await getHFRealtimeStatus(options);
     }
-    await runCommand(HF_PYTHON, ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'], {
-      timeoutMs: 15 * 60 * 1000,
-    });
-    await runCommand(HF_PYTHON, ['-m', 'pip', 'install', '--upgrade', HF_PACKAGE_SPEC], {
-      timeoutMs: HF_INSTALL_TIMEOUT_MS,
-    });
-    const sttProfile = normalizeSTTProfile(options.sttProfile || process.env.VOICECLAW_HF_STT_PROFILE || '');
-    for (const item of requiredSTTPythonModules(sttProfile)) {
-      await runCommand(HF_PYTHON, ['-m', 'pip', 'install', '--upgrade', item.package], {
-        timeoutMs: HF_INSTALL_TIMEOUT_MS,
-      });
-    }
-    for (const model of requiredSTTModels(sttProfile)) {
-      await prefetchHFModel(model.model, model.allowPatterns || null);
-    }
-    if (HF_DEFAULT_TTS === 'qwen3') await prefetchHFModel(HF_DEFAULT_TTS_MODEL);
-    if (localMiddleBrainRequired(options.brainMode || process.env.VOICECLAW_HF_BRAIN_MODE || 'qwen3.5-2b')) {
-      await prefetchHFModel(HF_DEFAULT_LOCAL_MODEL);
-    }
+    await installHFRealtimeRuntimeForProfile(options);
     return await getHFRealtimeStatus(options);
   })();
   try {
     return await installInFlight;
   } finally {
     installInFlight = null;
+  }
+}
+
+async function installHFRealtimeRuntimeForProfile(options = {}) {
+  await mkdir(HF_ROOT, { recursive: true });
+  const python3 = executablePath(process.env.PYTHON_BIN || 'python3');
+  if (!existsSync(HF_PYTHON)) {
+    await mkdir(HF_VENV, { recursive: true });
+    await runCommand(python3, ['-m', 'venv', HF_VENV], { timeoutMs: 10 * 60 * 1000 });
+  }
+  await runCommand(HF_PYTHON, ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'], {
+    timeoutMs: 15 * 60 * 1000,
+  });
+  await runCommand(HF_PYTHON, ['-m', 'pip', 'install', '--upgrade', HF_PACKAGE_SPEC], {
+    timeoutMs: HF_INSTALL_TIMEOUT_MS,
+  });
+  const sttProfile = normalizeSTTProfile(options.sttProfile || process.env.VOICECLAW_HF_STT_PROFILE || '');
+  for (const item of requiredSTTPythonModules(sttProfile)) {
+    await runCommand(HF_PYTHON, ['-m', 'pip', 'install', '--upgrade', item.package], {
+      timeoutMs: HF_INSTALL_TIMEOUT_MS,
+    });
+  }
+  const ttsConfig = ttsConfigForHF(options);
+  for (const item of requiredTTSPythonModules(ttsConfig)) {
+    await runCommand(HF_PYTHON, ['-m', 'pip', 'install', '--upgrade', item.package], {
+      timeoutMs: HF_INSTALL_TIMEOUT_MS,
+    });
+  }
+  for (const model of requiredSTTModels(sttProfile)) {
+    await prefetchHFModel(model.model, model.allowPatterns || null);
+  }
+  for (const model of requiredTTSModels(ttsConfig)) {
+    await prefetchHFModel(model.model, model.allowPatterns || null);
+  }
+  await warmNativeKokoroRuntime(ttsConfig);
+  if (localMiddleBrainRequired(options.brainMode || process.env.VOICECLAW_HF_BRAIN_MODE || 'qwen3.5-2b')) {
+    await prefetchHFModel(HF_DEFAULT_LOCAL_MODEL);
   }
 }
 
@@ -937,13 +1224,47 @@ function sttArgsForHF(payload = {}) {
   ];
 }
 
-function ttsArgsForHF() {
-  const tts = String(HF_DEFAULT_TTS || 'qwen3').trim();
+function kokoroDeviceForHF(payload = {}) {
+  const explicit = String(process.env.VOICECLAW_HF_KOKORO_DEVICE || '').trim().toLowerCase();
+  if (['cpu', 'mps', 'cuda', 'auto'].includes(explicit)) return explicit;
+  const brainMode = normalizeBrainMode(payload.brainMode || process.env.VOICECLAW_HF_BRAIN_MODE || 'qwen3.5-2b');
+  return localMiddleBrainRequired(brainMode) ? 'cpu' : 'mps';
+}
+
+function ttsConfigForHF(payload = {}) {
+  const localVoice = String(payload.localVoice || payload.voice || '').trim();
+  const lower = localVoice.toLowerCase();
+  let engine = String(HF_DEFAULT_TTS || 'auto').trim().toLowerCase();
+  if (!engine || engine === 'auto') {
+    if (lower.startsWith('qwen')) engine = 'qwen3';
+    else if (lower.startsWith('pocket-')) engine = 'pocket';
+    else engine = 'kokoro';
+  }
+  if (!['kokoro', 'pocket', 'qwen3'].includes(engine)) engine = 'kokoro';
+
+  if (engine === 'pocket') {
+    const voice = lower.startsWith('pocket-') ? localVoice.slice('pocket-'.length) : (process.env.VOICECLAW_HF_POCKET_VOICE || 'jean');
+    return { engine, voice: voice || 'jean', model: '' };
+  }
+  if (engine === 'qwen3') {
+    return { engine, voice: voiceForHF(localVoice, payload.voice, engine), model: HF_DEFAULT_TTS_MODEL };
+  }
+  const device = kokoroDeviceForHF(payload);
+  return {
+    engine: 'kokoro',
+    voice: voiceForHF(localVoice, payload.voice, 'kokoro'),
+    device,
+    model: device === 'cpu' ? HF_NATIVE_KOKORO_MODEL : HF_DEFAULT_KOKORO_MODEL,
+  };
+}
+
+function ttsArgsForHF(payload = {}, config = ttsConfigForHF(payload)) {
+  const tts = config.engine;
   if (tts === 'pocket') {
     return [
       '--tts', 'pocket',
       '--pocket_tts_device', process.env.VOICECLAW_HF_POCKET_DEVICE || 'cpu',
-      '--pocket_tts_voice', process.env.VOICECLAW_HF_POCKET_VOICE || 'jean',
+      '--pocket_tts_voice', config.voice || process.env.VOICECLAW_HF_POCKET_VOICE || 'jean',
       '--pocket_tts_sample_rate', process.env.VOICECLAW_HF_POCKET_SAMPLE_RATE || '16000',
       '--pocket_tts_blocksize', process.env.VOICECLAW_HF_POCKET_BLOCKSIZE || '512',
       '--pocket_tts_max_tokens', process.env.VOICECLAW_HF_POCKET_MAX_TOKENS || '50',
@@ -952,8 +1273,9 @@ function ttsArgsForHF() {
   if (tts === 'kokoro') {
     return [
       '--tts', 'kokoro',
-      '--kokoro_device', process.env.VOICECLAW_HF_KOKORO_DEVICE || 'mps',
-      '--kokoro_voice', process.env.VOICECLAW_HF_KOKORO_VOICE || 'af_heart',
+      '--kokoro_device', config.device || process.env.VOICECLAW_HF_KOKORO_DEVICE || 'mps',
+      '--kokoro_model_name', config.model || HF_DEFAULT_KOKORO_MODEL,
+      '--kokoro_voice', config.voice || process.env.VOICECLAW_HF_KOKORO_VOICE || 'af_heart',
       '--kokoro_lang_code', process.env.VOICECLAW_HF_KOKORO_LANG || 'a',
       '--kokoro_speed', process.env.VOICECLAW_HF_KOKORO_SPEED || '1.0',
       '--kokoro_blocksize', process.env.VOICECLAW_HF_KOKORO_BLOCKSIZE || '512',
@@ -971,7 +1293,8 @@ function ttsArgsForHF() {
 
 async function sidecarConfigFromPayload(payload = {}) {
   const sttArgs = sttArgsForHF(payload);
-  const ttsArgs = ttsArgsForHF();
+  const ttsConfig = ttsConfigForHF(payload);
+  const ttsArgs = ttsArgsForHF(payload, ttsConfig);
   const sttConfig = sttProfileConfig(payload.sttProfile || payload.sttQualityProfile || '');
   const liveTranscriptionArgs = sttConfig.liveTranscription
     ? ['--enable_live_transcription', '--live_transcription_min_silence_ms', process.env.VOICECLAW_HF_LIVE_TRANSCRIPTION_MIN_SILENCE_MS || '180']
@@ -982,7 +1305,7 @@ async function sidecarConfigFromPayload(payload = {}) {
     const key = cerebrasKeyFromPayload(payload);
     const adapterBaseURL = await ensureCerebrasResponsesAdapter(key);
     return {
-      key: `cerebras:${model}:stt:${sttConfig.id}`,
+      key: `cerebras:${model}:stt:${sttConfig.id}:tts:${ttsConfig.engine}:${ttsConfig.device || 'default'}:${ttsConfig.voice}`,
       env: {
         OPENAI_API_KEY: 'voiceclaw-local-cerebras-responses-adapter',
       },
@@ -1013,7 +1336,7 @@ async function sidecarConfigFromPayload(payload = {}) {
   }
 
   return {
-    key: `local:${HF_DEFAULT_LOCAL_MODEL}:stt:${sttConfig.id}`,
+    key: `local:${HF_DEFAULT_LOCAL_MODEL}:stt:${sttConfig.id}:tts:${ttsConfig.engine}:${ttsConfig.device || 'default'}:${ttsConfig.voice}`,
     env: {},
     args: [
       '--mode', 'realtime',
@@ -1116,6 +1439,20 @@ export async function ensureHFRealtimeSidecar(payload = {}) {
   }
 }
 
+export async function prewarmHFRealtimeRuntime(options = {}) {
+  const payload = defaultHFRealtimePrewarmPayload(options);
+  const sidecarInfo = await ensureHFRealtimeSidecar(payload);
+  const status = await getHFRealtimeStatus(payload);
+  return {
+    ok: true,
+    state: 'ready',
+    summary: `Companion Realtime Voice warm runtime is online for ${status.sttProfileLabel || status.sttProfile}, ${status.brainMode}, ${status.ttsEngine}${status.ttsDevice ? ` on ${status.ttsDevice}` : ''}.`,
+    sidecarKey: sidecarInfo.key,
+    wsURL: sidecarInfo.wsURL,
+    status,
+  };
+}
+
 function safeJSONParse(text) {
   try { return JSON.parse(text); } catch { return null; }
 }
@@ -1153,16 +1490,18 @@ function decodeAudioDelta(delta = '') {
   try { return Buffer.from(String(delta || ''), 'base64'); } catch { return Buffer.alloc(0); }
 }
 
-function voiceForHF(localVoice = '', realtimeVoice = '') {
+function voiceForHF(localVoice = '', realtimeVoice = '', engine = '') {
   const candidate = String(localVoice || realtimeVoice || '').trim();
   const lower = candidate.toLowerCase();
-  if (HF_DEFAULT_TTS === 'kokoro') {
+  const ttsEngine = String(engine || HF_DEFAULT_TTS || 'auto').toLowerCase();
+  if (ttsEngine === 'kokoro' || ttsEngine === 'auto') {
     if (!candidate) return process.env.VOICECLAW_HF_KOKORO_VOICE || 'af_heart';
     if (lower.startsWith('kokoro-')) return candidate.slice('kokoro-'.length).replace(/-/g, '_') || 'af_heart';
     if (lower.includes('heart')) return 'af_heart';
+    if (lower.includes('fable')) return 'bm_fable';
     return candidate.replace(/^openai-/i, '').replace(/^piper-/i, '').replace(/-/g, '_') || 'af_heart';
   }
-  if (HF_DEFAULT_TTS === 'qwen3') {
+  if (ttsEngine === 'qwen3') {
     const supported = new Set(['aiden', 'dylan', 'eric', 'ono_anna', 'ryan', 'serena', 'sohee', 'uncle_fu', 'vivian']);
     const clean = candidate.replace(/^openai-/i, '').replace(/^piper-/i, '').replace(/^qwen3-/i, '').replace(/-/g, '_').toLowerCase();
     if (supported.has(clean)) return clean;
@@ -1224,6 +1563,7 @@ export class HFRealtimeBridge {
     this.configureTimer = null;
     this.awaitingResponseAfterTranscript = false;
     this.responseCreateTimer = null;
+    this.turnWatchdogTimer = null;
     this.responseInProgress = false;
     this.pendingToolFollowupResponse = false;
     this.pendingCompanionResultAfterAudio = false;
@@ -1307,6 +1647,7 @@ export class HFRealtimeBridge {
     const now = Date.now();
     if (now - this.lastSilenceFlushAt < 300) return;
     this.lastSilenceFlushAt = now;
+    this.prepareForUserTurn('end-of-speech-padding');
     const vad = turnDetectionForHF(this.payload);
     const paddingMs = Math.max(650, Math.min(1600, Number(vad.silence_duration_ms || 420) + 320));
     const silence = Buffer.alloc(Math.round((DEFAULT_HF_SAMPLE_RATE * 2 * paddingMs) / 1000));
@@ -1315,6 +1656,7 @@ export class HFRealtimeBridge {
       audio: encodePCMChunk(silence),
     }));
     this.awaitingResponseAfterTranscript = true;
+    this.scheduleTurnWatchdog('end-of-speech-padding');
   }
 
   interrupt(reason = 'client-barge-in') {
@@ -1325,6 +1667,7 @@ export class HFRealtimeBridge {
     this.pendingToolFollowupResponse = false;
     this.pendingCompanionResultAfterAudio = false;
     this.awaitingToolFollowup = false;
+    this.clearTurnWatchdog();
     this.finishAudioIfNeeded();
     this.send({ type: 'interrupted', reason });
   }
@@ -1333,7 +1676,7 @@ export class HFRealtimeBridge {
     if (!this.pendingToolFollowupResponse || this.responseInProgress || this.hfWs?.readyState !== WebSocket.OPEN) return false;
     this.pendingToolFollowupResponse = false;
     this.awaitingToolFollowup = true;
-    this.hfWs.send(JSON.stringify({ type: 'response.create' }));
+    this.hfWs.send(JSON.stringify(this.responseCreateEvent()));
     return true;
   }
 
@@ -1357,6 +1700,8 @@ export class HFRealtimeBridge {
     if (this.companionResultSent) return;
     this.companionResultSent = true;
     this.awaitingToolFollowup = false;
+    this.clearResponseCreateFallback();
+    this.clearTurnWatchdog();
     this.send({
       type: 'companion_voice_result',
       ok: true,
@@ -1379,18 +1724,8 @@ export class HFRealtimeBridge {
     this.closed = true;
     if (this.configureTimer) clearTimeout(this.configureTimer);
     if (this.responseCreateTimer) clearTimeout(this.responseCreateTimer);
+    if (this.turnWatchdogTimer) clearTimeout(this.turnWatchdogTimer);
     try { this.hfWs?.close(); } catch {}
-  }
-
-  scheduleResponseCreateFallback() {
-    if (!this.awaitingResponseAfterTranscript || this.hfWs?.readyState !== WebSocket.OPEN) return;
-    if (this.responseCreateTimer) clearTimeout(this.responseCreateTimer);
-    this.responseCreateTimer = setTimeout(() => {
-      this.responseCreateTimer = null;
-      if (!this.awaitingResponseAfterTranscript || this.hfWs?.readyState !== WebSocket.OPEN) return;
-      this.awaitingResponseAfterTranscript = false;
-      this.hfWs.send(JSON.stringify({ type: 'response.create' }));
-    }, Math.max(1000, RESPONSE_CREATE_FALLBACK_MS));
   }
 
   clearResponseCreateFallback() {
@@ -1399,6 +1734,85 @@ export class HFRealtimeBridge {
       clearTimeout(this.responseCreateTimer);
       this.responseCreateTimer = null;
     }
+  }
+
+  triggerResponseAfterFinalTranscript(reason = 'transcript-completed') {
+    if (!this.lastFinalTranscript.trim() || this.responseInProgress || this.hfWs?.readyState !== WebSocket.OPEN) return;
+    if (this.responseCreateTimer) clearTimeout(this.responseCreateTimer);
+    this.responseCreateTimer = setTimeout(() => {
+      this.responseCreateTimer = null;
+      if (this.closed || this.companionResultSent || this.responseInProgress || this.hfWs?.readyState !== WebSocket.OPEN) return;
+      if (!this.lastFinalTranscript.trim()) return;
+      this.awaitingResponseAfterTranscript = false;
+      this.hfWs.send(JSON.stringify(this.responseCreateEvent()));
+      this.scheduleTurnWatchdog(`response-create-${reason}`);
+    }, 80);
+  }
+
+  responseCreateEvent() {
+    const voice = ttsConfigForHF(this.payload).voice;
+    return {
+      type: 'response.create',
+      response: {
+        output_modalities: ['text', 'audio'],
+        audio: {
+          output: { voice },
+        },
+      },
+    };
+  }
+
+  scheduleTurnWatchdog(reason = 'turn') {
+    if (this.turnWatchdogTimer) clearTimeout(this.turnWatchdogTimer);
+    this.turnWatchdogTimer = setTimeout(() => {
+      this.turnWatchdogTimer = null;
+      if (this.closed || this.companionResultSent) return;
+      this.clearResponseCreateFallback();
+      this.responseInProgress = false;
+      this.pendingToolFollowupResponse = false;
+      this.pendingCompanionResultAfterAudio = false;
+      this.awaitingToolFollowup = false;
+      const audioStreamed = this.audioStarted;
+      this.finishAudioIfNeeded();
+      this.send({
+        type: 'companion_voice_result',
+        ok: true,
+        done: true,
+        filtered: true,
+        filterReason: `hf-turn-watchdog-${reason}`,
+        hf: true,
+        routeMode: this.payload.routeMode || this.payload.route || '',
+        brainMode: this.payload.brainMode || '',
+        sttProfile: normalizeSTTProfile(this.payload.sttProfile || this.payload.sttQualityProfile || ''),
+        transcript: this.lastFinalTranscript,
+        rawText: this.lastFinalTranscript,
+        reply: '',
+        elapsedMs: TURN_WATCHDOG_MS,
+        audioStreamed,
+      });
+      this.send({ type: 'status', status: 'ready', reason: `hf-turn-watchdog-${reason}` });
+    }, Math.max(10_000, TURN_WATCHDOG_MS));
+  }
+
+  clearTurnWatchdog() {
+    if (this.turnWatchdogTimer) {
+      clearTimeout(this.turnWatchdogTimer);
+      this.turnWatchdogTimer = null;
+    }
+  }
+
+  prepareForUserTurn(reason = 'user-turn') {
+    this.clearResponseCreateFallback();
+    this.clearTurnWatchdog();
+    this.awaitingResponseAfterTranscript = false;
+    this.responseInProgress = false;
+    this.pendingToolFollowupResponse = false;
+    this.pendingCompanionResultAfterAudio = false;
+    this.awaitingToolFollowup = false;
+    this.companionResultSent = false;
+    this.lastFinalTranscript = '';
+    this.lastAssistantText = '';
+    this.send({ type: 'status', status: 'user-turn-open', reason });
   }
 
   markConfigured(source = 'session.update') {
@@ -1421,17 +1835,15 @@ export class HFRealtimeBridge {
 
   sendSessionUpdate() {
     if (this.hfWs?.readyState !== WebSocket.OPEN) return;
-    const voice = voiceForHF(this.payload.localVoice, this.payload.voice);
+    const voice = ttsConfigForHF(this.payload).voice;
     const session = {
       type: 'realtime',
       instructions: this.instructions,
       audio: {
         input: {
-          format: { type: 'audio/pcm', rate: DEFAULT_HF_SAMPLE_RATE },
           turn_detection: turnDetectionForHF(this.payload),
         },
         output: {
-          format: { type: 'audio/pcm', rate: DEFAULT_HF_SAMPLE_RATE },
           voice,
         },
       },
@@ -1459,11 +1871,14 @@ export class HFRealtimeBridge {
         this.markConfigured('session.updated');
         break;
       case 'input_audio_buffer.speech_started':
+        this.prepareForUserTurn('speech-started');
         this.send({ type: 'status', status: 'user-speaking' });
         this.send({ type: 'interrupted', reason: 'turn_detected' });
         break;
       case 'input_audio_buffer.speech_stopped':
         this.send({ type: 'status', status: 'transcribing' });
+        this.awaitingResponseAfterTranscript = true;
+        this.scheduleTurnWatchdog('speech-stopped');
         break;
       case 'conversation.item.input_audio_transcription.delta':
         if (event.delta) {
@@ -1495,7 +1910,8 @@ export class HFRealtimeBridge {
           hf: true,
           itemID,
         });
-        this.scheduleResponseCreateFallback();
+        this.scheduleTurnWatchdog('transcript-completed');
+        this.triggerResponseAfterFinalTranscript('transcript-completed');
         break;
         }
       case 'response.created':
@@ -1586,6 +2002,7 @@ export class HFRealtimeBridge {
           clearTimeout(this.configureTimer);
           this.configureTimer = null;
         }
+        this.clearTurnWatchdog();
         this.send({ type: 'error', message: event.error?.message || event.message || 'HF realtime error' });
         break;
       default:

@@ -758,6 +758,11 @@ private struct CompanionVoicePanel: View {
                         DependencyItemRow(item: item)
                     }
                 }
+                StatusRow(
+                    title: "Warm Runtime",
+                    value: store.isPrewarmingCompanionVoiceRuntime ? "Starting and warming the local Companion Realtime Voice runtime..." : store.companionVoiceWarmSummary,
+                    symbol: "flame"
+                )
             }
             .padding(14)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
@@ -1210,6 +1215,7 @@ private struct StatusPanel: View {
             StatusRow(title: "Realtime Runtime", value: store.realtimeRuntimeSummary, symbol: "waveform.path.ecg")
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
             StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
+            StatusRow(title: "Companion Voice Warm Runtime", value: store.companionVoiceWarmSummary, symbol: "flame")
             StatusRow(title: "Access and Permissions", value: store.accessSummary, symbol: "checkmark.shield")
             if !store.companionVoiceDependencyInstallSummary.isEmpty {
                 StatusRow(title: "Voice Dependency Install", value: store.companionVoiceDependencyInstallSummary, symbol: "square.and.arrow.down")

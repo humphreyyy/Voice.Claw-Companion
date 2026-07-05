@@ -15,7 +15,7 @@ import { executablePath, normalizeProcessPath } from './bin-paths.js';
 import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
-import { getHFRealtimeStatus, installHFRealtimeRuntime, HFRealtimeBridge } from './hf-realtime-sidecar.js';
+import { getHFRealtimeStatus, installHFRealtimeRuntime, prewarmHFRealtimeRuntime, HFRealtimeBridge } from './hf-realtime-sidecar.js';
 import {
   REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
   buildRealtimeAuthStatus,
@@ -1157,7 +1157,7 @@ const MIN_PROBE_RMS = Number(process.env.VB_PROBE_MIN_RMS || 140);
 const MIN_TURN_RMS = Number(process.env.VB_TURN_MIN_RMS || 90);
 const MIN_AUDIO_BYTES = Number(process.env.VB_MIN_AUDIO_BYTES || 1200);
 const COMPANION_SERVER_VAD_DEFAULT_ENABLED = !['0', 'false', 'off'].includes(String(process.env.VB_COMPANION_SERVER_VAD || '1').toLowerCase());
-const COMPANION_SERVER_VAD_SAMPLE_RATE = Number(process.env.VB_COMPANION_SERVER_VAD_SAMPLE_RATE || 16000);
+const COMPANION_SERVER_VAD_WIRE_SAMPLE_RATE = 16000;
 const COMPANION_SERVER_VAD_PRE_ROLL_MS = Number(process.env.VB_COMPANION_SERVER_VAD_PRE_ROLL_MS || 360);
 const COMPANION_SERVER_VAD_MIN_SPEECH_MS = Number(process.env.VB_COMPANION_SERVER_VAD_MIN_SPEECH_MS || 180);
 const COMPANION_SERVER_VAD_MAX_TURN_MS = Number(process.env.VB_COMPANION_SERVER_VAD_MAX_TURN_MS || 26000);
@@ -1384,7 +1384,9 @@ function buildCompanionServerVADState(msg = {}) {
     : (payload.serverVad && typeof payload.serverVad === 'object' ? payload.serverVad : {});
   const enabled = parseCompanionServerVadBoolean(raw.enabled, !!msg.companionVoice && COMPANION_SERVER_VAD_DEFAULT_ENABLED);
   const sensitivity = boundedNumber(raw.sensitivity ?? payload.vadSensitivity, 0.72, 0, 1);
-  const sampleRate = Math.max(8000, Math.min(48000, Math.round(Number(raw.sampleRate || COMPANION_SERVER_VAD_SAMPLE_RATE) || COMPANION_SERVER_VAD_SAMPLE_RATE)));
+  // Companion Realtime Voice standardizes mic transport and server-VAD timing on
+  // 16 kHz PCM. Ignore stale client hints so silence/pre-roll math cannot drift.
+  const sampleRate = COMPANION_SERVER_VAD_WIRE_SAMPLE_RATE;
   const silenceMs = Math.round(boundedNumber(raw.silenceDurationMs ?? raw.silenceMs ?? payload.vadSilenceMs, 850, 260, 2400));
   const startRms = Math.round(boundedNumber(raw.startRms, 430 - (sensitivity * 250), 95, 900));
   const continueRms = Math.round(boundedNumber(raw.continueRms, Math.max(70, startRms * 0.52), 45, startRms));
@@ -1462,11 +1464,11 @@ function promoteCompanionServerVADPreRoll(session) {
 }
 
 function companionServerVADChunkDurationMs(chunk, vad) {
-  return Math.max(10, (chunk.length / 2 / Math.max(1, vad.sampleRate || COMPANION_SERVER_VAD_SAMPLE_RATE)) * 1000);
+  return Math.max(10, (chunk.length / 2 / COMPANION_SERVER_VAD_WIRE_SAMPLE_RATE) * 1000);
 }
 
 function companionSessionSampleRate(session) {
-  return Math.max(8000, Math.min(48000, Math.round(Number(session?.serverVad?.sampleRate || COMPANION_SERVER_VAD_SAMPLE_RATE) || COMPANION_SERVER_VAD_SAMPLE_RATE)));
+  return COMPANION_SERVER_VAD_WIRE_SAMPLE_RATE;
 }
 
 function handleCompanionServerVADChunk(session, chunk, send, cancelPipeline, commit) {
@@ -4782,6 +4784,8 @@ const httpServer = createServer(async (req, res) => {
       const hfRealtime = await getHFRealtimeStatus({
         brainMode: configURL.searchParams.get('brainMode') || 'qwen3.5-2b',
         sttProfile: configURL.searchParams.get('sttProfile') || '',
+        localVoice: configURL.searchParams.get('localVoice') || 'kokoro-af-heart',
+        prepareSet: configURL.searchParams.get('prepareSet') || 'recommended',
       }).catch((error) => ({ state: 'error', error: error?.message || String(error) }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -4805,6 +4809,28 @@ const httpServer = createServer(async (req, res) => {
         const status = await getHFRealtimeStatus({
           brainMode: statusURL.searchParams.get('brainMode') || 'qwen3.5-2b',
           sttProfile: statusURL.searchParams.get('sttProfile') || '',
+          localVoice: statusURL.searchParams.get('localVoice') || '',
+          prepareSet: statusURL.searchParams.get('prepareSet') || 'recommended',
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...status }));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, state: 'error', error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/hf-prewarm`) {
+      try {
+        const body = await readRequestBody(req, 100_000).catch(() => '{}');
+        let payload;
+        try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+        const status = await prewarmHFRealtimeRuntime({
+          brainMode: payload.brainMode || 'qwen3.5-2b',
+          sttProfile: payload.sttProfile || 'parakeet-live',
+          localVoice: payload.localVoice || 'kokoro-af-heart',
+          prepareSet: payload.prepareSet || 'recommended',
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...status }));
@@ -4823,6 +4849,8 @@ const httpServer = createServer(async (req, res) => {
         const status = await installHFRealtimeRuntime({
           brainMode: payload.brainMode || 'qwen3.5-2b',
           sttProfile: payload.sttProfile || '',
+          localVoice: payload.localVoice || '',
+          prepareSet: payload.prepareSet || 'recommended',
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...status }));

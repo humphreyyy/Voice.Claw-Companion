@@ -972,7 +972,7 @@ async function suggestFreshPort() {
 }
 
 async function checkCompanionVoiceDependencies(openClawInstallPath) {
-  const hfRealtime = await getHFRealtimeStatus().catch((error) => ({
+  const hfRealtime = await getHFRealtimeStatus({ prepareSet: 'recommended' }).catch((error) => ({
     state: 'error',
     summary: `HF speech-to-speech runtime check failed: ${error?.message || String(error)}`,
     installPlan: {
@@ -1030,7 +1030,7 @@ async function checkCompanionVoiceDependencies(openClawInstallPath) {
   const result = {
     state: hfReady ? 'ready' : 'needs_setup',
     summary: hfReady
-      ? `Companion Realtime Voice is ready: HF speech-to-speech runtime and selected STT profile${hfRealtime?.sttProfileLabel ? ` (${hfRealtime.sttProfileLabel})` : ''} are ready.`
+      ? (hfRealtime?.summary || `Companion Realtime Voice is ready: HF speech-to-speech runtime and selected STT profile${hfRealtime?.sttProfileLabel ? ` (${hfRealtime.sttProfileLabel})` : ''} are ready.`)
       : `Companion Realtime Voice needs setup: ${missing.join(', ')}.`,
     hfRealtime,
     legacy: {
@@ -1117,6 +1117,15 @@ function buildCompanionVoiceInstallPlan({
   };
 }
 
+function isHFRealtimeInstallItem(item = {}) {
+  const id = String(item.id || '');
+  return id === 'hf-speech-to-speech-runtime'
+    || id.startsWith('stt-')
+    || id.startsWith('tts-')
+    || id.startsWith('middle-')
+    || ['kokoro', 'soundfile', 'mlx_audio', 'misaki', 'faster_whisper', 'lightning_whisper_mlx', 'whisper'].includes(id);
+}
+
 async function downloadFile(url, destination) {
   await mkdir(dirname(destination), { recursive: true });
   await runCommand('/usr/bin/curl', ['-L', '--fail', '--retry', '3', '--output', destination, url], {
@@ -1165,12 +1174,8 @@ async function installCompanionVoiceDependencies(openClawInstallPath) {
       continue;
     }
     try {
-      if (item.id === 'hf-speech-to-speech-runtime'
-          || item.id === 'stt-parakeet-tdt'
-          || item.id === 'tts-qwen3'
-          || item.id === 'middle-qwen35-2b-local'
-          || item.id === 'middle-qwen3-local') {
-        await installHFRealtimeRuntime();
+      if (isHFRealtimeInstallItem(item)) {
+        await installHFRealtimeRuntime({ prepareSet: 'recommended' });
       } else if (item.id === 'ffmpeg') {
         if (!brewPath) throw new Error('Homebrew is required to install ffmpeg automatically.');
         await runCommand(brewPath, ['install', 'ffmpeg']);

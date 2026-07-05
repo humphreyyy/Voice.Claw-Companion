@@ -1,8 +1,13 @@
 #!/usr/bin/env node
+import { execFile as execFileCb } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
+const execFile = promisify(execFileCb);
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { default: WebSocket } = await import(require.resolve('ws', {
@@ -10,23 +15,11 @@ const { default: WebSocket } = await import(require.resolve('ws', {
 }));
 
 const url = process.env.VOICECLAW_COMPANION_WS_URL || 'ws://127.0.0.1:12321/ws';
-const timeoutMs = Number(process.env.VOICECLAW_COMPANION_SERVER_VAD_SMOKE_TIMEOUT_MS || 45_000);
-const sampleRate = 24_000;
+const timeoutMs = Number(process.env.VOICECLAW_COMPANION_SERVER_VAD_SMOKE_TIMEOUT_MS || 180_000);
+const sampleRate = 16_000;
 const chunkMs = 40;
-const samplesPerChunk = Math.round(sampleRate * chunkMs / 1000);
-
-function pcmChunk(kind, phase = 0) {
-  const buffer = Buffer.alloc(samplesPerChunk * 2);
-  for (let i = 0; i < samplesPerChunk; i += 1) {
-    let sample = 0;
-    if (kind === 'speech') {
-      const t = (phase + i) / sampleRate;
-      sample = Math.round(Math.sin(2 * Math.PI * 240 * t) * 5200);
-    }
-    buffer.writeInt16LE(sample, i * 2);
-  }
-  return buffer;
-}
+const bytesPerChunk = Math.round(sampleRate * 2 * chunkMs / 1000);
+const promptText = process.argv.slice(2).join(' ').trim() || 'VoiceClaw server voice activity detection smoke test.';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -66,6 +59,39 @@ function startPayload() {
   };
 }
 
+async function renderSpeechPCM(text) {
+  const dir = await mkdtemp(join(tmpdir(), 'voiceclaw-server-vad-smoke-'));
+  const aiffPath = join(dir, 'speech.aiff');
+  const pcmPath = join(dir, 'speech.pcm');
+  try {
+    await execFile('/usr/bin/say', ['-o', aiffPath, text], { timeout: 30_000 });
+    await execFile('/opt/homebrew/bin/ffmpeg', [
+      '-y',
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-i', aiffPath,
+      '-ac', '1',
+      '-ar', String(sampleRate),
+      '-f', 's16le',
+      '-acodec', 'pcm_s16le',
+      pcmPath,
+    ], { timeout: 30_000 });
+    return await readFile(pcmPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function sendPCMWithoutClientCommit(ws, pcm) {
+  const leadingSilence = Buffer.alloc(Math.round(sampleRate * 2 * 0.24));
+  const trailingSilence = Buffer.alloc(Math.round(sampleRate * 2 * 1.45));
+  const combined = Buffer.concat([leadingSilence, pcm, trailingSilence]);
+  for (let offset = 0; offset < combined.length; offset += bytesPerChunk) {
+    ws.send(combined.subarray(offset, Math.min(combined.length, offset + bytesPerChunk)));
+    await sleep(chunkMs);
+  }
+}
+
 async function run() {
   const ws = new WebSocket(url);
   const events = [];
@@ -85,22 +111,9 @@ async function run() {
 
   ws.on('open', async () => {
     ws.send(JSON.stringify(startPayload()));
-    await sleep(100);
-    for (let i = 0; i < 8; i += 1) {
-      ws.send(pcmChunk('silence'));
-      await sleep(chunkMs);
-    }
-    for (let i = 0; i < 28; i += 1) {
-      ws.send(pcmChunk('speech', i * samplesPerChunk));
-      await sleep(chunkMs);
-    }
-    for (let i = 0; i < 18; i += 1) {
-      ws.send(pcmChunk('silence'));
-      await sleep(chunkMs);
-    }
   });
 
-  ws.on('message', (data, isBinary) => {
+  ws.on('message', async (data, isBinary) => {
     if (isBinary) return;
     let event;
     try {
@@ -119,9 +132,15 @@ async function run() {
         transport: event.transport,
       });
     }
-    if (event.type === 'transcript' || event.type === 'companion_voice_result' || event.type === 'error') {
+    if (event.type === 'status' && event.status === 'ready' && event.hf && !events.some((item) => item.status === 'sent-smoke-audio')) {
+      events.push({ type: 'status', status: 'sent-smoke-audio' });
+      const pcm = await renderSpeechPCM(promptText);
+      await sendPCMWithoutClientCommit(ws, pcm);
+    }
+    const terminalTranscript = event.type === 'transcript' && event.final;
+    if (terminalTranscript || event.type === 'companion_voice_result' || event.type === 'error') {
       clearTimeout(timer);
-      const sawSpeechStart = events.some((item) => item.type === 'status' && item.status === 'user_speech_start');
+      const sawSpeechStart = events.some((item) => item.type === 'status' && (item.status === 'user_speech_start' || item.status === 'user-speaking'));
       const sawTranscribing = events.some((item) => item.type === 'status' && item.status === 'transcribing');
       const ok = event.type !== 'error' && sawSpeechStart && sawTranscribing;
       finish(ok, event.type, { sawSpeechStart, sawTranscribing });

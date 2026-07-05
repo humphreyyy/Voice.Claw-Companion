@@ -156,12 +156,14 @@ final class BridgeStore: ObservableObject {
     @Published var realtimeAuthStatusSummary: String = "OpenAI auth status not checked."
     @Published var companionVoiceSummary: String = "Companion Realtime Voice dependencies not checked."
     @Published var companionVoiceState: String = "not_checked"
+    @Published var companionVoiceWarmSummary: String = "Companion Realtime Voice warm runtime has not been checked."
     @Published var companionVoiceDependencyInstallSummary: String = ""
     @Published var companionVoiceDependencyInstallAvailable: Bool = false
     @Published var companionVoiceDependencyItems: [CompanionVoiceDependencyItem] = []
     @Published var accessSummary: String = "Access and permissions have not been checked."
     @Published var accessItems: [CompanionAccessItem] = []
     @Published var isInstallingCompanionVoiceDependencies: Bool = false
+    @Published var isPrewarmingCompanionVoiceRuntime: Bool = false
     @Published var pairingJSON: String = ""
     @Published var pairingPreview: String = ""
     @Published var pairingURL: String = ""
@@ -295,6 +297,9 @@ final class BridgeStore: ObservableObject {
         refreshLaunchAtStartupStatus()
         await refreshBridgeDiagnostics()
         lastRefreshDate = Date()
+        if companionVoiceState == "ready", !companionVoiceDependencyInstallAvailable {
+            Task { await prewarmCompanionVoiceRuntimeIfReady() }
+        }
     }
 
     func refreshLaunchAtStartupStatus() {
@@ -764,10 +769,56 @@ final class BridgeStore: ObservableObject {
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             lastLog = trimmed.isEmpty ? "Companion Realtime Voice dependency installation completed." : trimmed
             await refreshStatus()
+            await prewarmCompanionVoiceRuntimeIfReady(force: true)
         } catch {
             lastLog = Self.userFacingSetupError(error)
             status = .failed("Voice Dependency Install Failed")
             await refreshStatus()
+        }
+    }
+
+    private func prewarmCompanionVoiceRuntimeIfReady(force: Bool = false) async {
+        guard !isPrewarmingCompanionVoiceRuntime else { return }
+        guard force || companionVoiceState == "ready" else { return }
+        guard let portValue = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let url = URL(string: "http://127.0.0.1:\(portValue)/realtime/hf-prewarm")
+        else {
+            companionVoiceWarmSummary = "Choose a valid bridge port before warming the Companion Realtime Voice runtime."
+            return
+        }
+
+        isPrewarmingCompanionVoiceRuntime = true
+        companionVoiceWarmSummary = "Starting the Companion Realtime Voice warm runtime..."
+        defer { isPrewarmingCompanionVoiceRuntime = false }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20 * 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "prepareSet": "recommended",
+            "brainMode": "qwen3.5-2b",
+            "sttProfile": "parakeet-live",
+            "localVoice": "kokoro-af-heart",
+        ])
+        applyBridgeAuthHeaders(to: &request)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                companionVoiceWarmSummary = "Companion Realtime Voice warm runtime did not return a readable status."
+                return
+            }
+            if let summary = object["summary"] as? String, !summary.isEmpty {
+                companionVoiceWarmSummary = summary
+            } else {
+                companionVoiceWarmSummary = "Companion Realtime Voice warm runtime is online."
+            }
+        } catch {
+            companionVoiceWarmSummary = "Companion Realtime Voice warm runtime is not online yet: \(Self.userFacingSetupError(error))"
         }
     }
 
