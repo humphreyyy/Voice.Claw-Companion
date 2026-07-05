@@ -12,7 +12,7 @@
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.75</h2><ul><li>Ensures Cerebras API keys saved in VoiceClaw Companion are persisted into the runtime config even after reset or before the bridge config exists.</li><li>Keeps Companion Realtime Voice Cerebras middle-brain setup aligned with the iOS app key-entry and QR sync path.</li><li>Preserves the current-location plus Apple Maps directions repair added in the prior release.</li></ul>
 ]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.75/VoiceClawCompanion-0.1.75-202607050323.dmg" length="3216334" type="application/octet-stream" sparkle:edSignature="3p6y415jc9HIq8SbeJF1zDX/GCkh21L45GqJsxPm9bmbOmHc6TPYijW07LO9iU5ZvPrkBpwAuofC5oHQk3jHBQ=="/>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.75/VoiceClawCompanion-0.1.75-202607050323.dmg" length="3218234" type="application/octet-stream" sparkle:edSignature="/jSlYelFbagmJTL4PGApd4oCwqVJ1vbz4i+aoR9h76FcORPJyxmam11yHTVDpuGqESaLQtBUmGQqDC521oApBQ=="/>
         </item>
         <item>
             <title>0.1.74</title>
