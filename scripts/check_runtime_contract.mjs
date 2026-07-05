@@ -115,6 +115,9 @@ const requiredPhrases = [
   'zai-glm-4.7',
   'isAsrPlaceholderText',
   "filterReason: 'asr-placeholder'",
+  'companionVoiceExtractMessageDraft',
+  'Who should I send the text to?',
+  'only set iphone_tool_name when the recipient is clear',
 ];
 
 for (const phrase of requiredPhrases) {
@@ -185,10 +188,12 @@ ${[
   'companionVoiceLooksLikeMapsDirections',
   'companionVoiceLooksLikeIPhoneAction',
   'companionVoiceExtractMapsDestination',
+  'companionVoiceExtractMessageDraft',
   'companionVoiceFallbackIPhoneTool',
   'companionVoiceRepairIPhoneTool',
+  'companionVoiceMissingDraftMessageRecipient',
 ].map(extractFunctionSource).join('\n\n')}
-return { companionVoiceFallbackIPhoneTool, companionVoiceRepairIPhoneTool };
+return { companionVoiceFallbackIPhoneTool, companionVoiceRepairIPhoneTool, companionVoiceMissingDraftMessageRecipient };
 `)();
 
   const directionsRequest = 'Show me my current location and how to get from there to Soho House in Tel Aviv';
@@ -221,6 +226,28 @@ return { companionVoiceFallbackIPhoneTool, companionVoiceRepairIPhoneTool };
   const currentLocationTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Where am I?');
   if (currentLocationTool?.name !== 'iphone_current_location') {
     fail('plain current-location request no longer uses iphone_current_location');
+  }
+
+  const completeTextTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Text Sam that I am late');
+  if (completeTextTool?.name !== 'iphone_external_action'
+      || completeTextTool?.arguments?.action !== 'draft_message'
+      || completeTextTool?.arguments?.recipients?.[0] !== 'Sam'
+      || completeTextTool?.arguments?.body !== 'I am late') {
+    fail('complete text-message request should produce a Messages draft action with recipient and body');
+  }
+
+  const missingRecipientTextTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Draft a text saying I am late');
+  if (missingRecipientTextTool?.name || missingRecipientTextTool?.reply !== 'Who should I send the text to?') {
+    fail('text-message request without a recipient should ask for a recipient instead of producing a broken draft action');
+  }
+
+  const badDraft = fallbackHarness.companionVoiceRepairIPhoneTool({
+    name: 'iphone_external_action',
+    argumentsObject: { action: 'draft_message', body: 'I am late' },
+    text: 'Draft a text saying I am late',
+  });
+  if (!fallbackHarness.companionVoiceMissingDraftMessageRecipient('iphone_external_action', badDraft.arguments)) {
+    fail('draft-message repair should expose missing recipient for downstream clarification');
   }
 } catch (error) {
   fail(`fallback behavior harness failed: ${error?.message || String(error)}`);

@@ -2933,9 +2933,17 @@ function companionVoiceFallbackIPhoneTool(text = '') {
     };
   }
   if (/\b(text|message|sms)\b/i.test(normalized)) {
+    const draft = companionVoiceExtractMessageDraft(trimmed);
+    if (!draft.recipient) {
+      return {
+        name: '',
+        reply: 'Who should I send the text to?',
+        arguments: {},
+      };
+    }
     return {
       name: 'iphone_external_action',
-      arguments: { action: 'draft_message', recipients: [], body: trimmed },
+      arguments: { action: 'draft_message', recipients: [draft.recipient], body: draft.body || '' },
     };
   }
   if (/\b(email|mail)\b/i.test(normalized)) {
@@ -2963,6 +2971,27 @@ function companionVoiceFallbackIPhoneTool(text = '') {
     };
   }
   return null;
+}
+
+function companionVoiceExtractMessageDraft(text = '') {
+  const trimmed = String(text || '').trim();
+  const patterns = [
+    /^(?:text|message|sms)\s+(.+?)\s+(?:that|saying|to say)\s+(.+)$/i,
+    /^(?:send|write|draft|compose)\s+(?:a\s+)?(?:text|message|sms)\s+to\s+(.+?)(?:\s+(?:that|saying|to say)\s+(.+))?$/i,
+    /^(?:send|write|draft|compose)\s+(.+?)\s+(?:a\s+)?(?:text|message|sms)(?:\s+(?:that|saying|to say)\s+(.+))?$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (!match) continue;
+    const recipient = String(match[1] || '')
+      .replace(/^(?:to|for)\s+/i, '')
+      .trim();
+    const body = String(match[2] || '').trim();
+    if (recipient && !/^(?:a|an|the|this|that|it)$/i.test(recipient)) {
+      return { recipient, body };
+    }
+  }
+  return { recipient: '', body: '' };
 }
 
 function companionVoiceRepairIPhoneTool({ name = '', argumentsObject = {}, text = '' } = {}) {
@@ -3028,6 +3057,17 @@ function companionVoiceRepairIPhoneTool({ name = '', argumentsObject = {}, text 
     repairedArguments.to = [];
   }
   return { name: repairedName, arguments: repairedArguments };
+}
+
+function companionVoiceMissingDraftMessageRecipient(name = '', args = {}) {
+  const toolName = String(name || '').trim();
+  const action = String(args?.action || '').trim().toLowerCase();
+  if (toolName !== 'iphone_draft_message'
+      && !(toolName === 'iphone_external_action' && action === 'draft_message')) {
+    return false;
+  }
+  return !Array.isArray(args?.recipients)
+    || args.recipients.map((item) => String(item || '').trim()).filter(Boolean).length === 0;
 }
 
 function companionVoiceIPhoneToolMatchesRequest(name = '', text = '') {
@@ -3117,6 +3157,13 @@ function companionVoiceLocalPlan(text = '', routeMode = '') {
   const directReply = companionVoiceDirectReply(trimmed);
   if (directReply) return { callRoute: false, routeMessage: '', finalAnswer: directReply };
   const fallbackIPhoneTool = companionVoiceFallbackIPhoneTool(trimmed);
+  if (fallbackIPhoneTool?.reply && !fallbackIPhoneTool.name) {
+    return {
+      callRoute: false,
+      routeMessage: '',
+      finalAnswer: fallbackIPhoneTool.reply,
+    };
+  }
   if (fallbackIPhoneTool?.name) {
     return {
       callRoute: false,
@@ -3229,6 +3276,16 @@ function finalizeCompanionVoicePlan(plan = {}, text = '', routeMode = '', planne
   });
   iphoneToolName = repairedIPhoneTool.name;
   iphoneToolArguments = repairedIPhoneTool.arguments;
+  if (companionVoiceMissingDraftMessageRecipient(iphoneToolName, iphoneToolArguments)) {
+    return {
+      callRoute: false,
+      routeMessage: '',
+      finalAnswer: 'Who should I send the text to?',
+      iphoneToolName: '',
+      iphoneToolArguments: {},
+      planner,
+    };
+  }
   if (iphoneToolName && !companionVoiceIPhoneToolMatchesRequest(iphoneToolName, text)) {
     iphoneToolName = '';
     iphoneToolArguments = {};
@@ -3291,6 +3348,7 @@ Decision policy:
 - Answer locally for greetings, mic checks, simple factual questions, arithmetic, definitions, brief explanations, short jokes, simple advice, short drafting, and ordinary conversation.
 - For explicit iPhone/app actions, set iphone_tool_name and iphone_tool_arguments instead of saying you cannot do it. Good default: iphone_external_action.
 - Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, and iphone_end_voice_session for VoiceClaw session/route/engine controls.
+- For text/message drafts, only set iphone_tool_name when the recipient is clear. If the user asks to draft or send a text but does not say who it is for, leave iphone_tool_name empty and ask: "Who should I send the text to?"
 - If the user asks what voice engines are available, answer concisely: GPT-Realtime-2, STT + GPT + TTS, and Companion Realtime Voice. If the user asks what voice routes are available, answer concisely: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, and Hermes HTTPS Tunnel.
 - Location, nearby, Maps, route, and directions requests are iPhone-side actions. Do not send them to OpenClaw/Hermes unless the user explicitly asks the Mac agent to handle them.
 - For directions from "here", "my current location", or "where I am", use iphone_external_action or iphone_open_maps with mode "directions", destination set to the actual destination only, and origin omitted so Apple Maps uses the iPhone's current location.
@@ -3309,6 +3367,7 @@ iPhone action examples:
 - "Where am I?" -> {"call_route":false,"route_message":"","final_answer":"Checking your location now.","iphone_tool_name":"iphone_current_location","iphone_tool_arguments":{"purpose":"The user asked where they are."}}
 - "Search the web for Qwen 3.5" -> {"call_route":false,"route_message":"","final_answer":"Searching now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"search_web","query":"Qwen 3.5"}}
 - "Text Sam that I am late" -> {"call_route":false,"route_message":"","final_answer":"Opening a message draft now.","iphone_tool_name":"iphone_external_action","iphone_tool_arguments":{"action":"draft_message","recipients":["Sam"],"body":"I am late"}}
+- "Draft a text saying I am late" -> {"call_route":false,"route_message":"","final_answer":"Who should I send the text to?","iphone_tool_name":"","iphone_tool_arguments":{}}
 - "Switch the voice engine to Companion Realtime Voice" -> {"call_route":false,"route_message":"","final_answer":"Switching voice engines.","iphone_tool_name":"iphone_confirm_voice_engine_switch","iphone_tool_arguments":{"engine":"companion-realtime-voice"}}
 - "What files are on my Mac desktop?" in an OpenClaw or Hermes route -> {"call_route":true,"route_message":"What files are on my Mac desktop?","final_answer":"Checking that now.","iphone_tool_name":"","iphone_tool_arguments":{}}`;
 }
