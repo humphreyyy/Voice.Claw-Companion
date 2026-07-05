@@ -111,6 +111,8 @@ const requiredPhrases = [
   'say exactly: "Mic Muted"',
   'hasCerebrasAPIKey',
   'Cerebras API key is not configured',
+  'COMPANION_VOICE_CEREBRAS_MODELS',
+  'zai-glm-4.7',
 ];
 
 for (const phrase of requiredPhrases) {
@@ -124,7 +126,25 @@ function extractFunctionSource(name) {
     fail(`missing function ${name}`);
     return '';
   }
-  const open = source.indexOf('{', start);
+  const paramsStart = source.indexOf('(', start);
+  if (paramsStart === -1) {
+    fail(`missing parameter list for function ${name}`);
+    return '';
+  }
+  let parenDepth = 0;
+  let paramsEnd = -1;
+  for (let index = paramsStart; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '(') parenDepth += 1;
+    if (char === ')') {
+      parenDepth -= 1;
+      if (parenDepth === 0) {
+        paramsEnd = index;
+        break;
+      }
+    }
+  }
+  const open = paramsEnd === -1 ? -1 : source.indexOf('{', paramsEnd);
   if (open === -1) {
     fail(`missing body for function ${name}`);
     return '';
@@ -149,11 +169,13 @@ ${[
   'companionVoiceLooksLikeIPhoneAction',
   'companionVoiceExtractMapsDestination',
   'companionVoiceFallbackIPhoneTool',
+  'companionVoiceRepairIPhoneTool',
 ].map(extractFunctionSource).join('\n\n')}
-return { companionVoiceFallbackIPhoneTool };
+return { companionVoiceFallbackIPhoneTool, companionVoiceRepairIPhoneTool };
 `)();
 
-  const mapsTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Show me my current location and how to get from there to Soho House in Tel Aviv');
+  const directionsRequest = 'Show me my current location and how to get from there to Soho House in Tel Aviv';
+  const mapsTool = fallbackHarness.companionVoiceFallbackIPhoneTool(directionsRequest);
   if (mapsTool?.name !== 'iphone_external_action') {
     fail('combined current-location directions phrase did not produce iphone_external_action');
   }
@@ -165,6 +187,18 @@ return { companionVoiceFallbackIPhoneTool };
   }
   if (Object.hasOwn(mapsTool?.arguments || {}, 'origin')) {
     fail('combined current-location directions phrase should omit origin so Apple Maps can use current location');
+  }
+
+  const repairedLocationTool = fallbackHarness.companionVoiceRepairIPhoneTool({
+    name: 'iphone_current_location',
+    argumentsObject: { purpose: directionsRequest },
+    text: directionsRequest,
+  });
+  if (repairedLocationTool?.name !== 'iphone_external_action'
+      || repairedLocationTool?.arguments?.action !== 'open_maps'
+      || repairedLocationTool?.arguments?.mode !== 'directions'
+      || repairedLocationTool?.arguments?.destination !== 'Soho House in Tel Aviv') {
+    fail('combined current-location directions phrase should repair iphone_current_location into Maps directions');
   }
 
   const currentLocationTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Where am I?');

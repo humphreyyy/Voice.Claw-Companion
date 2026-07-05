@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.74</title>
+            <pubDate>Sun, 05 Jul 2026 03:09:52 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607050308</sparkle:version>
+            <sparkle:shortVersionString>0.1.74</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.74</h2><ul><li>Hardens Companion Realtime Voice iPhone action repair so combined current-location plus Maps directions requests open Maps directions instead of stopping at a location read.</li><li>Advertises all current public Cerebras middle-brain models: Gemma 4 31B, GPT OSS 120B, and Z.ai GLM 4.7.</li><li>Uses fast structured planner settings for the Z.ai GLM 4.7 Cerebras middle brain.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.74/VoiceClawCompanion-0.1.74-202607050308.dmg" length="3216470" type="application/octet-stream" sparkle:edSignature="Y0+TXN1X49uoWcSKxqCNQ7sbJj7QZ5Kfb8vCqPiMh9g2NPbNtvaHdc+T9AHpJELxA1MwUlNOvQ1kgKhIq+u5BA=="/>
+        </item>
+        <item>
             <title>0.1.73</title>
             <pubDate>Sun, 05 Jul 2026 03:00:16 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.72</h2><ul><li>Adds Companion Realtime Voice middle-brain support for local Qwen, GPT-5.5, and Cerebras-backed planning.</li><li>Syncs new VoiceClaw Realtime iOS/watch settings for voice engine switching, Cerebras configuration, and OpenClaw/Hermes routes.</li><li>Improves pairing, diagnostics, and documentation for the current VoiceClaw Realtime workflow.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.72/VoiceClawCompanion-0.1.72-202607042326.dmg" length="3216158" type="application/octet-stream" sparkle:edSignature="iWtvET2Ba0/dDzrhKoz8yMnQKlzb4xQp7KEpcOWGjqVmWGNnSKVSnk4QUka70to3LZwTkQUjdJEtelAYNYseCw=="/>
-        </item>
-        <item>
-            <title>0.1.71</title>
-            <pubDate>Sun, 05 Jul 2026 00:45:04 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607042143</sparkle:version>
-            <sparkle:shortVersionString>0.1.71</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.71</h2><ul><li>Adds Companion Realtime Voice diagnostics and readiness checks for ffmpeg, whisper-cli, local Whisper models, Ollama/Qwen, and TTS.</li><li>Improves Companion Realtime Voice routing so iPhone app actions stay phone-side while OpenClaw, Hermes, and Mac work route to the selected agent.</li><li>Updates the bundled realtime runtime and fixes the packaged WebSocket dependency advisory.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.71/VoiceClawCompanion-0.1.71-202607042143.dmg" length="3214227" type="application/octet-stream" sparkle:edSignature="fIb95bE7abQr1KGzV8mo2fdRyu3yu9BgyGwvDIPtCe+g8fHdLdOxwGmRpIBt7X51LDLxrs8oO476O4KNCHw9BA=="/>
         </item>
     </channel>
 </rss>
