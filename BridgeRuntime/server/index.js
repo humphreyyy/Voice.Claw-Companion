@@ -1283,6 +1283,10 @@ function shouldSkipAudio(buffer, threshold = MIN_TURN_RMS) {
   return { skip: !e.container && (e.tooSmall || e.rms < threshold), ...e, threshold };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function rememberRealtimeCancel(sessionToken, turnId = '') {
   const key = sanitizeRealtimeSessionToken(sessionToken);
   if (!turnId) return;
@@ -4938,10 +4942,15 @@ wss.on('connection', (ws) => {
       case 'audio_end':
         // Client finished recording an utterance — process it
         session.collectingWakeProbe = false;
+        if (session.audioChunks.length === 0 && Number(msg.audioBytes || 0) > 0) {
+          console.log(`[ws] audio_end arrived before binary audio session=${session.id} clientBytes=${Number(msg.audioBytes || 0)}; waiting for frames`);
+          await sleep(140);
+        }
         if (session.audioChunks.length === 0) {
-          send({ type: 'error', message: 'No audio received' });
+          send({ type: 'error', message: `No audio received for committed turn (clientBytes=${Number(msg.audioBytes || 0)})` });
           break;
         }
+        console.log(`[ws] audio_end session=${session.id} chunks=${session.audioChunks.length} clientBytes=${Number(msg.audioBytes || 0)}`);
         await processUtterance(session, ws, send, cancelPipeline);
         break;
 
