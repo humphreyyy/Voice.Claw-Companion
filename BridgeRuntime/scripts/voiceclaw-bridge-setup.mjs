@@ -618,6 +618,8 @@ async function installLaunchAgent(config) {
     <string>${xmlEscape(config.openClawAgentName)}</string>
     <key>OPENCLAW_AGENT</key>
     <string>${xmlEscape(config.openClawAgentName)}</string>
+    <key>REALTIME_LOG_DIR</key>
+    <string>${xmlEscape(logDir)}</string>
     <key>PATH</key>
     <string>${xmlEscape(RUNTIME_PATH)}</string>
   </dict>

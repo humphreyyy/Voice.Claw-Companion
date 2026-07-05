@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.81</title>
+            <pubDate>Sun, 05 Jul 2026 06:34:53 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607050633</sparkle:version>
+            <sparkle:shortVersionString>0.1.81</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.81</h2><ul><li>Fixes update validation by moving runtime transcript logs out of the signed app bundle.</li><li>Adds a LaunchAgent-level runtime log directory guard so future bridge starts keep logs in Application Support.</li><li>Improves Companion Realtime Voice interruption handling so a new spoken turn replaces the active streamed turn instead of being dropped as busy.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.81/VoiceClawCompanion-0.1.81-202607050633.dmg" length="3226762" type="application/octet-stream" sparkle:edSignature="o83Xw3FkwqEiuxUT0TZyUYjPwCSgIbmM4pta1zfzprAjyKWERN6vWDP/039aQ6H5+OrLFuL4QgqY9oNrQexpDQ=="/>
+        </item>
+        <item>
             <title>0.1.80</title>
             <pubDate>Sun, 05 Jul 2026 06:31:37 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.79</h2><ul><li>Improves Companion Realtime Voice with streamed PCM TTS, selectable Companion-advertised TTS voices, dynamic Piper voice discovery, and clearer installed-backend status.</li><li>Adds OpenAI transcription fallback for local STT failures while preserving local-first transcription.</li><li>Publishes runtime capability metadata so VoiceClaw Realtime can show installed local/cloud TTS choices accurately.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.79/VoiceClawCompanion-0.1.79-202607050612.dmg" length="3226621" type="application/octet-stream" sparkle:edSignature="RFjOQOdXumQuHZ/Mit4G7/MmlPHIlfA5Qc+YSSx+gt3A2hAUVh7FhP8pmdqbU1SBE5RLxTyC2WuHXflD0754Cw=="/>
-        </item>
-        <item>
-            <title>0.1.78</title>
-            <pubDate>Sun, 05 Jul 2026 05:00:11 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607050457</sparkle:version>
-            <sparkle:shortVersionString>0.1.78</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.78</h2><ul><li>Adds the new Companion Realtime Voice streaming WebSocket transport used by VoiceClaw Realtime on iOS.</li><li>Keeps the legacy Companion turn upload path available for fallback and A/B testing.</li><li>Preserves Cerebras, GPT-5.5, and local Qwen middle-brain options for Companion Realtime Voice.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.78/VoiceClawCompanion-0.1.78-202607050457.dmg" length="3221561" type="application/octet-stream" sparkle:edSignature="CZygNQ2jNicsWFF0fsUPBRqDtRry95tA6r8ITv7ZBqfDzEuMPmdLZxmhsHDRx+MJczI3Ah2rQUKc2qDzap+HCw=="/>
         </item>
     </channel>
 </rss>
