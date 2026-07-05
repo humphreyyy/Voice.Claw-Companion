@@ -543,7 +543,7 @@ final class BridgeStore: ObservableObject {
 
             if Self.compareVersions(latestVersion, currentVersion) == .orderedDescending {
                 updateAvailable = true
-                updateSummary = "Update \(release.tagName) is available. Use Install Update to let Sparkle download and install the signed release. Notarized DMG: \(latestDMGName)."
+                updateSummary = "Update \(release.tagName) is available. Use Install Update to download the notarized DMG, verify its GitHub release checksum when available, and open it for installation. Notarized DMG: \(latestDMGName)."
             } else {
                 updateAvailable = false
                 updateSummary = "VoiceClaw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName). Automatic checks run \(automaticUpdateCheckInterval.label.lowercased()) when enabled."

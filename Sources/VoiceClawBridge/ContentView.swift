@@ -287,11 +287,12 @@ private struct UpdateAvailableBanner: View {
                 Spacer(minLength: 16)
 
                 Button {
-                    store.installLatestUpdate()
+                    Task { await store.downloadLatestDMG() }
                 } label: {
                     Label("Install Update", systemImage: "arrow.down.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(store.isDownloadingUpdate)
 
                 Button {
                     Task { await store.checkForUpdates() }
