@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.83</title>
+            <pubDate>Sun, 05 Jul 2026 07:19:14 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607050718</sparkle:version>
+            <sparkle:shortVersionString>0.1.83</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.83</h2><ul><li>Refreshes the signed in-app updater package so Sparkle installs the notarized Companion release cleanly instead of retrying a cached failed 0.1.82 download.</li><li>Keeps the Companion runtime and streaming voice fixes from the current release line.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.83/VoiceClawCompanion-0.1.83-202607050718.dmg" length="3226276" type="application/octet-stream" sparkle:edSignature="jLhH0Sy1fmDQuMSOuJOZPaEIvebDMak57E5YhW53bkSxZR5iNDOdW5QsSC7e6FzrZSwnqbW/R4FoqSiCejgZDw=="/>
+        </item>
+        <item>
             <title>0.1.82</title>
             <pubDate>Sun, 05 Jul 2026 06:49:23 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.81</h2><ul><li>Fixes update validation by moving runtime transcript logs out of the signed app bundle.</li><li>Adds a LaunchAgent-level runtime log directory guard so future bridge starts keep logs in Application Support.</li><li>Improves Companion Realtime Voice interruption handling so a new spoken turn replaces the active streamed turn instead of being dropped as busy.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.81/VoiceClawCompanion-0.1.81-202607050633.dmg" length="3226762" type="application/octet-stream" sparkle:edSignature="o83Xw3FkwqEiuxUT0TZyUYjPwCSgIbmM4pta1zfzprAjyKWERN6vWDP/039aQ6H5+OrLFuL4QgqY9oNrQexpDQ=="/>
-        </item>
-        <item>
-            <title>0.1.80</title>
-            <pubDate>Sun, 05 Jul 2026 06:31:37 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607050630</sparkle:version>
-            <sparkle:shortVersionString>0.1.80</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.80</h2><ul><li>Fixes update validation by moving runtime logs out of the signed app bundle.</li><li>Improves Companion Realtime Voice interruption handling so a new spoken turn replaces the active streamed turn instead of being dropped as busy.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.80/VoiceClawCompanion-0.1.80-202607050630.dmg" length="3226331" type="application/octet-stream" sparkle:edSignature="bIDuMWan6sFKIOJGu2zABL9RfOA9wY2EtfIQO3AYiIwX4xziOqrmw/CpgC7eJiBlLAzwRe2iaRJJlzW3T1RnAg=="/>
         </item>
     </channel>
 </rss>
