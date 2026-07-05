@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.94</title>
+            <pubDate>Sun, 05 Jul 2026 23:57:12 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607052356</sparkle:version>
+            <sparkle:shortVersionString>0.1.94</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.94</h2><ul><li>Fixes Companion Realtime Voice HF runtime startup failing with “stt is not defined” when the selected STT profile starts the HF speech-to-speech runtime.</li><li>Adds a release guard so this undefined-STT startup regression fails packaging checks if it returns.</li><li>Includes the restored Sparkle Install Update flow from 0.1.93 for signed in-app updates.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.94/VoiceClawCompanion-0.1.94-202607052356.dmg" length="3435888" type="application/octet-stream" sparkle:edSignature="qfDulyrBuRmf725z/P+kUWmiiwuNHI7Ql+jadI7SFiLM2E4ccPENnakaVtHN+rAtOZVovIb3O9rpBiviJkW2Ag=="/>
+        </item>
+        <item>
             <title>0.1.93</title>
             <pubDate>Sun, 05 Jul 2026 23:52:57 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.92</h2><ul><li>Keeps Companion Realtime Voice on the streaming transport instead of silently falling back to the legacy turn-upload recorder after socket errors.</li><li>Adds streaming transport recovery so the iPhone can reconnect while preserving the live microphone session.</li><li>Avoids unnecessary HF runtime restarts during routine live settings updates.</li><li>Tightens Companion Realtime Voice planning so iPhone tools run only for clear phone/app/system actions, preventing spoken-only requests such as counting aloud from being misrouted to Maps.</li><li>Reports HF runtime startup and websocket failures accurately so setup problems do not appear as a ready voice session.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.92/VoiceClawCompanion-0.1.92-202607052344.dmg" length="3450857" type="application/octet-stream" sparkle:edSignature="SydkVbAbH9fXBAgLkSQoh/VvfAGU82wJcoMmmlU15HCfXEYWSyDkU3TfgudGoDL9wBuZXChl3rzfJQn3rhEEAA=="/>
-        </item>
-        <item>
-            <title>0.1.91</title>
-            <pubDate>Sun, 05 Jul 2026 21:38:54 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607052137</sparkle:version>
-            <sparkle:shortVersionString>0.1.91</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.91</h2><ul><li>Adds the HF-style Companion Realtime Voice runtime path with streaming STT, middle-brain, TTS, server VAD, and iPhone tool-call support.</li><li>Adds runtime readiness/install checks for Faster Whisper, Qwen3-TTS, local Qwen, and Cerebras middle-brain modes.</li><li>Improves Companion Realtime Voice startup reliability by launching cached HF models offline and surfacing early runtime failures promptly.</li><li>Improves packaging safeguards for notarized, Developer ID signed public releases.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.91/VoiceClawCompanion-0.1.91-202607052137.dmg" length="3372880" type="application/octet-stream" sparkle:edSignature="hJFqwDJX63DbX/R2AxPAFd4nb1Wci+02XpzsDNNqcZst3Cr6bU/2jiMViO2S3ausV/cYyDMNHa2jekShzqXyDg=="/>
         </item>
     </channel>
 </rss>

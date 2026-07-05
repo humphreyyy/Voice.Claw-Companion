@@ -919,7 +919,7 @@ function sttArgsForHF(payload = {}) {
       '--language', process.env.VOICECLAW_HF_STT_LANGUAGE || 'en',
     ];
   }
-  if (stt === 'whisper') {
+  if (settings.backend === 'whisper') {
     return [
       '--stt', 'whisper',
       '--stt_model_name', process.env.VOICECLAW_HF_WHISPER_MODEL || 'openai/whisper-base.en',

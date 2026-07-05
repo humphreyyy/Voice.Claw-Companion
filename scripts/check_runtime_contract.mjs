@@ -5,7 +5,9 @@ import { fileURLToPath } from 'url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const runtimePath = join(root, 'BridgeRuntime', 'server', 'index.js');
+const hfSidecarPath = join(root, 'BridgeRuntime', 'server', 'hf-realtime-sidecar.js');
 const source = readFileSync(runtimePath, 'utf8');
+const hfSidecarSource = readFileSync(hfSidecarPath, 'utf8');
 
 const expectedIphoneTools = [
   'iphone_analyze_clipboard_image',
@@ -98,6 +100,17 @@ const stalePhrases = [
 
 for (const phrase of stalePhrases) {
   if (source.includes(phrase)) fail(`stale phrase still present: ${phrase}`);
+}
+
+const staleRuntimePatterns = [
+  {
+    pattern: /\bstt\s*===\s*['"]whisper['"]/,
+    message: 'HF realtime STT branch must use the normalized settings.backend, not an undefined stt variable',
+  },
+];
+
+for (const item of staleRuntimePatterns) {
+  if (item.pattern.test(hfSidecarSource)) fail(item.message);
 }
 
 const requiredPhrases = [
