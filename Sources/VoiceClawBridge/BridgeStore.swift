@@ -273,6 +273,7 @@ final class BridgeStore: ObservableObject {
         syncSparkleUpdatePreferences()
         applySparkleUpdatePreferences()
         Task {
+            await persistBridgeAuthDefaults()
             await configureLaunchAtStartupOnFirstRun()
             await loadSavedBridgeConfig()
             await refreshStatus()
@@ -762,9 +763,21 @@ final class BridgeStore: ObservableObject {
 
     private func persistBridgeAuthDefaults() async {
         let configURL = URL(fileURLWithPath: "\(NSHomeDirectory())/.voiceclaw/bridge.json")
-        guard let data = try? Data(contentsOf: configURL),
-              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
+        let objectFromDisk: [String: Any]
+        if let data = try? Data(contentsOf: configURL),
+           let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            objectFromDisk = decoded
+        } else {
+            objectFromDisk = [
+                "port": Int(port.trimmingCharacters(in: .whitespacesAndNewlines)) ?? Self.defaultBridgePort,
+                "openClawInstallPath": normalizedOpenClawPath,
+                "openClawAgentName": normalizedOpenClawAgentName,
+                "realtimeAuthMode": realtimeAuthMode.rawValue,
+                "realtimeAuthFallbackToAPIKey": realtimeAuthFallbackToAPIKey,
+            ]
+        }
+
+        var object = objectFromDisk
 
         object["realtimeAuthMode"] = realtimeAuthMode.rawValue
         object["realtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
@@ -777,6 +790,7 @@ final class BridgeStore: ObservableObject {
         }
 
         guard let output = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]) else { return }
+        try? FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? output.write(to: configURL, options: [.atomic])
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
     }
