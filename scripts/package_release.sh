@@ -6,7 +6,7 @@ APP_NAME="VoiceClaw Companion"
 EXECUTABLE_NAME="VoiceClawBridge"
 DISPLAY_NAME="VoiceClaw Companion"
 BUNDLE_ID="ai.voiceclaw.bridge"
-VERSION="${VOICECLAW_BRIDGE_VERSION:-0.1.50}"
+VERSION="${VOICECLAW_BRIDGE_VERSION:-}"
 BUILD_NUMBER="${VOICECLAW_BRIDGE_BUILD:-$(date -u +%Y%m%d%H%M)}"
 SPARKLE_FEED_URL="${VOICECLAW_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${VOICECLAW_SPARKLE_PUBLIC_ED_KEY:-8W2Hfu+vPDKDjcFHcr3daoCiOStBTyJNc1X+UPpyqGo=}"
@@ -22,6 +22,53 @@ RUNTIME_SOURCE_DIR="$ROOT_DIR/BridgeRuntime"
 ZIP_PATH="$DIST_DIR/VoiceClawCompanion-$VERSION-$BUILD_NUMBER.zip"
 DMG_PATH="$DIST_DIR/VoiceClawCompanion-$VERSION-$BUILD_NUMBER.dmg"
 SIGN_IDENTITY="${DEVELOPER_ID_APPLICATION:-Developer ID Application: Benjamin Badejo (6VFF5BZWJU)}"
+RELEASE_MODE="${VOICECLAW_RELEASE_MODE:-public}"
+NOTARY_PROFILE="${VOICECLAW_NOTARY_PROFILE:-VoiceClaw Companion}"
+
+version_gt() {
+  local left="$1" right="$2" i
+  IFS='.' read -r -a left_parts <<< "$left"
+  IFS='.' read -r -a right_parts <<< "$right"
+  local count="${#left_parts[@]}"
+  if (( ${#right_parts[@]} > count )); then count="${#right_parts[@]}"; fi
+  for ((i = 0; i < count; i += 1)); do
+    local l="${left_parts[$i]:-0}"
+    local r="${right_parts[$i]:-0}"
+    if ((10#$l > 10#$r)); then return 0; fi
+    if ((10#$l < 10#$r)); then return 1; fi
+  done
+  return 1
+}
+
+latest_appcast_version() {
+  /usr/bin/python3 - <<'PY'
+import pathlib
+import xml.etree.ElementTree as ET
+path = pathlib.Path("appcast.xml")
+if not path.exists():
+    raise SystemExit(0)
+root = ET.parse(path).getroot()
+ns = {"sparkle": "http://www.andymatuschak.org/xml-namespaces/sparkle"}
+item = root.find("./channel/item")
+if item is None:
+    raise SystemExit(0)
+version = item.findtext("sparkle:shortVersionString", namespaces=ns) or item.findtext("title") or ""
+print(version.strip())
+PY
+}
+
+if [[ -z "$VERSION" ]]; then
+  echo "VOICECLAW_BRIDGE_VERSION must be set explicitly for packaging." >&2
+  echo "Example: VOICECLAW_BRIDGE_VERSION=0.1.91 VOICECLAW_BRIDGE_BUILD=$BUILD_NUMBER scripts/package_release.sh" >&2
+  exit 1
+fi
+
+LATEST_VERSION="$(latest_appcast_version)"
+if [[ -n "$LATEST_VERSION" && "$RELEASE_MODE" == "public" ]] && ! version_gt "$VERSION" "$LATEST_VERSION"; then
+  echo "Refusing to package public release $VERSION because appcast latest is $LATEST_VERSION." >&2
+  echo "Set VOICECLAW_RELEASE_MODE=local only for explicit non-public test packaging." >&2
+  exit 1
+fi
 
 cd "$ROOT_DIR"
 node "$ROOT_DIR/scripts/check_runtime_contract.mjs"
@@ -105,8 +152,18 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>$BUILD_NUMBER</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>VoiceClaw Companion may need access to folders you choose so OpenClaw or Hermes Agent routes can work with files you ask the agent to inspect or edit.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>VoiceClaw Companion may need access to folders you choose so OpenClaw or Hermes Agent routes can work with documents you ask the agent to inspect or edit.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>VoiceClaw Companion downloads signed updates and may access downloaded files only when you choose or open them.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>VoiceClaw Companion runs a local bridge so your paired iPhone and Apple Watch can reach this Mac on your private network.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>VoiceClaw Companion may use the microphone for local voice diagnostics or Mac-side voice capture when you explicitly start those features.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>SUEnableAutomaticChecks</key>
@@ -122,6 +179,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+cp "$ROOT_DIR/PrivacyInfo.xcprivacy" "$RESOURCES_DIR/PrivacyInfo.xcprivacy"
 
 ICON_SOURCE="$ROOT_DIR/Assets/AppIcon-1024.png"
 if [[ -f "$ICON_SOURCE" ]]; then
@@ -158,9 +217,13 @@ rsync -a --delete \
 if security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
   codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR"
-else
-  echo "Developer ID identity not found; creating an ad-hoc signed app for local testing." >&2
+elif [[ "$RELEASE_MODE" == "local" ]]; then
+  echo "Developer ID identity not found; creating an explicit local-only ad-hoc signed app." >&2
   codesign --force --deep --sign - "$APP_DIR"
+else
+  echo "Developer ID identity not found: $SIGN_IDENTITY" >&2
+  echo "Refusing to create a public-looking Companion release without Developer ID signing." >&2
+  exit 1
 fi
 
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
@@ -177,13 +240,19 @@ if security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
 fi
 
+if [[ "$RELEASE_MODE" == "public" ]]; then
+  xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DMG_PATH"
+  spctl -a -vv --type execute "$APP_DIR"
+  spctl -a -vv -t open --context context:primary-signature "$DMG_PATH"
+else
+  echo "Skipping notarization because VOICECLAW_RELEASE_MODE=$RELEASE_MODE." >&2
+fi
+
 cat <<SUMMARY
 Packaged $DISPLAY_NAME.
 App: $APP_DIR
 Zip: $ZIP_PATH
 DMG: $DMG_PATH
-
-For public GitHub releases, notarize the DMG before publishing:
-  xcrun notarytool submit "$DMG_PATH" --key /path/to/AuthKey.p8 --key-id KEY_ID --issuer ISSUER_ID --wait
-  xcrun stapler staple "$DMG_PATH"
+Release mode: $RELEASE_MODE
 SUMMARY

@@ -45,11 +45,23 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<PLIST
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>VoiceClaw Companion may need access to folders you choose so OpenClaw or Hermes Agent routes can work with files you ask the agent to inspect or edit.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>VoiceClaw Companion may need access to folders you choose so OpenClaw or Hermes Agent routes can work with documents you ask the agent to inspect or edit.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>VoiceClaw Companion downloads signed updates and may access downloaded files only when you choose or open them.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>VoiceClaw Companion runs a local bridge so your paired iPhone and Apple Watch can reach this Mac on your private network.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>VoiceClaw Companion may use the microphone for local voice diagnostics or Mac-side voice capture when you explicitly start those features.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
 </dict>
 </plist>
 PLIST
+
+cp "$ROOT_DIR/PrivacyInfo.xcprivacy" "$BUNDLE_DIR/Contents/Resources/PrivacyInfo.xcprivacy"
 
 codesign --force --deep --sign - "$BUNDLE_DIR" >/dev/null
 

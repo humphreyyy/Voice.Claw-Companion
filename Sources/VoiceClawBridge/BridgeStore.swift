@@ -154,8 +154,12 @@ final class BridgeStore: ObservableObject {
     @Published var realtimeRuntimeSummary: String = "Realtime runtime not checked."
     @Published var realtimeAuthStatusSummary: String = "OpenAI auth status not checked."
     @Published var companionVoiceSummary: String = "Companion Realtime Voice dependencies not checked."
+    @Published var companionVoiceState: String = "not_checked"
     @Published var companionVoiceDependencyInstallSummary: String = ""
     @Published var companionVoiceDependencyInstallAvailable: Bool = false
+    @Published var companionVoiceDependencyItems: [CompanionVoiceDependencyItem] = []
+    @Published var accessSummary: String = "Access and permissions have not been checked."
+    @Published var accessItems: [CompanionAccessItem] = []
     @Published var isInstallingCompanionVoiceDependencies: Bool = false
     @Published var pairingJSON: String = ""
     @Published var pairingPreview: String = ""
@@ -412,8 +416,64 @@ final class BridgeStore: ObservableObject {
         NSWorkspace.shared.open(URL(string: "https://nodejs.org/en/download")!)
     }
 
+    func openLoginItemsSettings() {
+        openSystemSettings("x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
+    }
+
+    func openFullDiskAccessSettings() {
+        openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+    }
+
+    func openFilesAndFoldersSettings() {
+        openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
+    }
+
+    func openLocalNetworkSettings() {
+        openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
+    }
+
+    func openMicrophoneSettings() {
+        openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+    }
+
+    func chooseOpenClawInstallFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose OpenClaw Install Folder"
+        panel.message = "Choose the folder that contains openclaw.json."
+        panel.prompt = "Use This Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: normalizedOpenClawPath, isDirectory: true)
+
+        guard panel.runModal() == .OK,
+              let url = panel.url
+        else { return }
+
+        openClawInstallPath = url.path
+        bridgeURL = ""
+        pairingJSON = ""
+        pairingPreview = ""
+        pairingURL = ""
+        lastLog = "Selected OpenClaw install folder: \(url.path). Click Install and Start to apply it to the bridge."
+    }
+
     func openOpenClawFolder() {
-        NSWorkspace.shared.open(URL(fileURLWithPath: normalizedOpenClawPath, isDirectory: true))
+        openOrCreateDirectory(URL(fileURLWithPath: normalizedOpenClawPath, isDirectory: true))
+    }
+
+    func openVoiceClawSupportFolder() {
+        openOrCreateDirectory(URL(fileURLWithPath: "\(NSHomeDirectory())/.voiceclaw", isDirectory: true))
+    }
+
+    func openHuggingFaceCacheFolder() {
+        openOrCreateDirectory(URL(fileURLWithPath: "\(NSHomeDirectory())/.cache/huggingface/hub", isDirectory: true))
+    }
+
+    func openHermesHomeFolder() {
+        let envHome = ProcessInfo.processInfo.environment["HERMES_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = envHome?.isEmpty == false ? envHome! : "\(NSHomeDirectory())/.hermes"
+        openOrCreateDirectory(URL(fileURLWithPath: path, isDirectory: true))
     }
 
     func openLatestRelease() {
@@ -435,6 +495,23 @@ final class BridgeStore: ObservableObject {
 
     func installLatestUpdate() {
         Task { await downloadLatestDMG() }
+    }
+
+    private func openSystemSettings(_ value: String) {
+        guard let url = URL(string: value) else { return }
+        if !NSWorkspace.shared.open(url),
+           let fallback = URL(string: "x-apple.systempreferences:com.apple.preference.security") {
+            NSWorkspace.shared.open(fallback)
+        }
+    }
+
+    private func openOrCreateDirectory(_ url: URL) {
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(url)
+        } catch {
+            lastLog = "Could not open \(url.path): \(error.localizedDescription)"
+        }
     }
 
     func downloadLatestDMG() async {
@@ -837,12 +914,35 @@ final class BridgeStore: ObservableObject {
             let diagnostics = try JSONDecoder().decode(BridgeDiagnostics.self, from: Data(output.utf8))
             localBridgeSummary = diagnostics.local.summary
             tailscaleSummary = diagnostics.tailscale.summary
+            companionVoiceState = diagnostics.companionVoice?.state ?? "not_reported"
             companionVoiceSummary = diagnostics.companionVoice?.summary ?? "Companion Realtime Voice dependencies were not reported by this bridge runtime."
             let installPlan = diagnostics.companionVoice?.installPlan
             companionVoiceDependencyInstallSummary = installPlan?.summary ?? ""
             companionVoiceDependencyInstallAvailable = (installPlan?.installableCount ?? 0) > 0
+            companionVoiceDependencyItems = (installPlan?.items ?? []).map {
+                CompanionVoiceDependencyItem(
+                    id: $0.id ?? UUID().uuidString,
+                    label: ($0.label?.isEmpty == false ? $0.label : $0.id) ?? "Dependency",
+                    detail: $0.detail ?? "",
+                    installable: $0.installable ?? false,
+                    command: $0.command ?? ""
+                )
+            }
             setupAdvice = diagnostics.suggestedAction
             canResetTailscaleMapping = diagnostics.tailscale.canClearSafely ?? false
+            accessSummary = diagnostics.access?.summary ?? "Access and permissions were not reported by this bridge runtime."
+            accessItems = (diagnostics.access?.items ?? []).map {
+                CompanionAccessItem(
+                    id: $0.id ?? UUID().uuidString,
+                    label: ($0.label?.isEmpty == false ? $0.label : $0.id) ?? "Access Check",
+                    state: $0.state ?? "unknown",
+                    summary: $0.summary ?? "",
+                    detail: $0.detail ?? "",
+                    action: $0.action ?? "",
+                    path: $0.path ?? "",
+                    installable: $0.installable ?? false
+                )
+            }
             await refreshRealtimeRuntimeStatus()
 
             guard !status.isWorking else { return }
@@ -866,8 +966,12 @@ final class BridgeStore: ObservableObject {
             realtimeRuntimeSummary = "Realtime runtime status could not be read because bridge diagnostics failed."
             realtimeAuthStatusSummary = "OpenAI auth status could not be read because bridge diagnostics failed."
             companionVoiceSummary = "Companion Realtime Voice dependencies could not be checked because bridge diagnostics failed."
+            companionVoiceState = "failed"
             companionVoiceDependencyInstallSummary = ""
             companionVoiceDependencyInstallAvailable = false
+            companionVoiceDependencyItems = []
+            accessSummary = "Access and permissions could not be checked because bridge diagnostics failed."
+            accessItems = []
             setupAdvice = "Install Node.js and Tailscale if needed, then click Install and Start."
             canResetTailscaleMapping = false
             if !status.isWorking {
@@ -1284,11 +1388,31 @@ private struct ResetResponse: Decodable {
     }
 }
 
+struct CompanionVoiceDependencyItem: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let detail: String
+    let installable: Bool
+    let command: String
+}
+
+struct CompanionAccessItem: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let state: String
+    let summary: String
+    let detail: String
+    let action: String
+    let path: String
+    let installable: Bool
+}
+
 private struct BridgeDiagnostics: Decodable {
     let savedConfigExists: Bool
     let local: Component
     let tailscale: Component
     let companionVoice: Component?
+    let access: AccessDiagnostics?
     let suggestedAction: String
 
     struct Component: Decodable {
@@ -1312,6 +1436,23 @@ private struct BridgeDiagnostics: Decodable {
         let detail: String?
         let installable: Bool?
         let command: String?
+    }
+
+    struct AccessDiagnostics: Decodable {
+        let state: String?
+        let summary: String?
+        let items: [AccessItem]?
+    }
+
+    struct AccessItem: Decodable {
+        let id: String?
+        let label: String?
+        let state: String?
+        let summary: String?
+        let detail: String?
+        let action: String?
+        let path: String?
+        let installable: Bool?
     }
 }
 

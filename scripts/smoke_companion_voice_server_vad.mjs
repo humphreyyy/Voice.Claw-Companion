@@ -11,7 +11,7 @@ const { default: WebSocket } = await import(require.resolve('ws', {
 
 const url = process.env.VOICECLAW_COMPANION_WS_URL || 'ws://127.0.0.1:12321/ws';
 const timeoutMs = Number(process.env.VOICECLAW_COMPANION_SERVER_VAD_SMOKE_TIMEOUT_MS || 45_000);
-const sampleRate = 16_000;
+const sampleRate = 24_000;
 const chunkMs = 40;
 const samplesPerChunk = Math.round(sampleRate * chunkMs / 1000);
 

@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { constants, existsSync, readFileSync } from 'node:fs';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { getHFRealtimeStatus, installHFRealtimeRuntime } from '../server/hf-realtime-sidecar.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -430,6 +431,279 @@ async function checkLocalBridge(port) {
   });
 }
 
+async function pathAccessible(path, mode = constants.R_OK) {
+  try {
+    await access(path, mode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function statusItem({ id, label, state, summary, detail = '', action = '', path = '', installable = false }) {
+  return {
+    id,
+    label,
+    state,
+    summary,
+    detail,
+    action,
+    path,
+    installable,
+  };
+}
+
+async function checkLaunchAgentAccess(local = {}) {
+  const launchAgentsDir = join(HOME, 'Library', 'LaunchAgents');
+  const dirWritable = await pathAccessible(launchAgentsDir, constants.W_OK).catch(() => false);
+  const plistExists = existsSync(LAUNCH_AGENT_FILE);
+  let loaded = false;
+  let printSummary = '';
+  try {
+    const target = `gui/${process.getuid()}/${LAUNCH_AGENT_LABEL}`;
+    const { stdout } = await execFileAsync('launchctl', ['print', target], { timeout: 5000, maxBuffer: 256 * 1024 });
+    loaded = true;
+    printSummary = stdout.split('\n').slice(0, 12).join('\n');
+  } catch (error) {
+    printSummary = error?.message || String(error);
+  }
+
+  return {
+    dirWritable,
+    plistExists,
+    loaded,
+    summary: loaded
+      ? `LaunchAgent ${LAUNCH_AGENT_LABEL} is loaded.`
+      : `${plistExists ? 'LaunchAgent plist exists' : 'LaunchAgent plist is not installed'}, but launchctl does not report it loaded.`,
+    detail: printSummary,
+    localBridgeRunning: local?.state === 'running',
+  };
+}
+
+async function checkOpenClawAccess(openClawInstallPath, openClawAgentName = DEFAULT_OPENCLAW_AGENT_NAME) {
+  const openClawConfigPath = join(openClawInstallPath, 'openclaw.json');
+  const configReadable = await pathAccessible(openClawConfigPath, constants.R_OK);
+  let jsonReadable = false;
+  let agentConfigured = false;
+  let summary = configReadable
+    ? `OpenClaw config is readable at ${openClawConfigPath}.`
+    : `OpenClaw config is not readable at ${openClawConfigPath}.`;
+
+  if (configReadable) {
+    try {
+      const parsed = JSON.parse(await readFile(openClawConfigPath, 'utf8'));
+      jsonReadable = true;
+      const agents = parsed?.agents || parsed?.agent || parsed?.profiles || {};
+      const agentNames = Array.isArray(agents) ? agents.map((agent) => agent?.name).filter(Boolean) : Object.keys(agents || {});
+      agentConfigured = agentNames.length === 0 || agentNames.includes(openClawAgentName);
+      summary = agentConfigured
+        ? `OpenClaw config is readable; selected agent ${openClawAgentName} is acceptable.`
+        : `OpenClaw config is readable, but selected agent ${openClawAgentName} was not found in configured agents.`;
+    } catch (error) {
+      summary = `OpenClaw config exists but could not be parsed: ${error?.message || String(error)}`;
+    }
+  }
+
+  return {
+    configPath: openClawConfigPath,
+    configReadable,
+    jsonReadable,
+    agentConfigured,
+    summary,
+  };
+}
+
+async function checkHermesAccess() {
+  const hermesBin = process.env.HERMES_BIN || await resolveOptionalExecutable('hermes', '');
+  const hermesHome = String(process.env.HERMES_HOME || join(HOME, '.hermes')).trim();
+  const homeWritable = await pathAccessible(hermesHome, constants.W_OK);
+  let commandSummary = hermesBin ? `Hermes command found at ${hermesBin}.` : 'Hermes command was not found in PATH or HERMES_BIN.';
+  if (hermesBin) {
+    try {
+      await execFileAsync(hermesBin, ['--help'], { timeout: 5000, maxBuffer: 256 * 1024, env: { ...process.env, PATH: RUNTIME_PATH } });
+    } catch (error) {
+      commandSummary = `Hermes command exists but --help did not complete cleanly: ${error?.message || String(error)}`;
+    }
+  }
+
+  return {
+    bin: hermesBin || '',
+    home: hermesHome,
+    homeWritable,
+    summary: `${commandSummary} Hermes home ${homeWritable ? 'is writable' : 'is not writable'} at ${hermesHome}.`,
+  };
+}
+
+async function checkNetworkAccess(port, tailscale = {}) {
+  const githubReachable = await new Promise((resolve) => {
+    const request = http.get({
+      hostname: 'api.github.com',
+      path: '/',
+      timeout: 4000,
+      headers: { 'User-Agent': 'VoiceClawCompanion' },
+    }, (response) => {
+      response.resume();
+      resolve(response.statusCode >= 200 && response.statusCode < 500);
+    });
+    request.on('timeout', () => {
+      request.destroy();
+      resolve(false);
+    });
+    request.on('error', () => resolve(false));
+  });
+
+  const hfReachable = await new Promise((resolve) => {
+    const request = http.get({
+      hostname: 'huggingface.co',
+      path: '/',
+      timeout: 4000,
+      headers: { 'User-Agent': 'VoiceClawCompanion' },
+    }, (response) => {
+      response.resume();
+      resolve(response.statusCode >= 200 && response.statusCode < 500);
+    });
+    request.on('timeout', () => {
+      request.destroy();
+      resolve(false);
+    });
+    request.on('error', () => resolve(false));
+  });
+
+  return {
+    githubReachable,
+    hfReachable,
+    tailscaleReady: tailscale?.state === 'voiceclaw_mapping',
+    summary: `Local port ${port}; GitHub ${githubReachable ? 'reachable' : 'not reachable'}; Hugging Face ${hfReachable ? 'reachable' : 'not reachable'}; Tailscale ${tailscale?.state || 'unknown'}.`,
+  };
+}
+
+async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallPath, openClawAgentName, companionVoice }) {
+  const launchAgent = await checkLaunchAgentAccess(local);
+  const openClaw = await checkOpenClawAccess(openClawInstallPath, openClawAgentName);
+  const hermes = await checkHermesAccess();
+  const network = await checkNetworkAccess(port, tailscale);
+  const voiceclawDirWritable = await pathAccessible(CONFIG_DIR, constants.W_OK).catch(() => false);
+  const logsDir = join(CONFIG_DIR, 'logs');
+  const logsWritable = await pathAccessible(logsDir, constants.W_OK).catch(() => false);
+  const hfCache = join(HOME, '.cache', 'huggingface', 'hub');
+  const hfCacheWritable = await pathAccessible(hfCache, constants.W_OK).catch(() => false);
+
+  const items = [
+    statusItem({
+      id: 'voiceclaw-config',
+      label: 'VoiceClaw local data',
+      state: voiceclawDirWritable ? 'ready' : 'needs_action',
+      summary: voiceclawDirWritable ? `Writable at ${CONFIG_DIR}.` : `Not writable at ${CONFIG_DIR}.`,
+      path: CONFIG_DIR,
+      action: 'Open VoiceClaw Data',
+    }),
+    statusItem({
+      id: 'voiceclaw-logs',
+      label: 'VoiceClaw logs',
+      state: logsWritable ? 'ready' : 'needs_action',
+      summary: logsWritable ? `Writable at ${logsDir}.` : `Not writable at ${logsDir}.`,
+      path: logsDir,
+      action: 'Open VoiceClaw Data',
+    }),
+    statusItem({
+      id: 'launch-agent',
+      label: 'Bridge LaunchAgent',
+      state: launchAgent.loaded && launchAgent.localBridgeRunning ? 'ready' : (launchAgent.dirWritable ? 'needs_action' : 'blocked'),
+      summary: launchAgent.summary,
+      detail: launchAgent.detail,
+      path: LAUNCH_AGENT_FILE,
+      action: 'Install and Start Bridge',
+    }),
+    statusItem({
+      id: 'mac-login-item',
+      label: 'App login item',
+      state: 'manual',
+      summary: 'The Companion can register itself to open at login, but macOS may still require approval in Login Items.',
+      action: 'Open Login Items',
+    }),
+    statusItem({
+      id: 'local-bridge',
+      label: 'Local bridge',
+      state: local?.state === 'running' ? 'ready' : 'needs_action',
+      summary: local?.summary || 'Local bridge has not been checked.',
+      action: 'Install and Start Bridge',
+    }),
+    statusItem({
+      id: 'tailscale-serve',
+      label: 'Tailscale private bridge',
+      state: tailscale?.state === 'voiceclaw_mapping' ? 'ready' : 'needs_action',
+      summary: tailscale?.summary || 'Tailscale Serve has not been checked.',
+      action: 'Open Tailscale',
+    }),
+    statusItem({
+      id: 'openclaw-config',
+      label: 'OpenClaw folder',
+      state: openClaw.configReadable && openClaw.jsonReadable && openClaw.agentConfigured ? 'ready' : 'needs_action',
+      summary: openClaw.summary,
+      path: openClaw.configPath,
+      action: 'Choose OpenClaw Folder',
+    }),
+    statusItem({
+      id: 'hermes-runtime',
+      label: 'Hermes Agent runtime',
+      state: hermes.bin && hermes.homeWritable ? 'ready' : 'manual',
+      summary: hermes.summary,
+      path: hermes.home,
+      action: 'Open Hermes Home',
+    }),
+    statusItem({
+      id: 'hf-runtime',
+      label: 'HF speech-to-speech runtime',
+      state: companionVoice?.state === 'ready' ? 'ready' : 'needs_action',
+      summary: companionVoice?.summary || 'HF speech-to-speech runtime has not been checked.',
+      action: companionVoice?.state === 'ready' ? 'Verify Everything' : 'Install Voice Dependencies',
+      installable: companionVoice?.state !== 'ready',
+    }),
+    statusItem({
+      id: 'hf-cache',
+      label: 'HF model cache',
+      state: hfCacheWritable ? 'ready' : 'needs_action',
+      summary: hfCacheWritable ? `Writable at ${hfCache}.` : `Not writable at ${hfCache}; model downloads may fail.`,
+      path: hfCache,
+      action: 'Open HF Model Cache',
+    }),
+    statusItem({
+      id: 'network-downloads',
+      label: 'Installer network access',
+      state: network.githubReachable && network.hfReachable ? 'ready' : 'needs_action',
+      summary: network.summary,
+      action: 'Verify Everything',
+    }),
+    statusItem({
+      id: 'protected-files',
+      label: 'Protected file access',
+      state: 'manual',
+      summary: 'If an OpenClaw or Hermes task needs Desktop, Documents, Downloads, or broad project folders, grant Files and Folders or Full Disk Access before the task starts.',
+      action: 'Open Files and Folders',
+    }),
+    statusItem({
+      id: 'microphone',
+      label: 'Microphone access',
+      state: 'manual',
+      summary: 'Grant microphone access up front if you use local Mac audio diagnostics or future Mac-side voice capture. iPhone voice sessions still stream the phone microphone through the bridge.',
+      action: 'Open Microphone Settings',
+    }),
+  ];
+
+  const readyCount = items.filter((item) => item.state === 'ready').length;
+  const manualCount = items.filter((item) => item.state === 'manual').length;
+  const blockedCount = items.filter((item) => item.state === 'blocked' || item.state === 'needs_action').length;
+  return {
+    state: blockedCount === 0 ? 'ready' : 'needs_action',
+    summary: `${readyCount}/${items.length} access checks are ready; ${blockedCount} need action and ${manualCount} may require manual macOS approval.`,
+    items,
+    launchAgent,
+    openClaw,
+    hermes,
+    network,
+  };
+}
+
 function collectTailscalePorts(status) {
   const ports = new Set();
   for (const port of Object.keys(status?.TCP || {})) {
@@ -477,6 +751,22 @@ async function suggestFreshPort() {
 }
 
 async function checkCompanionVoiceDependencies(openClawInstallPath) {
+  const hfRealtime = await getHFRealtimeStatus().catch((error) => ({
+    state: 'error',
+    summary: `HF speech-to-speech runtime check failed: ${error?.message || String(error)}`,
+    installPlan: {
+      needed: true,
+      installable: true,
+      items: [{
+        id: 'hf-speech-to-speech-runtime',
+        label: 'HF speech-to-speech runtime',
+        detail: 'Installs the OpenAI Realtime-compatible Hugging Face VAD -> STT -> LLM -> TTS pipeline.',
+        installable: true,
+        command: 'install HF speech-to-speech runtime',
+      }],
+    },
+  }));
+  const hfReady = hfRealtime.state === 'ready';
   const ffmpegPath = await resolveOptionalExecutable('ffmpeg', process.env.FFMPEG_BIN || '');
   const whisperPath = await resolveOptionalExecutable('whisper-cli', process.env.WHISPER_CLI || '');
   const whisperSmallModel = join(HOME, '.openclaw', 'models', 'ggml-small.bin');
@@ -508,17 +798,26 @@ async function checkCompanionVoiceDependencies(openClawInstallPath) {
   const ollamaPath = await resolveOptionalExecutable('ollama', process.env.OLLAMA_BIN || '');
   const ttsReady = hasOpenAITtsKey(openClawInstallPath) || existsSync(piperRyanModel) || existsSync(piperLibriModel) || !!sayPath;
   const missing = [];
-  if (!ffmpegPath) missing.push('ffmpeg');
-  if (!whisperPath) missing.push('whisper-cli');
-  if (!whisperModelReady) missing.push(`Whisper model at ${whisperModelPath}`);
-  if (!qwenReady) missing.push(DEFAULT_QWEN_MODEL);
-  if (!ttsReady) missing.push('TTS voice: OpenAI TTS key, Piper model, or macOS say');
+  if (!hfReady) missing.push('HF speech-to-speech runtime');
+  const legacyMissing = [];
+  if (!ffmpegPath) legacyMissing.push('ffmpeg');
+  if (!whisperPath) legacyMissing.push('whisper-cli');
+  if (!whisperModelReady) legacyMissing.push(`Whisper model at ${whisperModelPath}`);
+  if (!qwenReady) legacyMissing.push(DEFAULT_QWEN_MODEL);
+  if (!ttsReady) legacyMissing.push('TTS voice: OpenAI TTS key, Piper model, or macOS say');
 
   const result = {
-    state: sttReady && qwenReady && ttsReady ? 'ready' : 'needs_setup',
-    summary: sttReady && qwenReady && ttsReady
-      ? `Companion Realtime Voice is ready: STT, ${DEFAULT_QWEN_MODEL}, and TTS are available.`
-      : `Companion Realtime Voice needs setup: ${missing.join(', ')}. ${ollamaSummary}`,
+    state: hfReady ? 'ready' : 'needs_setup',
+    summary: hfReady
+      ? 'Companion Realtime Voice is ready: HF speech-to-speech realtime runtime is installed.'
+      : `Companion Realtime Voice needs setup: ${missing.join(', ')}.`,
+    hfRealtime,
+    legacy: {
+      state: sttReady && qwenReady && ttsReady ? 'ready' : 'needs_setup',
+      summary: sttReady && qwenReady && ttsReady
+        ? `Legacy Companion turn upload path is ready: STT, ${DEFAULT_QWEN_MODEL}, and TTS are available.`
+        : `Legacy Companion turn upload path needs setup: ${legacyMissing.join(', ')}. ${ollamaSummary}`,
+    },
     stt: {
       ready: sttReady,
       ffmpeg: ffmpegPath || '',
@@ -543,6 +842,7 @@ async function checkCompanionVoiceDependencies(openClawInstallPath) {
     },
   };
   result.installPlan = buildCompanionVoiceInstallPlan({
+    hfRealtime,
     ffmpegPath,
     whisperPath,
     whisperModelReady,
@@ -557,6 +857,7 @@ async function checkCompanionVoiceDependencies(openClawInstallPath) {
 }
 
 function buildCompanionVoiceInstallPlan({
+  hfRealtime,
   ffmpegPath,
   whisperPath,
   whisperModelReady,
@@ -569,70 +870,27 @@ function buildCompanionVoiceInstallPlan({
 }) {
   const items = [];
   const brewAvailable = !!brewPath;
-  if (!ffmpegPath) {
-    items.push({
-      id: 'ffmpeg',
-      label: 'ffmpeg',
-      detail: 'Required to convert iPhone audio into the local STT format.',
-      installable: brewAvailable,
-      command: brewAvailable ? `${brewPath} install ffmpeg` : 'Install Homebrew, then install ffmpeg.',
-    });
+  if (hfRealtime?.state !== 'ready') {
+    const hfItems = Array.isArray(hfRealtime?.installPlan?.items) ? hfRealtime.installPlan.items : [];
+    if (hfItems.length) {
+      items.push(...hfItems);
+    } else {
+      items.push({
+        id: 'hf-speech-to-speech-runtime',
+        label: 'HF speech-to-speech runtime',
+        detail: 'Installs the OpenAI Realtime-compatible Hugging Face VAD -> STT -> LLM -> TTS pipeline.',
+        installable: true,
+        command: 'install HF speech-to-speech runtime',
+      });
+    }
   }
-  if (!whisperPath) {
-    items.push({
-      id: 'whisper-cli',
-      label: 'whisper-cli',
-      detail: 'Required for local speech-to-text through whisper.cpp.',
-      installable: brewAvailable,
-      command: brewAvailable ? `${brewPath} install whisper-cpp` : 'Install Homebrew, then install whisper-cpp.',
-    });
-  }
-  if (!whisperModelReady) {
-    items.push({
-      id: 'whisper-model-small',
-      label: 'Whisper small model',
-      detail: `Downloads ggml-small.bin to ${whisperModelPath}.`,
-      installable: true,
-      command: `download ${whisperModelPath}`,
-    });
-  }
-  if (!ollamaPath) {
-    items.push({
-      id: 'ollama',
-      label: 'Ollama',
-      detail: `Required for the local ${DEFAULT_QWEN_MODEL} middle brain.`,
-      installable: brewAvailable,
-      command: brewAvailable ? `${brewPath} install ollama` : 'Install Homebrew, then install Ollama.',
-    });
-  }
-  if (!qwenReady) {
-    items.push({
-      id: 'qwen3.5-2b',
-      label: DEFAULT_QWEN_MODEL,
-      detail: ollamaState === 'not_reachable'
-        ? 'Will pull the local middle-brain model after Ollama is installed and reachable.'
-        : 'Downloads the local middle-brain model through Ollama.',
-      installable: !!ollamaPath || brewAvailable,
-      command: `ollama pull ${DEFAULT_QWEN_MODEL}`,
-    });
-  }
-  if (!ttsReady) {
-    items.push({
-      id: 'tts',
-      label: 'TTS voice',
-      detail: 'VoiceClaw can use OpenAI TTS, Piper, Kokoro/MLX, or macOS say. macOS say is normally built in; if this is missing, reinstalling command-line tools may be required.',
-      installable: false,
-      command: 'manual setup required',
-    });
-  }
-
-  const installableCount = items.filter((item) => item.installable).length;
+  const hfInstallableCount = items.filter((item) => item.installable).length;
   return {
     needed: items.length > 0,
     brewAvailable,
-    installableCount,
+    installableCount: hfInstallableCount,
     summary: items.length
-      ? `${items.length} Companion Realtime Voice dependency item${items.length === 1 ? '' : 's'} need attention; ${installableCount} can be installed automatically.`
+      ? `${items.length} Companion Realtime Voice dependency item${items.length === 1 ? '' : 's'} need attention; ${hfInstallableCount} can be installed automatically.`
       : 'No Companion Realtime Voice dependencies need installation.',
     items,
   };
@@ -686,7 +944,13 @@ async function installCompanionVoiceDependencies(openClawInstallPath) {
       continue;
     }
     try {
-      if (item.id === 'ffmpeg') {
+      if (item.id === 'hf-speech-to-speech-runtime'
+          || item.id === 'stt-parakeet-tdt'
+          || item.id === 'tts-qwen3'
+          || item.id === 'middle-qwen35-2b-local'
+          || item.id === 'middle-qwen3-local') {
+        await installHFRealtimeRuntime();
+      } else if (item.id === 'ffmpeg') {
         if (!brewPath) throw new Error('Homebrew is required to install ffmpeg automatically.');
         await runCommand(brewPath, ['install', 'ffmpeg']);
       } else if (item.id === 'whisper-cli') {
@@ -732,6 +996,7 @@ async function installCompanionVoiceDependencies(openClawInstallPath) {
 async function diagnoseBridge(port) {
   const existing = await readBridgeConfig();
   const openClawInstallPath = normalizeInstallPath(existing.openClawInstallPath);
+  const openClawAgentName = normalizeOpenClawAgentName(existing.openClawAgentName || existing.openClawAgent || DEFAULT_OPENCLAW_AGENT_NAME);
   const local = await checkLocalBridge(port);
   let tailscale;
 
@@ -756,12 +1021,23 @@ async function diagnoseBridge(port) {
     suggestedAction = 'Choose a different port or manually review this Tailscale Serve mapping outside Voice.Claw. The app will not remove mappings it cannot identify as its own.';
   }
 
+  const companionVoice = await checkCompanionVoiceDependencies(openClawInstallPath);
+  const access = await buildAccessDiagnostics({
+    port,
+    local,
+    tailscale,
+    openClawInstallPath,
+    openClawAgentName,
+    companionVoice,
+  });
+
   return {
     port,
     savedConfigExists: existsSync(CONFIG_FILE),
     local,
     tailscale,
-    companionVoice: await checkCompanionVoiceDependencies(openClawInstallPath),
+    companionVoice,
+    access,
     suggestedAction,
   };
 }

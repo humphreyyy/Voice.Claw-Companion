@@ -27,6 +27,8 @@ struct ContentView: View {
 
 private enum CompanionSection: String, CaseIterable, Identifiable {
     case setup
+    case access
+    case companionVoice
     case pair
     case tailscale
     case diagnostics
@@ -37,6 +39,10 @@ private enum CompanionSection: String, CaseIterable, Identifiable {
         switch self {
         case .setup:
             "Set Up"
+        case .access:
+            "Access"
+        case .companionVoice:
+            "Companion Voice"
         case .pair:
             "Pair Phone"
         case .tailscale:
@@ -50,6 +56,10 @@ private enum CompanionSection: String, CaseIterable, Identifiable {
         switch self {
         case .setup:
             "Install bridge"
+        case .access:
+            "Permissions"
+        case .companionVoice:
+            "Voice runtime"
         case .pair:
             "QR and JSON"
         case .tailscale:
@@ -63,6 +73,10 @@ private enum CompanionSection: String, CaseIterable, Identifiable {
         switch self {
         case .setup:
             "wand.and.stars"
+        case .access:
+            "checkmark.shield"
+        case .companionVoice:
+            "brain.head.profile"
         case .pair:
             "qrcode.viewfinder"
         case .tailscale:
@@ -146,6 +160,10 @@ private struct DetailPane: View {
                     switch selection {
                     case .setup:
                         SetupPanel(store: store)
+                    case .access:
+                        AccessPanel(store: store)
+                    case .companionVoice:
+                        CompanionVoicePanel(store: store)
                     case .pair:
                         PairingPanel(store: store)
                     case .tailscale:
@@ -509,6 +527,443 @@ private struct SetupPanel: View {
     }
 }
 
+private struct AccessPanel: View {
+    @ObservedObject var store: BridgeStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            PanelHeader(
+                title: "Access and Permissions",
+                subtitle: "Prepare this Mac up front so phone and watch sessions do not pause later for missing runtime access, missing folders, or macOS approval.",
+                symbol: "checkmark.shield"
+            )
+
+            InfoCallout(
+                symbol: "hand.raised.fill",
+                title: "What macOS requires",
+                bodyText: "VoiceClaw can install local runtimes and open the right settings panes, but macOS still requires the user to approve protected permissions such as Login Items, Microphone, Full Disk Access, Files and Folders, and Local Network when those prompts appear."
+            )
+            InfoCallout(
+                symbol: "externaldrive.connected.to.line.below",
+                title: "What VoiceClaw uses",
+                bodyText: "The Companion writes local config under ~/.voiceclaw, stores HF voice models in the Hugging Face cache, starts a per-user LaunchAgent, serves a local bridge on the selected port, and can run OpenClaw or Hermes commands from this Mac when those routes are selected."
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Current Readiness")
+                    .font(.headline)
+
+                if store.accessItems.isEmpty {
+                    StatusRow(title: "Access Summary", value: store.accessSummary, symbol: "checkmark.shield")
+                    StatusRow(title: "Launch upon Startup", value: store.launchAtStartupSummary, symbol: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
+                    StatusRow(title: "Local Bridge", value: store.localBridgeSummary, symbol: "server.rack")
+                    StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
+                    StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
+                    StatusRow(title: "OpenClaw Folder", value: store.openClawInstallPath, symbol: "folder")
+                } else {
+                    Text(store.accessSummary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    ForEach(store.accessItems) { item in
+                        AccessItemRow(item: item)
+                    }
+                }
+            }
+            .padding(14)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Prepare This Mac")
+                    .font(.headline)
+
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], alignment: .leading, spacing: 10) {
+                    Button {
+                        Task { await store.setLaunchAtStartupEnabled(true) }
+                    } label: {
+                        Label("Enable Login Item", systemImage: "power.circle.fill")
+                    }
+                    .disabled(store.isUpdatingLaunchAtStartup)
+
+                    Button {
+                        store.openLoginItemsSettings()
+                    } label: {
+                        Label("Open Login Items", systemImage: "gearshape")
+                    }
+
+                    Button {
+                        store.openFullDiskAccessSettings()
+                    } label: {
+                        Label("Full Disk Access", systemImage: "lock.shield")
+                    }
+
+                    Button {
+                        store.openFilesAndFoldersSettings()
+                    } label: {
+                        Label("Files and Folders", systemImage: "folder.badge.gearshape")
+                    }
+
+                    Button {
+                        store.openLocalNetworkSettings()
+                    } label: {
+                        Label("Local Network", systemImage: "network")
+                    }
+
+                    Button {
+                        store.openMicrophoneSettings()
+                    } label: {
+                        Label("Microphone", systemImage: "mic.circle")
+                    }
+
+                    Button {
+                        store.chooseOpenClawInstallFolder()
+                    } label: {
+                        Label("Choose OpenClaw Folder", systemImage: "folder.badge.plus")
+                    }
+
+                    Button {
+                        store.openOpenClawFolder()
+                    } label: {
+                        Label("Open OpenClaw Folder", systemImage: "folder")
+                    }
+
+                    Button {
+                        store.openVoiceClawSupportFolder()
+                    } label: {
+                        Label("Open VoiceClaw Data", systemImage: "externaldrive")
+                    }
+
+                    Button {
+                        store.openHuggingFaceCacheFolder()
+                    } label: {
+                        Label("Open HF Model Cache", systemImage: "shippingbox")
+                    }
+
+                    Button {
+                        store.openHermesHomeFolder()
+                    } label: {
+                        Label("Open Hermes Home", systemImage: "terminal")
+                    }
+
+                    Button {
+                        store.openNodeInstallPage()
+                    } label: {
+                        Label("Get Node.js", systemImage: "terminal")
+                    }
+
+                    Button {
+                        store.openTailscaleInstallPage()
+                    } label: {
+                        Label("Get Tailscale", systemImage: "network")
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(14)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await store.refreshStatus() }
+                } label: {
+                    Label("Verify Everything", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+
+                if store.companionVoiceDependencyInstallAvailable {
+                    Button {
+                        Task { await store.installMissingCompanionVoiceDependencies() }
+                    } label: {
+                        Label(store.isInstallingCompanionVoiceDependencies ? "Installing Voice Dependencies" : "Install Voice Dependencies", systemImage: "square.and.arrow.down")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isInstallingCompanionVoiceDependencies || store.status.isWorking)
+                }
+
+                Button {
+                    Task { await store.setupBridge() }
+                } label: {
+                    Label("Install and Start Bridge", systemImage: "play.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.status.isWorking)
+            }
+
+            Text("VoiceClaw does not use or contact unrelated local services outside its own bridge/runtime paths. Personal development services on other ports should remain isolated from Companion setup.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .panelStyle()
+    }
+}
+
+private struct CompanionVoicePanel: View {
+    @ObservedObject var store: BridgeStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            PanelHeader(
+                title: "Companion Realtime Voice",
+                subtitle: "Prepare this Mac to run VoiceClaw's local speech-to-text, middle-brain, and text-to-speech pipeline for the Companion Realtime Voice engine.",
+                symbol: "brain.head.profile"
+            )
+
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: statusSymbol)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(statusColor)
+                    .frame(width: 36)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(statusTitle)
+                        .font(.title3.weight(.semibold))
+                    Text(store.companionVoiceSummary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+
+                Spacer(minLength: 16)
+            }
+            .padding(14)
+            .background(statusColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(statusColor.opacity(0.28)))
+
+            InfoCallout(
+                symbol: "point.3.connected.trianglepath.dotted",
+                title: "What this powers",
+                bodyText: "Companion Realtime Voice keeps the iPhone live voice loop on this Mac: VAD and endpointing, Faster Whisper speech-to-text, the selected middle brain, and local streaming text-to-speech. OpenClaw and Hermes routes still run as the bottom layer when selected on iPhone; watchOS currently uses its GPT-Realtime-2 voice layer for the same route choices."
+            )
+            InfoCallout(
+                symbol: "arrow.triangle.2.circlepath",
+                title: "Voice sessions and agent sessions are separate",
+                bodyText: "Restarting the VoiceClaw voice session should restart audio and realtime transport only. It should not reset an OpenClaw or Hermes conversation unless the user explicitly asks to start a new agent session."
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Install and Verification")
+                    .font(.headline)
+
+                if store.companionVoiceDependencyItems.isEmpty {
+                    StatusRow(
+                        title: "Install Plan",
+                        value: store.companionVoiceDependencyInstallSummary.isEmpty ? "No missing installable voice dependencies are currently reported." : store.companionVoiceDependencyInstallSummary,
+                        symbol: "checkmark.seal"
+                    )
+                } else {
+                    ForEach(store.companionVoiceDependencyItems) { item in
+                        DependencyItemRow(item: item)
+                    }
+                }
+            }
+            .padding(14)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await store.refreshStatus() }
+                } label: {
+                    Label("Verify Again", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    Task { await store.installMissingCompanionVoiceDependencies() }
+                } label: {
+                    Label(store.isInstallingCompanionVoiceDependencies ? "Installing Voice Dependencies" : "Install Voice Dependencies", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!store.companionVoiceDependencyInstallAvailable || store.isInstallingCompanionVoiceDependencies || store.status.isWorking)
+
+                Button {
+                    store.openNodeInstallPage()
+                } label: {
+                    Label("Get Node.js", systemImage: "terminal")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Text("The install action uses a user-local Python runtime and Hugging Face model cache. It does not change Tailscale, OpenClaw, Hermes, or your phone pairing settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .panelStyle()
+    }
+
+    private var statusTitle: String {
+        switch store.companionVoiceState {
+        case "ready":
+            "Ready for Companion Realtime Voice"
+        case "needs_setup":
+            "Setup Needed"
+        case "failed":
+            "Verification Failed"
+        case "not_reported":
+            "Runtime Status Not Reported"
+        default:
+            "Runtime Not Checked"
+        }
+    }
+
+    private var statusSymbol: String {
+        switch store.companionVoiceState {
+        case "ready":
+            "checkmark.circle.fill"
+        case "needs_setup":
+            "arrow.down.circle.fill"
+        case "failed":
+            "xmark.octagon.fill"
+        default:
+            "questionmark.circle"
+        }
+    }
+
+    private var statusColor: Color {
+        switch store.companionVoiceState {
+        case "ready":
+            .green
+        case "needs_setup":
+            .orange
+        case "failed":
+            .red
+        default:
+            .secondary
+        }
+    }
+}
+
+private struct DependencyItemRow: View {
+    let item: CompanionVoiceDependencyItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: item.installable ? "square.and.arrow.down" : "exclamationmark.triangle")
+                .foregroundStyle(item.installable ? .cyan : .orange)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.label)
+                    .font(.headline)
+                if !item.detail.isEmpty {
+                    Text(item.detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !item.command.isEmpty {
+                    Text(item.command)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct AccessItemRow: View {
+    let item: CompanionAccessItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .foregroundStyle(color)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(item.label)
+                        .font(.headline)
+                    Text(stateLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(color)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(color.opacity(0.12), in: Capsule())
+                }
+
+                if !item.summary.isEmpty {
+                    Text(item.summary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+
+                if !item.path.isEmpty {
+                    Text(item.path)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+
+                if !item.detail.isEmpty {
+                    Text(item.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var symbol: String {
+        switch item.state {
+        case "ready":
+            "checkmark.circle.fill"
+        case "manual":
+            "hand.raised.fill"
+        case "blocked":
+            "xmark.octagon.fill"
+        case "needs_action":
+            "exclamationmark.triangle.fill"
+        default:
+            "questionmark.circle"
+        }
+    }
+
+    private var color: Color {
+        switch item.state {
+        case "ready":
+            .green
+        case "manual":
+            .cyan
+        case "blocked":
+            .red
+        case "needs_action":
+            .orange
+        default:
+            .secondary
+        }
+    }
+
+    private var stateLabel: String {
+        switch item.state {
+        case "ready":
+            "Ready"
+        case "manual":
+            "Manual"
+        case "blocked":
+            "Blocked"
+        case "needs_action":
+            "Needs Action"
+        default:
+            "Unknown"
+        }
+    }
+}
+
 private struct PairingPanel: View {
     @ObservedObject var store: BridgeStore
     @State private var showingLargeQRCode = false
@@ -754,6 +1209,7 @@ private struct StatusPanel: View {
             StatusRow(title: "Realtime Runtime", value: store.realtimeRuntimeSummary, symbol: "waveform.path.ecg")
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
             StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
+            StatusRow(title: "Access and Permissions", value: store.accessSummary, symbol: "checkmark.shield")
             if !store.companionVoiceDependencyInstallSummary.isEmpty {
                 StatusRow(title: "Voice Dependency Install", value: store.companionVoiceDependencyInstallSummary, symbol: "square.and.arrow.down")
             }

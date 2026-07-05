@@ -15,6 +15,7 @@ import { executablePath, normalizeProcessPath } from './bin-paths.js';
 import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
+import { getHFRealtimeStatus, installHFRealtimeRuntime, HFRealtimeBridge } from './hf-realtime-sidecar.js';
 import {
   REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
   buildRealtimeAuthStatus,
@@ -217,7 +218,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - wait_for_user keeps the session listening without a spoken reply when the latest audio is silence, background noise, TV/music, side conversation, speech not addressed to VoiceClaw, or likely echo of VoiceClaw's own previous speech.
 - iphone_status reads current iPhone and VoiceClaw app status, including app version, battery, thermal state, audio route, permission status, locale, timezone, selected GPT-Realtime-2 route, voice settings, and microphone mute state.
 - iphone_sync_watch_settings pushes this iPhone's current VoiceClaw settings to the paired Apple Watch app when the user asks to sync, refresh, set up, or update the Watch app.
-- Apple Watch can use Direct GPT-Realtime-2 audio requests, Direct GPT-5.5 Instant over cellular with an OpenAI API key, relay OpenClaw through the paired iPhone while reachable, or use an intentionally public HTTPS OpenClaw bridge. watchOS cannot use a private Tailscale URL by itself.
+- Apple Watch can use Direct GPT-Realtime-2 audio requests, Direct GPT-5.5 Instant over cellular with an OpenAI API key, relay OpenClaw or Hermes through the paired iPhone while reachable, or use an intentionally public HTTPS OpenClaw/Hermes bridge. watchOS cannot use a private Tailscale URL by itself.
 - iphone_set_microphone_muted mutes only this live VoiceClaw in-app microphone after an explicit request such as "mute me" or "mute the mic." Do not use it for voice unmute requests; after muting, the app cannot hear voice until the user unmutes by tapping or another available input. If the tool succeeds, say exactly: "Mic Muted"
 - iphone_set_speakerphone_enabled switches only the live VoiceClaw audio output between speakerphone and the default active output such as handset, headphones, or AirPods.
 - iphone_set_transcript_visible opens or closes the transcript panel on the VoiceClaw Live tab when the user asks to show, open, hide, close, expand, or collapse the transcript.
@@ -260,7 +261,7 @@ const CAPABILITY_AWARENESS_INSTRUCTIONS = `
 - The active route and active tool list are authoritative for this session. Capabilities can differ by app version, route mode, permissions, Apple Watch reachability, and Companion availability.
 - If a tool is present in this session, you may use it according to its function description even if every example below does not mention it. If a capability is described in prose but no matching active tool exists, treat it as unavailable and offer the closest available route.
 - Do not under-use OpenClaw in OpenClaw Bridge/Tunnel routes: use GPT-Realtime-2 mainly for live speech, clarification, tiny answers, and local controls, and use OpenClaw for almost all substantive work.
-- When the user asks what VoiceClaw can do, explain the current route and group active capabilities as: live GPT-Realtime-2 conversation, iPhone actions, iOS system shortcuts, named Apple Shortcuts, Apple Watch sync or relay, GPT-5.5 Instant if active, and OpenClaw Mac/private-computer work if active.
+- When the user asks what VoiceClaw can do, explain the current route and group active capabilities as: live voice conversation, iPhone actions, iOS system shortcuts, named Apple Shortcuts, Apple Watch sync or relay, GPT-5.5 Instant if active, and OpenClaw/Hermes Mac/private-computer work if active.
 - Use iphone_status when the user asks about this iPhone, this app, app version, audio route, selected route, permissions, or diagnostics. Use bridge_status when the user asks about OpenClaw queue, active Mac work, sideband health, or Companion runtime state.
 - For Apple ecosystem actions, distinguish read, selected-media/camera/clipboard-image analysis, draft/handoff, and write actions. Read Calendar/Reminders only on explicit request; open Mail/Messages/WhatsApp handoffs rather than sending; use the share sheet for Notes or destinations outside built-in tools.
 - Permission-gated tools such as Location, Contacts, Calendar, Reminders, microphone, camera, and clipboard access may return denied, restricted, unavailable, empty, or prompt-required results. Use iphone_status or the specific tool result to know the actual state; never claim access before a tool returns it.
@@ -303,7 +304,7 @@ const REALTIME_INSTRUCTIONS = process.env.REALTIME_INSTRUCTIONS || `
 - stop_openclaw to stop or cancel active OpenClaw work.
 - bridge_status for OpenClaw bridge status and queue/runtime diagnostics.
 - iPhone-side tools for explicit user-requested VoiceClaw tab navigation, Apple Watch settings sync, iOS app permission settings, microphone muting, speakerphone/default audio output, transcript visibility/clearing, live session ending/restarting, route switching, web navigation/search, maps/directions, one-time current location, contact lookup, phone-call handoff, calendar event reading/creation, reminder reading/creation, email drafts, message drafts, selected media analysis, camera photo analysis, clipboard image analysis, WhatsApp handoffs, share-sheet handoff, named Shortcuts, and clipboard reading/copying on the iPhone.
-- Apple Watch can use Direct GPT-Realtime-2 audio requests, Direct GPT-5.5 Instant over cellular, relay OpenClaw through the paired iPhone, or use an intentionally public HTTPS OpenClaw bridge; watchOS cannot use a private Tailscale URL by itself.
+- Apple Watch can use Direct GPT-Realtime-2 audio requests, Direct GPT-5.5 Instant over cellular, relay OpenClaw or Hermes through the paired iPhone, or use an intentionally public HTTPS OpenClaw/Hermes bridge; watchOS cannot use a private Tailscale URL by itself.
 
 ${CAPABILITY_AWARENESS_INSTRUCTIONS}
 
@@ -1433,6 +1434,10 @@ function companionServerVADChunkDurationMs(chunk, vad) {
   return Math.max(10, (chunk.length / 2 / Math.max(1, vad.sampleRate || COMPANION_SERVER_VAD_SAMPLE_RATE)) * 1000);
 }
 
+function companionSessionSampleRate(session) {
+  return Math.max(8000, Math.min(48000, Math.round(Number(session?.serverVad?.sampleRate || COMPANION_SERVER_VAD_SAMPLE_RATE) || COMPANION_SERVER_VAD_SAMPLE_RATE)));
+}
+
 function handleCompanionServerVADChunk(session, chunk, send, cancelPipeline, commit) {
   const vad = session.serverVad;
   if (!vad?.enabled) {
@@ -2130,6 +2135,163 @@ function watchRealtimeToolsForRoute(routeMode = '') {
   if (routeMode === 'instant') return INSTANT_REALTIME_TOOLS;
   if (routeMode === 'gpt55-direct') return GPT55_DIRECT_REALTIME_TOOLS;
   return isAgentRealtimeRoute(routeMode) ? REALTIME_TOOLS : [];
+}
+
+function realtimeRouteForCompanionPayload(payload = {}) {
+  const route = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
+  if (route === 'standalone') return 'direct';
+  return ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'].includes(route) ? route : 'gpt55-direct';
+}
+
+function hfRealtimeToolsForCompanionPayload(payload = {}) {
+  return realtimeToolsForRoute(realtimeRouteForCompanionPayload(payload));
+}
+
+function hfRealtimeInstructionsForCompanionPayload(payload = {}) {
+  const routeMode = realtimeRouteForCompanionPayload(payload);
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  const context = String(payload.context || '').trim();
+  const middleBrainNote = `\n# Companion Realtime Voice engine\n- You are running inside VoiceClaw's Companion Realtime Voice engine, using the Hugging Face speech-to-speech realtime pipeline for VAD, STT, middle-brain LLM, and TTS.\n- Preserve VoiceClaw live voice semantics: listen continuously, allow interruption, answer directly when appropriate, use iPhone tools for phone/device actions, and use the selected bottom route only when that route is the right tool for the user's request.\n- Selected middle brain: ${brainMode}.\n- Do not claim an iPhone action, OpenClaw/Hermes action, GPT-5.5 route, mute, route switch, engine switch, or model switch has happened unless you call the matching tool.\n- If audio is silence, typing sounds, [no audio], [BLANK_AUDIO], or not addressed to VoiceClaw, call wait_for_user and do not speak.\n`;
+  const contextNote = context ? `\n# Recent iOS context\n${context}\n` : '';
+  return `${realtimeInstructionsForRoute(routeMode)}${middleBrainNote}${contextNote}`.trim();
+}
+
+function parseToolArgumentsJSON(argumentsJSON = '') {
+  try {
+    const parsed = JSON.parse(argumentsJSON || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function handleHFRealtimeCompanionToolCall({ name = '', callID = '', argumentsJSON = '{}', bridge, payload = {} } = {}) {
+  const toolName = String(name || '').trim();
+  const id = String(callID || '').trim();
+  if (!id || !bridge) return;
+  const args = parseToolArgumentsJSON(argumentsJSON);
+  const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || `hf-${Date.now().toString(36)}`);
+  const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+
+  const sendResult = (result) => {
+    bridge.sendToolResult({
+      callID: id,
+      output: typeof result === 'string' ? result : JSON.stringify(result),
+    });
+  };
+
+  await appendRealtimeLog({
+    kind: 'hf_companion_tool_requested',
+    sessionToken,
+    routeMode,
+    brainMode,
+    name: toolName,
+    callID: id,
+    args,
+  });
+
+  if (toolName === 'wait_for_user') {
+    sendResult({ ok: true, summary: 'Waiting silently for the user.' });
+    return;
+  }
+
+  if (toolName === 'bridge_status' || toolName === 'realtime_status') {
+    sendResult({ ok: true, ...bridgeStatusSnapshot(sessionToken) });
+    return;
+  }
+
+  if (toolName === 'stop_openclaw') {
+    const stopped = cancelRealtimeTurn(sessionToken, 'hf companion stop', '', { force: true });
+    sendResult({ ok: true, stopped, summary: 'Stopped.' });
+    return;
+  }
+
+  if (toolName === 'steer_openclaw') {
+    const steerText = String(args.text || '').trim();
+    if (!steerText) {
+      sendResult({ ok: false, error: 'No steering text supplied.' });
+      return;
+    }
+    const result = await steerRealtimeOpenClawTurn({
+      text: steerText,
+      sessionToken,
+      urgency: args.urgency || 'normal',
+      processing: args.processing || {},
+    });
+    sendResult({
+      ...result,
+      summary: result.ok ? 'Added that to the active OpenClaw request.' : `OpenClaw steering failed: ${result.error || 'unknown error'}`,
+    });
+    return;
+  }
+
+  if (toolName === 'gpt55_direct' || toolName === 'gpt55_instant') {
+    const requestText = String(args.text || '').trim();
+    if (!requestText) {
+      sendResult({ ok: false, error: 'No GPT-5.5 request text supplied.' });
+      return;
+    }
+    const context = String(args.context || '').trim();
+    const text = context ? `Conversation and web-search context:\n${context}\n\nUser request:\n${requestText}` : requestText;
+    const reasoning = ['low', 'medium', 'high', 'xhigh'].includes(String(args.reasoning || '').trim()) ? String(args.reasoning).trim() : 'medium';
+    const turnId = `hf-${toolName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const processing = toolName === 'gpt55_instant'
+      ? { agent: 'chat-latest', thinking: 'off', fastMode: 'on' }
+      : { agent: 'gpt55-direct', thinking: reasoning, fastMode: 'on' };
+    const result = await runRealtimeOpenClawTurn({
+      text,
+      sessionToken,
+      turnId,
+      urgency: 'normal',
+      processing,
+    });
+    sendResult({
+      ok: !!result.ok,
+      route: toolName,
+      reasoning: toolName === 'gpt55_direct' ? reasoning : undefined,
+      answer: result.reply,
+      summary: result.ok ? result.reply : `GPT-5.5 route failed: ${result.error || 'unknown error'}`,
+      error: result.ok ? undefined : result.error,
+    });
+    return;
+  }
+
+  if (toolName && toolName !== 'openclaw_turn') {
+    sendResult({ ok: false, error: `Unsupported Companion server tool: ${toolName}` });
+    return;
+  }
+
+  const gate = actionability(args.text || '', { allowWake: false, allowShortCommand: true, context: 'hf-companion-tool' });
+  if (!gate.actionable) {
+    sendResult({ ok: false, error: "I didn't catch a clear OpenClaw request." });
+    return;
+  }
+  if (!incrementRealtimeQueue(sessionToken)) {
+    sendResult({ ok: false, error: `The OpenClaw queue is full (${MAX_REALTIME_PENDING_TURNS} waiting).` });
+    return;
+  }
+  const turnId = `hf-openclaw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
+    const result = await runRealtimeOpenClawTurn({
+      text: gate.text,
+      sessionToken,
+      turnId,
+      urgency: args.urgency || 'normal',
+      processing: { ...processing, ...(args.processing || {}) },
+    });
+    sendResult({
+      ok: !!result.ok,
+      route: routeMode,
+      answer: result.reply,
+      summary: result.ok ? result.reply : `OpenClaw bridge error: ${result.error || 'unknown error'}`,
+      error: result.ok ? undefined : result.error,
+      cancelled: !!result.cancelled,
+    });
+  } finally {
+    decrementRealtimeQueue(sessionToken);
+  }
 }
 
 async function appendRealtimeLog(event) {
@@ -4559,6 +4721,10 @@ const httpServer = createServer(async (req, res) => {
 
     if (urlPath === '/config') {
       const tts = await getVoiceOptions();
+      const configURL = new URL(req.url, `http://localhost:${PORT}`);
+      const hfRealtime = await getHFRealtimeStatus({
+        brainMode: configURL.searchParams.get('brainMode') || 'qwen3.5-2b',
+      }).catch((error) => ({ state: 'error', error: error?.message || String(error) }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
@@ -4568,9 +4734,41 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, streamingPath: `${BASE_PATH}/ws`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: tts.defaultVoice, ttsVoices: tts.voices, routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, streamingPath: `${BASE_PATH}/ws`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, hfRealtimeStatusPath: `${BASE_PATH}/realtime/hf-status`, hfRealtimeInstallPath: `${BASE_PATH}/realtime/hf-install`, hfRealtime, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: tts.defaultVoice, ttsVoices: tts.voices, routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
+      return;
+    }
+
+    if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/hf-status`) {
+      try {
+        const statusURL = new URL(req.url, `http://localhost:${PORT}`);
+        const status = await getHFRealtimeStatus({
+          brainMode: statusURL.searchParams.get('brainMode') || 'qwen3.5-2b',
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...status }));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, state: 'error', error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/hf-install`) {
+      try {
+        const body = await readRequestBody(req, 100_000).catch(() => '{}');
+        let payload;
+        try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+        const status = await installHFRealtimeRuntime({
+          brainMode: payload.brainMode || 'qwen3.5-2b',
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...status }));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, state: 'error', error: error?.message || String(error) }));
+      }
       return;
     }
 
@@ -5194,6 +5392,7 @@ wss.on('connection', (ws) => {
     voiceConfig: null,
     companionVoiceMode: false,
     companionVoicePayload: null,
+    hfBridge: null,
     serverVad: buildCompanionServerVADState({ companionVoice: false, serverVad: { enabled: false } }),
     pendingTextTurns: [],      // queued user turns captured while a prior turn is still running
     busyQueueSeq: 0,
@@ -5231,6 +5430,43 @@ wss.on('connection', (ws) => {
     session.pendingTextTurns = [];
   }
 
+  async function restartHFCompanionBridge(reason = 'config') {
+    session.hfBridge?.close();
+    session.hfBridge = null;
+    if (!session.companionVoiceMode) return false;
+    session.companionVoicePayload = {
+      ...(session.companionVoicePayload || {}),
+      sessionToken: session.companionVoicePayload?.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
+      voice: session.voiceConfig?.requested || session.voiceConfig?.id || REALTIME_VOICE,
+      localVoice: session.voiceConfig?.id || '',
+      serverVad: session.serverVad,
+    };
+    send({ type: 'status', status: 'preparing-hf-runtime', reason });
+    session.hfBridge = new HFRealtimeBridge({
+      clientWs: ws,
+      send,
+      payload: session.companionVoicePayload,
+      tools: hfRealtimeToolsForCompanionPayload(session.companionVoicePayload),
+      instructions: hfRealtimeInstructionsForCompanionPayload(session.companionVoicePayload),
+      toolHandler: (toolCall) => handleHFRealtimeCompanionToolCall({
+        ...toolCall,
+        payload: session.companionVoicePayload,
+      }),
+    });
+    try {
+      await session.hfBridge.start();
+      return true;
+    } catch (error) {
+      const message = error?.message || String(error);
+      console.error('[hf-companion] start failed:', message);
+      session.hfBridge?.close();
+      session.hfBridge = null;
+      send({ type: 'error', message: `Companion Realtime Voice HF runtime failed to start: ${message}` });
+      send({ type: 'status', status: 'ready', reason });
+      return false;
+    }
+  }
+
   ws.on('message', async (data, isBinary) => {
     // Binary frames = audio data from client mic. A preceding control message
     // decides whether this frame belongs to a real utterance or a wake probe.
@@ -5241,7 +5477,9 @@ wss.on('connection', (ws) => {
         session.wakeProbeChunks.push(Buffer.from(data));
       } else {
         const chunk = Buffer.from(data);
-        if (session.companionVoiceMode && session.serverVad?.enabled) {
+        if (session.hfBridge) {
+          session.hfBridge.sendAudio(chunk);
+        } else if (session.companionVoiceMode && session.serverVad?.enabled) {
           handleCompanionServerVADChunk(session, chunk, send, cancelPipeline, (reason) => {
             commitCompanionServerVADTurn(session, ws, send, cancelPipeline, reason)
               .catch((err) => console.error('[companion-vad] commit failed:', err.message));
@@ -5260,6 +5498,8 @@ wss.on('connection', (ws) => {
     switch (msg.type) {
       case 'start_session': {
         cancelPipeline();
+        session.hfBridge?.close();
+        session.hfBridge = null;
         session.audioChunks = [];
         session.audioBytesReceived = 0;
         session.wakeProbeChunks = [];
@@ -5293,7 +5533,11 @@ wss.on('connection', (ws) => {
             requested: session.voiceConfig.requested,
           }
         });
-        send({ type: 'status', status: 'ready' });
+        if (session.companionVoiceMode) {
+          await restartHFCompanionBridge('start_session');
+        } else {
+          send({ type: 'status', status: 'ready' });
+        }
         break;
       }
 
@@ -5326,6 +5570,12 @@ wss.on('connection', (ws) => {
             requested: session.voiceConfig.requested,
           }
         });
+        if (session.companionVoiceMode) {
+          await restartHFCompanionBridge('config_update');
+        } else if (session.hfBridge) {
+          session.hfBridge.close();
+          session.hfBridge = null;
+        }
         break;
       }
 
@@ -5363,6 +5613,10 @@ wss.on('connection', (ws) => {
       case 'audio_end':
         // Client finished recording an utterance — process it
         session.collectingWakeProbe = false;
+        if (session.hfBridge) {
+          session.hfBridge.commit();
+          break;
+        }
         if (session.companionVoiceMode && session.serverVad?.enabled) {
           await commitCompanionServerVADTurn(session, ws, send, cancelPipeline, msg.reason || 'client_audio_end');
           break;
@@ -5391,8 +5645,20 @@ wss.on('connection', (ws) => {
         break;
 
       case 'client_speech_end_hint':
-        if (session.companionVoiceMode && session.serverVad?.enabled) {
+        if (session.hfBridge) {
+          session.hfBridge.commit();
+        } else if (session.companionVoiceMode && session.serverVad?.enabled) {
           await commitCompanionServerVADTurn(session, ws, send, cancelPipeline, msg.reason || 'client_speech_end_hint');
+        }
+        break;
+
+      case 'iphone_tool_result':
+        if (session.hfBridge) {
+          session.hfBridge.sendToolResult({
+            callID: msg.callID || msg.callId || '',
+            output: typeof msg.output === 'string' ? msg.output : JSON.stringify(msg.output || {}),
+            continueResponse: false,
+          });
         }
         break;
 
@@ -5411,8 +5677,12 @@ wss.on('connection', (ws) => {
       case 'interrupt':
         // Barge-in: kill current TTS immediately
         console.log('[ws] interrupt received');
-        cancelPipeline();
-        send({ type: 'interrupted' });
+        if (session.hfBridge) {
+          session.hfBridge.interrupt(msg.reason || 'client-interrupt');
+        } else {
+          cancelPipeline();
+          send({ type: 'interrupted' });
+        }
         break;
 
       default:
@@ -5422,12 +5692,16 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     console.log('[ws] client disconnected');
+    session.hfBridge?.close();
+    session.hfBridge = null;
     cancelPipeline();
     clearHistory(sessionId);
   });
 
   ws.on('error', (err) => {
     console.error('[ws] error:', err.message);
+    session.hfBridge?.close();
+    session.hfBridge = null;
     cancelPipeline();
   });
 });
@@ -5576,7 +5850,7 @@ async function queueBusyUtterance(session, ws, send, rawAudio) {
 
   try {
     send({ type: 'status', status: 'transcribing' });
-    const { text } = await transcribe(rawAudio, { signal: controller.signal });
+    const { text } = await transcribe(rawAudio, { signal: controller.signal, sampleRate: companionSessionSampleRate(session) });
     session.busyAsrControllers.delete(controller);
 
     if (slot.epoch !== session.busyQueueEpoch || !session.pendingTextTurns.includes(slot)) return;
@@ -5672,7 +5946,7 @@ async function processUtterance(session, ws, send, cancelPipeline) {
     // 1. ASR
     send({ type: 'status', status: 'transcribing' });
     const asrStart = Date.now();
-    const { text } = await transcribe(rawAudio, { signal: asrController.signal });
+    const { text } = await transcribe(rawAudio, { signal: asrController.signal, sampleRate: companionSessionSampleRate(session) });
     console.log(`[turn] asr_ms=${Date.now() - asrStart} turn=${turnId} text=${JSON.stringify((text || '').slice(0, 80))}`);
     session.asrAbort = null;
 
@@ -5778,7 +6052,7 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
   try {
     send({ type: 'status', status: 'transcribing', turnId });
     const asrStart = Date.now();
-    const { text, source: asrSource = 'unknown', fallback: asrFallback = false } = await transcribe(rawAudio, { signal: controller.signal });
+    const { text, source: asrSource = 'unknown', fallback: asrFallback = false } = await transcribe(rawAudio, { signal: controller.signal, sampleRate: companionSessionSampleRate(session) });
     const asrMs = Date.now() - asrStart;
     const transcript = String(text || '').trim();
     console.log(`[companion-stream] asr_ms=${asrMs} asr_source=${asrSource}${asrFallback ? ' fallback=1' : ''} turn=${turnId} text=${JSON.stringify(transcript.slice(0, 120))}`);
@@ -6262,7 +6536,7 @@ async function processBargeProbe(session, ws, send, cancelPipeline) {
   const controller = new AbortController();
   const started = Date.now();
   try {
-    const { text } = await transcribe(rawAudio, { signal: controller.signal });
+    const { text } = await transcribe(rawAudio, { signal: controller.signal, sampleRate: companionSessionSampleRate(session) });
     const trimmed = String(text || '').trim();
     const parsed = parseBargeIn(trimmed, session.bargeMode);
     console.log(`[barge] mode=${session.bargeMode} probe_ms=${Date.now() - started} matched=${parsed.matched} phrase=${JSON.stringify(parsed.phrase || '')} remainder=${JSON.stringify(parsed.remainder || '')} text=${JSON.stringify(trimmed.slice(0, 120))}`);
@@ -6314,7 +6588,7 @@ async function processWakeProbe(session, ws, send) {
   const controller = new AbortController();
   const started = Date.now();
   try {
-    const { text } = await transcribe(rawAudio, { signal: controller.signal });
+    const { text } = await transcribe(rawAudio, { signal: controller.signal, sampleRate: companionSessionSampleRate(session) });
     const trimmed = String(text || '').trim();
     let matched;
     let turnText = trimmed;

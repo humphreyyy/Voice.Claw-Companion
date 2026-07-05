@@ -118,14 +118,14 @@ async function toWavViaFfmpeg(inputBuffer, inputPath, wavPath, signal) {
 
 /**
  * Transcribe an audio buffer using whisper-cli.
- * Accepts raw PCM s16le 16kHz mono (from WebSocket binary frames)
+ * Accepts raw PCM s16le mono (from WebSocket binary frames)
  * or any format ffmpeg can read (webm, ogg, mp4, wav, etc.).
  *
  * Raw PCM is detected by absence of known container magic bytes.
  * Returns { text: string } or throws.
  * Caller can pass an AbortSignal to cancel.
  */
-export async function transcribe(audioBuffer, { signal } = {}) {
+export async function transcribe(audioBuffer, { signal, sampleRate = 16000 } = {}) {
   const id = randomUUID();
   const wavPath = join(os.tmpdir(), `vb-asr-${id}.wav`);
   const tmpPath = join(os.tmpdir(), `vb-asr-${id}.tmp`);
@@ -138,8 +138,8 @@ export async function transcribe(audioBuffer, { signal } = {}) {
       // Container format (webm, ogg, mp4, wav, etc.) — use ffmpeg
       await toWavViaFfmpeg(audioBuffer, tmpPath, wavPath, signal);
     } else {
-      // Raw PCM s16le 16kHz mono — wrap with WAV header directly
-      const wavBuf = pcmToWav(audioBuffer, 16000);
+      const rawSampleRate = Math.max(8000, Math.min(48000, Math.round(Number(sampleRate) || 16000)));
+      const wavBuf = pcmToWav(audioBuffer, rawSampleRate);
       await writeFile(wavPath, wavBuf);
     }
 

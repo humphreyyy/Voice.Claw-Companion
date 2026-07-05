@@ -4,11 +4,13 @@ VoiceClaw Companion is the macOS bridge for VoiceClaw on iPhone and Apple Watch.
 It lets the mobile app reach agent tools that run on your own Mac, including
 OpenClaw and Hermes Agent, through a private Tailscale URL.
 
-The Companion app installs a small local Node.js bridge, keeps it running with a
-user LaunchAgent, configures Tailscale Serve, and gives VoiceClaw a QR code or
-setup link for pairing. It is meant for people who want VoiceClaw to use their
-own Mac, their own tailnet, and their own API credentials instead of routing work
-through someone else's computer.
+The Companion app installs a local bridge, keeps it running with a user
+LaunchAgent, configures Tailscale Serve, checks the Mac permissions VoiceClaw
+needs, installs the local speech-to-speech runtime for Companion Realtime Voice,
+and gives VoiceClaw a QR code or setup link for pairing. It is meant for people
+who want VoiceClaw to use their own Mac, their own tailnet, their own local
+models, and their own API credentials instead of routing work through someone
+else's computer.
 
 ![VoiceClaw Companion setup screen](docs/assets/voiceclaw-companion-github.png)
 
@@ -24,6 +26,8 @@ Use VoiceClaw Companion if you want to:
   tailnet by default.
 - Pair, diagnose, and update the Mac bridge without manually editing local
   launch agents or Tailscale Serve mappings.
+- Install and verify the local Companion Realtime Voice stack from the app
+  instead of hand-assembling Python environments and model caches.
 
 You probably do not need this app if you only want a standalone iPhone voice
 assistant and do not need your phone or watch to reach agent tools on a Mac.
@@ -39,7 +43,7 @@ VoiceClaw Companion on Mac
         |
         | local bridge on 127.0.0.1, default port 12321
         v
-OpenClaw, Hermes Agent, GPT-Realtime-2, or Companion Realtime Voice
+OpenClaw / Hermes Agent routes, GPT-Realtime-2 setup, or Companion Realtime Voice
 ```
 
 The iPhone/watch app owns the mobile voice experience. VoiceClaw Companion owns
@@ -53,8 +57,9 @@ The bridge can expose several route types to VoiceClaw:
   command or `HERMES_BIN`.
 - **GPT-Realtime-2 Live**: uses OpenAI Realtime from the mobile app, with the
   Companion available for Mac-side tools and auth setup.
-- **Companion Realtime Voice**: runs a local speech pipeline on the Mac using
-  local speech dependencies and optional OpenClaw/Hermes routing.
+- **Companion Realtime Voice**: runs a local speech-to-speech pipeline on the
+  Mac using a Hugging Face / MLX runtime, local speech models, the selected
+  middle brain, and optional OpenClaw/Hermes routing.
 
 Realtime should handle ordinary conversation directly when it can. OpenClaw or
 Hermes should be used when the request needs the Mac, local files, local tools,
@@ -71,7 +76,7 @@ Before installing, prepare:
 - Tailscale HTTPS certificates enabled for the tailnet. If you are not the
   tailnet owner or admin, ask that person to enable them.
 - Node.js installed on the Mac. Companion checks common Homebrew and system
-  locations.
+  locations and links to the installer if it is missing.
 - VoiceClaw installed on iPhone and signed in.
 - At least one Mac-side agent route:
   - OpenClaw installed on the Mac, usually at `~/.openclaw`, with
@@ -84,21 +89,23 @@ available to the Companion runtime. The OpenClaw OAuth option is present for
 future Sign in with ChatGPT Realtime support and should not be treated as the
 default path today.
 
-For **Companion Realtime Voice**, the Diagnostics screen checks the additional
-local speech stack:
+For **Companion Realtime Voice**, open **Companion Voice** or **Access** and use
+the install action. The app creates a user-local Python runtime under
+`~/.voiceclaw/hf-runtime` and downloads the required Hugging Face / MLX models to
+your normal Hugging Face cache.
 
-- `ffmpeg`
-- `whisper-cli`
-- a Whisper model at `~/.openclaw/models/ggml-small.bin` or
-  `~/.openclaw/models/ggml-medium.bin`, unless `WHISPER_MODEL` is set
-- Ollama running with `qwen3.5:2b` installed:
+The current HF realtime stack checks for:
 
-```sh
-ollama pull qwen3.5:2b
-```
+- Faster Whisper speech-to-text:
+  `Systran/faster-whisper-base.en`
+- Qwen 3.5 2B local middle brain when Local Qwen is selected:
+  `mlx-community/Qwen3.5-2B-4bit`
+- Qwen3 local text-to-speech:
+  `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit`
 
-- a TTS option: OpenAI TTS key in OpenClaw config, a supported Piper model, or
-  macOS `say`
+The older turn-upload fallback can still use `ffmpeg`, `whisper-cli`, Ollama
+`qwen3.5:2b`, Piper, OpenAI TTS, or macOS `say`, but new installs should use the
+HF realtime installer first.
 
 The normal OpenClaw and Hermes bridge routes can still work before every
 Companion Realtime Voice dependency is ready.
@@ -111,6 +118,11 @@ Companion Realtime Voice dependency is ready.
 4. Open **VoiceClaw Companion**.
 5. Approve the macOS open prompt if one appears.
 6. Click **Install and Start**.
+7. Open **Access** and use the buttons there to prepare Login Items, Local
+   Network, Microphone, Files and Folders, Full Disk Access, OpenClaw/Hermes
+   folders, and the Hugging Face model cache before your first real session.
+8. Open **Companion Voice** and click **Install Voice Dependencies** if the HF
+   speech-to-speech runtime is not already ready.
 
 **Install and Start** creates `~/.voiceclaw/bridge.json`, installs
 `~/Library/LaunchAgents/ai.voiceclaw.bridge.plist`, starts the bridge, and
@@ -142,6 +154,8 @@ understand the exposure.
 ## What The App Provides
 
 - Native macOS setup, pairing, Tailscale, and diagnostics screens.
+- An **Access** screen that checks and opens the macOS settings panes users need
+  before voice sessions get blocked by missing permissions.
 - A menu bar item for status checks, setup copying, update checks, and app
   access.
 - Private Tailscale Serve publishing for the local bridge.
@@ -149,8 +163,11 @@ understand the exposure.
 - OpenClaw path configuration for installs that are not at `~/.openclaw`.
 - Hermes routing through the existing CLI environment rather than a separate
   Hermes path field.
-- Readiness checks for the local bridge, Tailscale Serve, Realtime auth, app
-  updates, and Companion Realtime Voice dependencies.
+- Readiness checks for the local bridge, Tailscale Serve, OpenClaw, Hermes,
+  Realtime auth, app updates, Hugging Face model cache, and Companion Realtime
+  Voice dependencies.
+- A one-click installer for the user-local HF speech-to-speech runtime and the
+  required local STT, middle-brain, and TTS models.
 - Signed update checks through GitHub Releases.
 - Reset actions that remove only VoiceClaw Companion state and, when proven safe,
   only the matching Tailscale Serve mapping.
@@ -258,16 +275,19 @@ sessions should not rely on Companion-minted OAuth.
 
 ### Companion Realtime Voice says it needs setup
 
-Open **Diagnostics** and read the Companion Realtime Voice row. It reports the
-missing local dependency. Common fixes are:
+Open **Companion Voice** or **Access** and read the Companion Realtime Voice row.
+It reports the missing local dependency and offers an install action when the
+missing item can be installed automatically. Common fixes are:
 
-- Install `ffmpeg`.
-- Install `whisper-cli`.
-- Put a Whisper model at `~/.openclaw/models/ggml-small.bin` or
-  `~/.openclaw/models/ggml-medium.bin`, or set `WHISPER_MODEL`.
-- Open Ollama and run `ollama pull qwen3.5:2b`.
-- Configure a TTS option: OpenAI TTS key in OpenClaw config, supported Piper
-  model files, or macOS `say`.
+- Click **Install Voice Dependencies** to install the HF realtime runtime.
+- Make sure the Hugging Face model cache is writable.
+- Confirm the required Faster Whisper STT and Qwen3 TTS models are cached; Qwen
+  3.5 2B is also required when Local Qwen is the selected middle brain.
+- If you select the Cerebras middle brain, add a Cerebras API key before pairing
+  or in VoiceClaw Realtime on iPhone.
+- If you deliberately use the legacy fallback, install `ffmpeg`, `whisper-cli`,
+  the Whisper model, and a TTS fallback such as Piper, OpenAI TTS, or macOS
+  `say`.
 
 ### Resetting setup
 
