@@ -118,6 +118,12 @@ const requiredPhrases = [
   'companionVoiceExtractMessageDraft',
   'Who should I send the text to?',
   'only set iphone_tool_name when the recipient is clear',
+  'streamingPath',
+  'companionVoiceMode',
+  'processCompanionVoiceStreamingUtterance',
+  'processCompanionVoiceStreamingTextTurn',
+  'companion_voice_text_turn',
+  'websocket-pcm-stream',
 ];
 
 for (const phrase of requiredPhrases) {

@@ -3693,8 +3693,9 @@ function companionVoiceRouteAck(routeMode = '', plan = {}) {
   return "I'm working on that now.";
 }
 
-async function synthesizeCompanionVoiceReply(reply, payload = {}) {
+async function synthesizeCompanionVoiceReply(reply, payload = {}, options = {}) {
   const audio = await synthesize(reply, {
+    signal: options.signal,
     voice: companionVoiceTtsVoice(payload),
     speed: payload.ttsSpeed || 'normal',
   });
@@ -3827,7 +3828,7 @@ function startCompanionVoiceRouteJob({ sessionToken, routeMode, brainMode, plann
   return job;
 }
 
-async function runCompanionVoiceTurn({ req, payload }) {
+async function runCompanionVoiceTurn({ req, payload, signal } = {}) {
   const startedAt = Date.now();
   const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || req.headers['x-voice-session-token'] || `companion-voice-${Date.now().toString(36)}`);
   const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
@@ -3845,7 +3846,7 @@ async function runCompanionVoiceTurn({ req, payload }) {
   let asrMs = 0;
   if (!transcript && audioBuffer?.length) {
     const asrStart = Date.now();
-    const { text } = await transcribe(audioBuffer);
+    const { text } = await transcribe(audioBuffer, { signal });
     asrMs = Date.now() - asrStart;
     transcript = String(text || '').trim();
   }
@@ -3887,6 +3888,7 @@ async function runCompanionVoiceTurn({ req, payload }) {
     sessionToken,
     context,
     payload,
+    signal,
   });
   const planningMs = Date.now() - planningStartedAt;
   const routeMessage = (plan.routeMessage || transcript).trim();
@@ -3915,7 +3917,7 @@ async function runCompanionVoiceTurn({ req, payload }) {
   if (!reply) reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : "I heard you.";
 
   const ttsStart = Date.now();
-  const audio = await synthesizeCompanionVoiceReply(reply, payload);
+  const audio = await synthesizeCompanionVoiceReply(reply, payload, { signal });
   const ttsMs = Date.now() - ttsStart;
   const elapsedMs = Date.now() - startedAt;
   await appendRealtimeLog({
@@ -4020,7 +4022,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: 'piper-ryan-high', routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, streamingPath: `${BASE_PATH}/ws`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: 'piper-ryan-high', routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;
@@ -4643,6 +4645,8 @@ wss.on('connection', (ws) => {
     cancelledThroughTurnId: 0,
     processingConfig: resolveProcessingConfig({ sessionToken: `ws-${sessionId}` }),
     voiceConfig: null,
+    companionVoiceMode: false,
+    companionVoicePayload: null,
     pendingTextTurns: [],      // queued user turns captured while a prior turn is still running
     busyQueueSeq: 0,
     busyQueueEpoch: 0,
@@ -4714,6 +4718,10 @@ wss.on('connection', (ws) => {
         session.pendingTextTurns = [];
         session.processingConfig = resolveProcessingConfig({ ...(msg.processing || {}), sessionToken: msg.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}` });
         session.voiceConfig = await resolveVoiceConfig(msg.voice);
+        session.companionVoiceMode = !!msg.companionVoice;
+        session.companionVoicePayload = session.companionVoiceMode && msg.companionVoicePayload && typeof msg.companionVoicePayload === 'object'
+          ? { ...msg.companionVoicePayload, sessionToken: msg.sessionToken || msg.companionVoicePayload.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}` }
+          : null;
         session.ttsSpeed = getTtsSpeedOptions().defaultSpeed;
         if (msg.ttsSpeed) session.ttsSpeed = msg.ttsSpeed;
         send({ type: 'processing', processing: session.processingConfig });
@@ -4734,6 +4742,14 @@ wss.on('connection', (ws) => {
       case 'config_update': {
         session.processingConfig = resolveProcessingConfig({ ...(msg.processing || {}), sessionToken: msg.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}` });
         session.voiceConfig = await resolveVoiceConfig(msg.voice || session.voiceConfig?.id);
+        if (Object.hasOwn(msg, 'companionVoice')) session.companionVoiceMode = !!msg.companionVoice;
+        if (msg.companionVoicePayload && typeof msg.companionVoicePayload === 'object') {
+          session.companionVoicePayload = {
+            ...(session.companionVoicePayload || {}),
+            ...msg.companionVoicePayload,
+            sessionToken: msg.sessionToken || msg.companionVoicePayload.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
+          };
+        }
         if (msg.ttsSpeed) session.ttsSpeed = msg.ttsSpeed;
         send({ type: 'processing', processing: session.processingConfig });
         send({
@@ -4788,6 +4804,14 @@ wss.on('connection', (ws) => {
           break;
         }
         await processUtterance(session, ws, send);
+        break;
+
+      case 'companion_voice_text_turn':
+        if (!session.companionVoiceMode) {
+          send({ type: 'error', message: 'companion_voice_text_turn requires companionVoice mode' });
+          break;
+        }
+        await processCompanionVoiceStreamingTextTurn(session, ws, send, msg.text || '');
         break;
 
       case 'client_event':
@@ -5022,6 +5046,10 @@ async function drainPendingTextTurns(session, ws, send) {
 }
 
 async function processUtterance(session, ws, send) {
+  if (session.companionVoiceMode) {
+    await processCompanionVoiceStreamingUtterance(session, ws, send);
+    return;
+  }
   if (session.processing) {
     const busyAudio = Buffer.concat(session.audioChunks);
     session.audioChunks = [];
@@ -5077,6 +5105,152 @@ async function processUtterance(session, ws, send) {
     if (!session.processing) {
       drainPendingTextTurns(session, ws, send).catch((err) => console.error('[queue-drain]', err.message));
     }
+  }
+}
+
+async function processCompanionVoiceStreamingUtterance(session, ws, send) {
+  if (session.processing) {
+    session.audioChunks = [];
+    send({ type: 'busy', message: 'Companion Realtime Voice is still finishing the previous streamed turn. Say stop or wait a moment.' });
+    return;
+  }
+  session.processing = true;
+  const turnId = beginTurn(session);
+  const turnStart = Date.now();
+  const rawAudio = Buffer.concat(session.audioChunks);
+  session.audioChunks = [];
+  const energy = shouldSkipAudio(rawAudio, MIN_TURN_RMS);
+  console.log(`[companion-stream] start session=${session.id} turn=${turnId} bytes=${rawAudio.length} rms=${Math.round(energy.rms)} peak=${energy.peak}`);
+  if (!rawAudio.length || energy.skip) {
+    send({ type: 'transcript', text: '(blank audio ignored)', final: true, filtered: true, reason: rawAudio.length ? 'low-energy' : 'empty', turnId });
+    send({ type: 'status', status: 'ready' });
+    session.processing = false;
+    return;
+  }
+
+  const controller = new AbortController();
+  session.asrAbort = controller;
+  session.dialogueAbort = controller;
+  session.ttsAbort = controller;
+
+  try {
+    send({ type: 'status', status: 'transcribing', turnId });
+    const payload = {
+      ...(session.companionVoicePayload || {}),
+      sessionToken: session.companionVoicePayload?.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
+      audioBuffer: rawAudio,
+    };
+    const result = await runCompanionVoiceTurn({
+      req: { headers: { 'x-voice-session-token': payload.sessionToken } },
+      payload,
+      signal: controller.signal,
+    });
+
+    if (isTurnStale(session, turnId)) {
+      console.log(`[companion-stream] stale_after_turn turn=${turnId} active=${session.activeTurnId} cancelledThrough=${session.cancelledThroughTurnId}`);
+      return;
+    }
+
+    const transcript = String(result.transcript || '').trim();
+    if (!transcript || result.filtered) {
+      send({ type: 'transcript', text: transcript || '(no speech detected)', final: true, filtered: true, reason: result.filterReason || 'empty', turnId });
+      send({ type: 'status', status: 'ready', turnId });
+      return;
+    }
+
+    send({ type: 'transcript', text: transcript, final: true, turnId });
+    if (result.reply) send({ type: 'reply', text: result.reply, turnId });
+    send({
+      type: 'companion_voice_result',
+      turnId,
+      ...result,
+      audioBase64: undefined,
+      audioContentType: result.audioContentType || '',
+      transport: 'websocket-pcm-stream',
+    });
+    if (result.audioBase64) {
+      send({ type: 'tts_start', turnId });
+      if (ws.readyState === ws.OPEN) {
+        ws.send(Buffer.from(String(result.audioBase64), 'base64'));
+      }
+      send({ type: 'tts_end', turnId });
+    }
+    send({ type: 'status', status: 'ready', turnId });
+    console.log(`[companion-stream] total_ms=${Date.now() - turnStart} turn=${turnId} async=${!!result.async} planner=${result.planner || ''}`);
+  } catch (err) {
+    if (err.message === 'aborted') {
+      send({ type: 'interrupted', reason: 'aborted', turnId });
+    } else {
+      console.error('[companion-stream]', err.message);
+      send({ type: 'error', message: `Companion Realtime Voice streaming failed: ${err.message}`, turnId });
+    }
+  } finally {
+    if (session.activeTurnId === turnId) session.processing = false;
+    session.asrAbort = null;
+    session.dialogueAbort = null;
+    session.ttsAbort = null;
+  }
+}
+
+async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = '') {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) {
+    send({ type: 'error', message: 'Text turn is empty' });
+    return;
+  }
+  if (session.processing) {
+    send({ type: 'busy', message: 'Companion Realtime Voice is still finishing the previous streamed turn.' });
+    return;
+  }
+
+  session.processing = true;
+  const turnId = beginTurn(session);
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  session.dialogueAbort = controller;
+  session.ttsAbort = controller;
+
+  try {
+    send({ type: 'status', status: 'thinking', turnId });
+    const payload = {
+      ...(session.companionVoicePayload || {}),
+      sessionToken: session.companionVoicePayload?.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
+      text: trimmed,
+    };
+    const result = await runCompanionVoiceTurn({
+      req: { headers: { 'x-voice-session-token': payload.sessionToken } },
+      payload,
+      signal: controller.signal,
+    });
+    if (isTurnStale(session, turnId)) return;
+    send({ type: 'transcript', text: result.transcript || trimmed, final: true, turnId });
+    if (result.reply) send({ type: 'reply', text: result.reply, turnId });
+    send({
+      type: 'companion_voice_result',
+      turnId,
+      ...result,
+      audioBase64: undefined,
+      audioContentType: result.audioContentType || '',
+      transport: 'websocket-text-smoke',
+    });
+    if (result.audioBase64 && ws.readyState === ws.OPEN) {
+      send({ type: 'tts_start', turnId });
+      ws.send(Buffer.from(String(result.audioBase64), 'base64'));
+      send({ type: 'tts_end', turnId });
+    }
+    send({ type: 'status', status: 'ready', turnId });
+    console.log(`[companion-stream-smoke] total_ms=${Date.now() - startedAt} turn=${turnId} async=${!!result.async} planner=${result.planner || ''}`);
+  } catch (err) {
+    if (err.message === 'aborted') {
+      send({ type: 'interrupted', reason: 'aborted', turnId });
+    } else {
+      console.error('[companion-stream-smoke]', err.message);
+      send({ type: 'error', message: `Companion Realtime Voice streaming text failed: ${err.message}`, turnId });
+    }
+  } finally {
+    if (session.activeTurnId === turnId) session.processing = false;
+    session.dialogueAbort = null;
+    session.ttsAbort = null;
   }
 }
 
