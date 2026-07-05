@@ -41,6 +41,24 @@ if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
   exit 1
 fi
 rsync -a --delete "$SPARKLE_FRAMEWORK/" "$FRAMEWORKS_DIR/Sparkle.framework/"
+SPARKLE_BUNDLE="$FRAMEWORKS_DIR/Sparkle.framework"
+REQUIRED_SPARKLE_PATHS=(
+  "$SPARKLE_BUNDLE/Versions/Current/Autoupdate"
+  "$SPARKLE_BUNDLE/Versions/Current/Updater.app"
+  "$SPARKLE_BUNDLE/Versions/Current/XPCServices/Downloader.xpc"
+  "$SPARKLE_BUNDLE/Versions/Current/XPCServices/Installer.xpc"
+  "$SPARKLE_BUNDLE/Autoupdate"
+  "$SPARKLE_BUNDLE/Updater.app"
+  "$SPARKLE_BUNDLE/XPCServices/Downloader.xpc"
+  "$SPARKLE_BUNDLE/XPCServices/Installer.xpc"
+)
+for required_sparkle_path in "${REQUIRED_SPARKLE_PATHS[@]}"; do
+  if [[ ! -e "$required_sparkle_path" ]]; then
+    echo "Required Sparkle updater helper is missing or points to a missing target: $required_sparkle_path" >&2
+    echo "Refusing to package an app whose in-app updater cannot launch the installer." >&2
+    exit 1
+  fi
+done
 if ! otool -l "$MACOS_DIR/$EXECUTABLE_NAME" | grep -Fq "@executable_path/../Frameworks"; then
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/$EXECUTABLE_NAME"
 fi
