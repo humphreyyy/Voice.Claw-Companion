@@ -154,6 +154,9 @@ final class BridgeStore: ObservableObject {
     @Published var realtimeRuntimeSummary: String = "Realtime runtime not checked."
     @Published var realtimeAuthStatusSummary: String = "OpenAI auth status not checked."
     @Published var companionVoiceSummary: String = "Companion Realtime Voice dependencies not checked."
+    @Published var companionVoiceDependencyInstallSummary: String = ""
+    @Published var companionVoiceDependencyInstallAvailable: Bool = false
+    @Published var isInstallingCompanionVoiceDependencies: Bool = false
     @Published var pairingJSON: String = ""
     @Published var pairingPreview: String = ""
     @Published var pairingURL: String = ""
@@ -652,6 +655,41 @@ final class BridgeStore: ObservableObject {
         }
     }
 
+    func installMissingCompanionVoiceDependencies() async {
+        guard companionVoiceDependencyInstallAvailable else {
+            lastLog = "Companion Realtime Voice does not currently report any automatically installable missing dependencies."
+            return
+        }
+        guard confirmCompanionVoiceDependencyInstall() else {
+            lastLog = "Companion Realtime Voice dependency installation was cancelled."
+            return
+        }
+
+        isInstallingCompanionVoiceDependencies = true
+        status = .working("Installing Voice Dependencies")
+        defer {
+            isInstallingCompanionVoiceDependencies = false
+        }
+
+        do {
+            let output = try await runSetupScript(
+                arguments: [
+                    "--install-companion-voice-deps",
+                    "--json",
+                    "--openclaw-path",
+                    normalizedOpenClawPath,
+                ]
+            )
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            lastLog = trimmed.isEmpty ? "Companion Realtime Voice dependency installation completed." : trimmed
+            await refreshStatus()
+        } catch {
+            lastLog = Self.userFacingSetupError(error)
+            status = .failed("Voice Dependency Install Failed")
+            await refreshStatus()
+        }
+    }
+
     private func runSetupScript(arguments: [String]) async throws -> String {
         try await runner.run(
             executable: try await resolveNodeExecutable(),
@@ -800,6 +838,9 @@ final class BridgeStore: ObservableObject {
             localBridgeSummary = diagnostics.local.summary
             tailscaleSummary = diagnostics.tailscale.summary
             companionVoiceSummary = diagnostics.companionVoice?.summary ?? "Companion Realtime Voice dependencies were not reported by this bridge runtime."
+            let installPlan = diagnostics.companionVoice?.installPlan
+            companionVoiceDependencyInstallSummary = installPlan?.summary ?? ""
+            companionVoiceDependencyInstallAvailable = (installPlan?.installableCount ?? 0) > 0
             setupAdvice = diagnostics.suggestedAction
             canResetTailscaleMapping = diagnostics.tailscale.canClearSafely ?? false
             await refreshRealtimeRuntimeStatus()
@@ -825,12 +866,26 @@ final class BridgeStore: ObservableObject {
             realtimeRuntimeSummary = "Realtime runtime status could not be read because bridge diagnostics failed."
             realtimeAuthStatusSummary = "OpenAI auth status could not be read because bridge diagnostics failed."
             companionVoiceSummary = "Companion Realtime Voice dependencies could not be checked because bridge diagnostics failed."
+            companionVoiceDependencyInstallSummary = ""
+            companionVoiceDependencyInstallAvailable = false
             setupAdvice = "Install Node.js and Tailscale if needed, then click Install and Start."
             canResetTailscaleMapping = false
             if !status.isWorking {
                 status = .warning("Diagnostics Need Attention")
             }
         }
+    }
+
+    private func confirmCompanionVoiceDependencyInstall() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Install missing Companion Realtime Voice dependencies?"
+        alert.informativeText = companionVoiceDependencyInstallSummary.isEmpty
+            ? "VoiceClaw Companion will install missing local speech dependencies needed for Companion Realtime Voice."
+            : companionVoiceDependencyInstallSummary
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func refreshRealtimeRuntimeStatus() async {
@@ -1240,6 +1295,23 @@ private struct BridgeDiagnostics: Decodable {
         let state: String
         let summary: String
         let canClearSafely: Bool?
+        let installPlan: InstallPlan?
+    }
+
+    struct InstallPlan: Decodable {
+        let needed: Bool?
+        let brewAvailable: Bool?
+        let installableCount: Int?
+        let summary: String?
+        let items: [InstallItem]?
+    }
+
+    struct InstallItem: Decodable {
+        let id: String?
+        let label: String?
+        let detail: String?
+        let installable: Bool?
+        let command: String?
     }
 }
 

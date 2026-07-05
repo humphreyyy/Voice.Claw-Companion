@@ -11,7 +11,7 @@ const { default: WebSocket } = await import(require.resolve('ws', {
 
 const urls = process.env.VOICECLAW_COMPANION_WS_URL
   ? [process.env.VOICECLAW_COMPANION_WS_URL]
-  : ['ws://127.0.0.1:3101/ws', 'ws://127.0.0.1:3100/ws'];
+  : ['ws://127.0.0.1:12321/ws'];
 
 const text = process.argv.slice(2).join(' ').trim() || 'Say briefly that Companion Realtime Voice streaming smoke test is working.';
 const timeoutMs = Number(process.env.VOICECLAW_COMPANION_STREAM_SMOKE_TIMEOUT_MS || 45_000);

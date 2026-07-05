@@ -754,6 +754,9 @@ private struct StatusPanel: View {
             StatusRow(title: "Realtime Runtime", value: store.realtimeRuntimeSummary, symbol: "waveform.path.ecg")
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
             StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
+            if !store.companionVoiceDependencyInstallSummary.isEmpty {
+                StatusRow(title: "Voice Dependency Install", value: store.companionVoiceDependencyInstallSummary, symbol: "square.and.arrow.down")
+            }
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
             StatusRow(title: "Launch upon Startup", value: store.launchAtStartupSummary, symbol: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
@@ -806,6 +809,16 @@ private struct StatusPanel: View {
                         Label("Open OpenClaw Folder", systemImage: "folder")
                     }
                     .buttonStyle(.bordered)
+
+                    if store.companionVoiceDependencyInstallAvailable {
+                        Button {
+                            Task { await store.installMissingCompanionVoiceDependencies() }
+                        } label: {
+                            Label(store.isInstallingCompanionVoiceDependencies ? "Installing Voice Dependencies" : "Install Voice Dependencies", systemImage: "square.and.arrow.down")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isInstallingCompanionVoiceDependencies || store.status.isWorking)
+                    }
                 }
 
                 HStack(spacing: 10) {

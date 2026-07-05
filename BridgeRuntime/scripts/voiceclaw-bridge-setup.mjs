@@ -42,6 +42,7 @@ function parseArgs(argv) {
     resetTailscalePort: false,
     diagnose: false,
     suggestPort: false,
+    installCompanionVoiceDependencies: false,
     port: null,
     openClawInstallPath: null,
     openClawAgentName: null,
@@ -59,6 +60,7 @@ function parseArgs(argv) {
     else if (arg === '--reset-tailscale-port') options.resetTailscalePort = true;
     else if (arg === '--diagnose') options.diagnose = true;
     else if (arg === '--suggest-port') options.suggestPort = true;
+    else if (arg === '--install-companion-voice-deps') options.installCompanionVoiceDependencies = true;
     else if (arg === '--port') options.port = Number(argv[++index]);
     else if (arg.startsWith('--port=')) options.port = Number(arg.slice('--port='.length));
     else if (arg === '--openclaw-path') options.openClawInstallPath = argv[++index] || options.openClawInstallPath;
@@ -96,6 +98,8 @@ Options:
   --reset-tailscale-port     With --reset, also remove the selected Tailscale Serve port only if it is safely identified as Voice.Claw
   --diagnose                 Print read-only local bridge and Tailscale Serve diagnostics
   --suggest-port             Print a fresh unused test port without changing system state
+  --install-companion-voice-deps
+                             Install missing Companion Realtime Voice dependencies after app confirmation
   --json                     Print only the phone setup JSON
   --port 12321               Bridge/Tailscale HTTPS port
   --openclaw-path PATH       OpenClaw install/config folder, usually ~/.openclaw
@@ -184,6 +188,15 @@ async function resolveOptionalExecutable(name, explicitPath = '') {
   } catch {
     return '';
   }
+}
+
+async function runCommand(executable, args, options = {}) {
+  const { stdout, stderr } = await execFileAsync(executable, args, {
+    timeout: options.timeoutMs || 20 * 60 * 1000,
+    maxBuffer: options.maxBuffer || 20 * 1024 * 1024,
+    env: { ...process.env, PATH: RUNTIME_PATH, ...(options.env || {}) },
+  });
+  return { stdout: stdout.trim(), stderr: stderr.trim() };
 }
 
 function httpJSON(urlString, { timeoutMs = 3000 } = {}) {
@@ -491,6 +504,8 @@ async function checkCompanionVoiceDependencies(openClawInstallPath) {
   const piperRyanModel = join(HOME, '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx');
   const piperLibriModel = join(HOME, '.openclaw', 'models', 'piper', 'en_US-libritts-high.onnx');
   const sayPath = await resolveOptionalExecutable('say', process.env.SAY_BIN || '');
+  const brewPath = await resolveOptionalExecutable('brew', process.env.BREW_BIN || '');
+  const ollamaPath = await resolveOptionalExecutable('ollama', process.env.OLLAMA_BIN || '');
   const ttsReady = hasOpenAITtsKey(openClawInstallPath) || existsSync(piperRyanModel) || existsSync(piperLibriModel) || !!sayPath;
   const missing = [];
   if (!ffmpegPath) missing.push('ffmpeg');
@@ -499,7 +514,7 @@ async function checkCompanionVoiceDependencies(openClawInstallPath) {
   if (!qwenReady) missing.push(DEFAULT_QWEN_MODEL);
   if (!ttsReady) missing.push('TTS voice: OpenAI TTS key, Piper model, or macOS say');
 
-  return {
+  const result = {
     state: sttReady && qwenReady && ttsReady ? 'ready' : 'needs_setup',
     summary: sttReady && qwenReady && ttsReady
       ? `Companion Realtime Voice is ready: STT, ${DEFAULT_QWEN_MODEL}, and TTS are available.`
@@ -526,6 +541,191 @@ async function checkCompanionVoiceDependencies(openClawInstallPath) {
       piperLibriModel: existsSync(piperLibriModel) ? piperLibriModel : '',
       say: sayPath || '',
     },
+  };
+  result.installPlan = buildCompanionVoiceInstallPlan({
+    ffmpegPath,
+    whisperPath,
+    whisperModelReady,
+    whisperModelPath,
+    qwenReady,
+    ollamaPath,
+    ollamaState,
+    ttsReady,
+    brewPath,
+  });
+  return result;
+}
+
+function buildCompanionVoiceInstallPlan({
+  ffmpegPath,
+  whisperPath,
+  whisperModelReady,
+  whisperModelPath,
+  qwenReady,
+  ollamaPath,
+  ollamaState,
+  ttsReady,
+  brewPath,
+}) {
+  const items = [];
+  const brewAvailable = !!brewPath;
+  if (!ffmpegPath) {
+    items.push({
+      id: 'ffmpeg',
+      label: 'ffmpeg',
+      detail: 'Required to convert iPhone audio into the local STT format.',
+      installable: brewAvailable,
+      command: brewAvailable ? `${brewPath} install ffmpeg` : 'Install Homebrew, then install ffmpeg.',
+    });
+  }
+  if (!whisperPath) {
+    items.push({
+      id: 'whisper-cli',
+      label: 'whisper-cli',
+      detail: 'Required for local speech-to-text through whisper.cpp.',
+      installable: brewAvailable,
+      command: brewAvailable ? `${brewPath} install whisper-cpp` : 'Install Homebrew, then install whisper-cpp.',
+    });
+  }
+  if (!whisperModelReady) {
+    items.push({
+      id: 'whisper-model-small',
+      label: 'Whisper small model',
+      detail: `Downloads ggml-small.bin to ${whisperModelPath}.`,
+      installable: true,
+      command: `download ${whisperModelPath}`,
+    });
+  }
+  if (!ollamaPath) {
+    items.push({
+      id: 'ollama',
+      label: 'Ollama',
+      detail: `Required for the local ${DEFAULT_QWEN_MODEL} middle brain.`,
+      installable: brewAvailable,
+      command: brewAvailable ? `${brewPath} install ollama` : 'Install Homebrew, then install Ollama.',
+    });
+  }
+  if (!qwenReady) {
+    items.push({
+      id: 'qwen3.5-2b',
+      label: DEFAULT_QWEN_MODEL,
+      detail: ollamaState === 'not_reachable'
+        ? 'Will pull the local middle-brain model after Ollama is installed and reachable.'
+        : 'Downloads the local middle-brain model through Ollama.',
+      installable: !!ollamaPath || brewAvailable,
+      command: `ollama pull ${DEFAULT_QWEN_MODEL}`,
+    });
+  }
+  if (!ttsReady) {
+    items.push({
+      id: 'tts',
+      label: 'TTS voice',
+      detail: 'VoiceClaw can use OpenAI TTS, Piper, Kokoro/MLX, or macOS say. macOS say is normally built in; if this is missing, reinstalling command-line tools may be required.',
+      installable: false,
+      command: 'manual setup required',
+    });
+  }
+
+  const installableCount = items.filter((item) => item.installable).length;
+  return {
+    needed: items.length > 0,
+    brewAvailable,
+    installableCount,
+    summary: items.length
+      ? `${items.length} Companion Realtime Voice dependency item${items.length === 1 ? '' : 's'} need attention; ${installableCount} can be installed automatically.`
+      : 'No Companion Realtime Voice dependencies need installation.',
+    items,
+  };
+}
+
+async function downloadFile(url, destination) {
+  await mkdir(dirname(destination), { recursive: true });
+  await runCommand('/usr/bin/curl', ['-L', '--fail', '--retry', '3', '--output', destination, url], {
+    timeoutMs: 30 * 60 * 1000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+}
+
+async function waitForOllama(timeoutMs = 15_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      await httpJSON(`${OLLAMA_BASE_URL.replace(/\/+$/g, '')}/api/tags`, { timeoutMs: 1500 });
+      return true;
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 750));
+    }
+  }
+  return false;
+}
+
+async function ensureOllamaReachable(brewPath = '') {
+  if (await waitForOllama(2500)) return true;
+  if (brewPath) {
+    await runCommand(brewPath, ['services', 'start', 'ollama'], { timeoutMs: 60_000 }).catch(() => {});
+    if (await waitForOllama(12_000)) return true;
+  }
+  if (existsSync('/Applications/Ollama.app')) {
+    await runCommand('/usr/bin/open', ['-a', 'Ollama'], { timeoutMs: 10_000 }).catch(() => {});
+    if (await waitForOllama(12_000)) return true;
+  }
+  return false;
+}
+
+async function installCompanionVoiceDependencies(openClawInstallPath) {
+  const before = await checkCompanionVoiceDependencies(openClawInstallPath);
+  const items = before.installPlan?.items || [];
+  const installed = [];
+  const skipped = [];
+  const failures = [];
+  let brewPath = await resolveOptionalExecutable('brew', process.env.BREW_BIN || '');
+
+  for (const item of items) {
+    if (!item.installable) {
+      skipped.push({ id: item.id, label: item.label, reason: 'not_installable' });
+      continue;
+    }
+    try {
+      if (item.id === 'ffmpeg') {
+        if (!brewPath) throw new Error('Homebrew is required to install ffmpeg automatically.');
+        await runCommand(brewPath, ['install', 'ffmpeg']);
+      } else if (item.id === 'whisper-cli') {
+        if (!brewPath) throw new Error('Homebrew is required to install whisper-cpp automatically.');
+        await runCommand(brewPath, ['install', 'whisper-cpp']);
+      } else if (item.id === 'whisper-model-small') {
+        await downloadFile(
+          'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
+          join(HOME, '.openclaw', 'models', 'ggml-small.bin')
+        );
+      } else if (item.id === 'ollama') {
+        if (!brewPath) throw new Error('Homebrew is required to install Ollama automatically.');
+        await runCommand(brewPath, ['install', 'ollama']);
+        await ensureOllamaReachable(brewPath);
+        brewPath = await resolveOptionalExecutable('brew', process.env.BREW_BIN || '');
+      } else if (item.id === 'qwen3.5-2b') {
+        let ollamaPath = await resolveOptionalExecutable('ollama', process.env.OLLAMA_BIN || '');
+        if (!ollamaPath && brewPath) {
+          await runCommand(brewPath, ['install', 'ollama']);
+          ollamaPath = await resolveOptionalExecutable('ollama', process.env.OLLAMA_BIN || '');
+        }
+        if (!ollamaPath) throw new Error('Ollama is required before pulling the local middle-brain model.');
+        const reachable = await ensureOllamaReachable(brewPath);
+        if (!reachable) throw new Error(`Ollama is installed, but ${OLLAMA_BASE_URL} did not become reachable.`);
+        await runCommand(ollamaPath, ['pull', DEFAULT_QWEN_MODEL], { timeoutMs: 60 * 60 * 1000 });
+      }
+      installed.push({ id: item.id, label: item.label });
+    } catch (error) {
+      failures.push({ id: item.id, label: item.label, error: error?.message || String(error) });
+    }
+  }
+
+  const diagnostics = await checkCompanionVoiceDependencies(openClawInstallPath);
+  return {
+    ok: failures.length === 0,
+    installed,
+    skipped,
+    failures,
+    diagnostics,
   };
 }
 
@@ -698,6 +898,19 @@ async function main() {
     const existing = await readBridgeConfig();
     const diagnostics = await diagnoseBridge(options.port || existing.port || DEFAULT_BRIDGE_PORT);
     console.log(JSON.stringify(diagnostics, null, 2));
+    return;
+  }
+
+  if (options.installCompanionVoiceDependencies) {
+    const existing = await readBridgeConfig();
+    const openClawInstallPath = normalizeInstallPath(options.openClawInstallPath || existing.openClawInstallPath);
+    const result = await installCompanionVoiceDependencies(openClawInstallPath);
+    if (options.jsonOnly) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(result.diagnostics?.companionVoice?.summary || result.diagnostics?.summary || 'Companion Realtime Voice dependency install completed.');
+    }
+    if (!result.ok) process.exitCode = 1;
     return;
   }
 

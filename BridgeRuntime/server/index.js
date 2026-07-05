@@ -26,7 +26,7 @@ import {
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 normalizeProcessPath();
 const CLIENT_DIR = join(__dirname, '..', 'client');
-const PORT = parseInt(process.env.VB_PORT || '3100', 10);
+const PORT = parseInt(process.env.VB_PORT || '12321', 10);
 const BIND_HOST = (process.env.VB_BIND_HOST || process.env.HOST || '127.0.0.1').trim() || '127.0.0.1';
 const RAW_BASE_PATH = (process.env.VB_BASE_PATH || '').trim();
 const BASE_PATH = RAW_BASE_PATH
@@ -1463,8 +1463,7 @@ function handleCompanionServerVADChunk(session, chunk, send, cancelPipeline, com
       vad.looseFrames = 0;
     }
 
-    const waitedTooLong = now - vad.firstAudioAt >= vad.maxPreSpeechMs && vad.preRollByteCount >= MIN_AUDIO_BYTES * 2;
-    const shouldStart = vad.hotFrames >= vad.hotFramesToStart || vad.looseFrames >= vad.looseFramesToStart || waitedTooLong;
+    const shouldStart = vad.hotFrames >= vad.hotFramesToStart || vad.looseFrames >= vad.looseFramesToStart;
     if (!shouldStart) return;
 
     if (session.processing && typeof cancelPipeline === 'function') {
@@ -5389,6 +5388,12 @@ wss.on('connection', (ws) => {
         }
         console.log(`[ws] audio_end session=${session.id} chunks=${session.audioChunks.length} serverBytes=${session.audioBytesReceived} clientBytes=${Number(msg.audioBytes || 0)}`);
         await processUtterance(session, ws, send, cancelPipeline);
+        break;
+
+      case 'client_speech_end_hint':
+        if (session.companionVoiceMode && session.serverVad?.enabled) {
+          await commitCompanionServerVADTurn(session, ws, send, cancelPipeline, msg.reason || 'client_speech_end_hint');
+        }
         break;
 
       case 'companion_voice_text_turn':

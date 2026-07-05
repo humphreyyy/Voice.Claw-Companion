@@ -678,6 +678,7 @@ async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScal
   let settled = false;
   let started = false;
 
+  let closeError = null;
   const closePromise = new Promise((resolve, reject) => {
     const finish = (fn) => {
       if (settled) return;
@@ -696,6 +697,8 @@ async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScal
       finish(resolve);
     });
     proc.on('error', err => finish(() => reject(err)));
+  }).catch((err) => {
+    closeError = err;
   });
 
   if (signal?.aborted) {
@@ -726,8 +729,10 @@ async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScal
       await onChunk?.(buffer);
     }
     await closePromise;
+    if (closeError) throw closeError;
   } catch (err) {
     proc.kill('SIGTERM');
+    await closePromise;
     throw err;
   }
 
@@ -766,6 +771,7 @@ async function synthesizeKokoroPCMStreaming(text, { signal, pythonBin, model, ko
   let settled = false;
   let started = false;
 
+  let closeError = null;
   const closePromise = new Promise((resolve, reject) => {
     const finish = (fn) => {
       if (settled) return;
@@ -784,6 +790,8 @@ async function synthesizeKokoroPCMStreaming(text, { signal, pythonBin, model, ko
       finish(resolve);
     });
     proc.on('error', err => finish(() => reject(err)));
+  }).catch((err) => {
+    closeError = err;
   });
 
   if (signal?.aborted) {
@@ -814,8 +822,10 @@ async function synthesizeKokoroPCMStreaming(text, { signal, pythonBin, model, ko
       await onChunk?.(buffer);
     }
     await closePromise;
+    if (closeError) throw closeError;
   } catch (err) {
     proc.kill('SIGTERM');
+    await closePromise;
     throw err;
   }
 
