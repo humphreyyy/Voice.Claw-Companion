@@ -3224,6 +3224,16 @@ function companionVoiceDirectReply(text = '') {
   if (/^(can|do|did) you hear what i (said|was saying)\b/.test(normalized)) {
     return "Yes, I heard you.";
   }
+  const sayExactMatch = trimmed.match(/^(?:say\s+(?:exactly|only)|repeat\s+(?:exactly|only|this))\s*(?::|-)?\s*["“]?(.+?)["”]?$/i);
+  if (sayExactMatch) {
+    const target = String(sayExactMatch[1] || '').trim().replace(/[.!?]+$/g, '');
+    if (target && target.length <= 120 && !/\b(date|time|weather|route|openclaw|hermes|mac|computer|file|app|maps?|safari|website|url|text|message|email)\b/i.test(target)) {
+      return target;
+    }
+  }
+  if (/\bwhat(?:'s| is)?\s+latency\b/.test(normalized) || /\bdefine\s+latency\b/.test(normalized)) {
+    return "Latency is the delay between your input and the system's response.";
+  }
   if (/\b(what|which|list|tell me|show me).*\b(voice engines?|engine options?)\b/.test(normalized)
     || /\b(voice engines?|engine options?).*\b(available|can i use|options)\b/.test(normalized)) {
     return "Voice engines: GPT-Realtime-2, STT + GPT + TTS, and Companion Realtime Voice.";
@@ -3371,6 +3381,27 @@ iPhone action examples:
 - "Draft a text saying I am late" -> {"call_route":false,"route_message":"","final_answer":"Who should I send the text to?","iphone_tool_name":"","iphone_tool_arguments":{}}
 - "Switch the voice engine to Companion Realtime Voice" -> {"call_route":false,"route_message":"","final_answer":"Switching voice engines.","iphone_tool_name":"iphone_confirm_voice_engine_switch","iphone_tool_arguments":{"engine":"companion-realtime-voice"}}
 - "What files are on my Mac desktop?" in an OpenClaw or Hermes route -> {"call_route":true,"route_message":"What files are on my Mac desktop?","final_answer":"Checking that now.","iphone_tool_name":"","iphone_tool_arguments":{}}`;
+}
+
+function companionVoiceCompactPlannerPrompt(text, { routeMode, context } = {}) {
+  return `You are VoiceClaw's fast local voice brain. Return one JSON object only:
+{"call_route":false,"route_message":"","final_answer":"","iphone_tool_name":"","iphone_tool_arguments":{}}
+
+Selected route: ${normalizeCompanionVoiceRoute(routeMode)}
+Recent context: ${String(context || '').trim().slice(-700) || '(none)'}
+User said: ${text}
+
+Rules:
+- Default: answer directly in final_answer, call_route=false, route_message="".
+- Answer directly for greetings, mic checks, simple facts, math, definitions, brief explanations, ordinary chat, and short drafting.
+- Use iPhone tools for phone/app actions; do not say you cannot open apps. Good default: iphone_external_action.
+- Tool names: iphone_external_action, iphone_open_url, iphone_search_web, iphone_open_maps, iphone_draft_message, iphone_draft_email, iphone_start_phone_call, iphone_run_shortcut, iphone_share, iphone_read_clipboard, iphone_copy_text, iphone_set_transcript_visible, iphone_clear_transcript, iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, iphone_end_voice_session.
+- If drafting/sending a text and recipient is missing, no tool; final_answer="Who should I send the text to?"
+- Route only for explicit OpenClaw/Hermes/Mac/computer work, files, attachments, private/current user state, long research/analysis, or when the user explicitly asks the selected route/agent to do it.
+- If routing: call_route=true, route_message=complete task, final_answer=brief acknowledgement.
+- If using an iPhone tool: call_route=false, route_message="", final_answer=brief acknowledgement.
+- Engine options: GPT-Realtime-2, STT + GPT + TTS, Companion Realtime Voice.
+- Route options: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, Hermes HTTPS Tunnel.`;
 }
 
 async function runQwen35Planner(prompt, { signal, timeoutMs = 12000, qwenThinking = false } = {}) {
@@ -3565,7 +3596,9 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
       planner: 'local-router',
     };
   }
-  const prompt = companionVoicePlannerPrompt(text, { routeMode, context });
+  const prompt = brainMode === 'qwen3.5-2b'
+    ? companionVoiceCompactPlannerPrompt(text, { routeMode, context })
+    : companionVoicePlannerPrompt(text, { routeMode, context });
   const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
   const defaultPlannerTimeoutMs = qwenThinking ? 90000 : 12000;
   const requestedPlannerTimeoutMs = Number(process.env.COMPANION_VOICE_PLANNER_TIMEOUT_MS || defaultPlannerTimeoutMs);
