@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.95</title>
+            <pubDate>Mon, 06 Jul 2026 00:05:39 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607060004</sparkle:version>
+            <sparkle:shortVersionString>0.1.95</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.95</h2><ul><li>Adds a packaged runtime manifest with Companion version, build, runtime package version, source commit, and runtime hash.</li><li>Exposes the runtime manifest through bridge health, config, and Realtime status endpoints so the Companion can prove the running bridge matches the installed app runtime.</li><li>Adds launch-time stale-runtime detection and one-shot self-healing: if the LaunchAgent points at an old runtime or the running bridge reports an old/missing runtime hash, the Companion refreshes and restarts only the bridge LaunchAgent from saved config.</li><li>Adds a Bridge Runtime diagnostics row and release verification checks so future packages cannot ship without runtime identity metadata.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.95/VoiceClawCompanion-0.1.95-202607060004.dmg" length="3446652" type="application/octet-stream" sparkle:edSignature="6+Jra9o+5XUhIWCTG8J95lo92tNwPzVmTYgPKuh9TDvKR4MSBB2VZOYwofM9T4p/1DtJfy2R33Re/bd0V+mODQ=="/>
+        </item>
+        <item>
             <title>0.1.94</title>
             <pubDate>Sun, 05 Jul 2026 23:57:12 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.93</h2><ul><li>Restores the in-app Install Update flow to use Sparkle, so signed Companion updates can download, verify, replace the app, and relaunch without requiring the user to manually drag the app from a DMG.</li><li>Keeps the GitHub release/DMG link available as a manual fallback.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.93/VoiceClawCompanion-0.1.93-202607052351.dmg" length="3435845" type="application/octet-stream" sparkle:edSignature="peg2crFYT3wA8ptPkB65cGQUzN9WsHEIf0HHRQB/tPdLpJ33sIIeNevJwi7/NkvjLgwgF/h5heh/0aRxqa2lAA=="/>
-        </item>
-        <item>
-            <title>0.1.92</title>
-            <pubDate>Sun, 05 Jul 2026 23:46:43 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607052344</sparkle:version>
-            <sparkle:shortVersionString>0.1.92</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.92</h2><ul><li>Keeps Companion Realtime Voice on the streaming transport instead of silently falling back to the legacy turn-upload recorder after socket errors.</li><li>Adds streaming transport recovery so the iPhone can reconnect while preserving the live microphone session.</li><li>Avoids unnecessary HF runtime restarts during routine live settings updates.</li><li>Tightens Companion Realtime Voice planning so iPhone tools run only for clear phone/app/system actions, preventing spoken-only requests such as counting aloud from being misrouted to Maps.</li><li>Reports HF runtime startup and websocket failures accurately so setup problems do not appear as a ready voice session.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.92/VoiceClawCompanion-0.1.92-202607052344.dmg" length="3450857" type="application/octet-stream" sparkle:edSignature="SydkVbAbH9fXBAgLkSQoh/VvfAGU82wJcoMmmlU15HCfXEYWSyDkU3TfgudGoDL9wBuZXChl3rzfJQn3rhEEAA=="/>
         </item>
     </channel>
 </rss>
