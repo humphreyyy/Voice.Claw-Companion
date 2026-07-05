@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.92</title>
+            <pubDate>Sun, 05 Jul 2026 23:46:43 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607052344</sparkle:version>
+            <sparkle:shortVersionString>0.1.92</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.92</h2><ul><li>Keeps Companion Realtime Voice on the streaming transport instead of silently falling back to the legacy turn-upload recorder after socket errors.</li><li>Adds streaming transport recovery so the iPhone can reconnect while preserving the live microphone session.</li><li>Avoids unnecessary HF runtime restarts during routine live settings updates.</li><li>Tightens Companion Realtime Voice planning so iPhone tools run only for clear phone/app/system actions, preventing spoken-only requests such as counting aloud from being misrouted to Maps.</li><li>Reports HF runtime startup and websocket failures accurately so setup problems do not appear as a ready voice session.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.92/VoiceClawCompanion-0.1.92-202607052344.dmg" length="3450857" type="application/octet-stream" sparkle:edSignature="SydkVbAbH9fXBAgLkSQoh/VvfAGU82wJcoMmmlU15HCfXEYWSyDkU3TfgudGoDL9wBuZXChl3rzfJQn3rhEEAA=="/>
+        </item>
+        <item>
             <title>0.1.91</title>
             <pubDate>Sun, 05 Jul 2026 21:38:54 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -13,30 +25,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.91</h2><ul><li>Adds the HF-style Companion Realtime Voice runtime path with streaming STT, middle-brain, TTS, server VAD, and iPhone tool-call support.</li><li>Adds runtime readiness/install checks for Faster Whisper, Qwen3-TTS, local Qwen, and Cerebras middle-brain modes.</li><li>Improves Companion Realtime Voice startup reliability by launching cached HF models offline and surfacing early runtime failures promptly.</li><li>Improves packaging safeguards for notarized, Developer ID signed public releases.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.91/VoiceClawCompanion-0.1.91-202607052137.dmg" length="3372880" type="application/octet-stream" sparkle:edSignature="hJFqwDJX63DbX/R2AxPAFd4nb1Wci+02XpzsDNNqcZst3Cr6bU/2jiMViO2S3ausV/cYyDMNHa2jekShzqXyDg=="/>
-        </item>
-        <item>
-            <title>0.1.90</title>
-            <pubDate>Sun, 05 Jul 2026 17:09:49 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607051707</sparkle:version>
-            <sparkle:shortVersionString>0.1.90</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.90</h2><ul><li>Improves Companion Realtime Voice server-side VAD turn finalization when iOS reports speech end before the server threshold has fully crossed.</li><li>Fixes abort handling around local TTS playback so interrupted turns do not crash or poison the next response.</li><li>Adds Companion-managed voice dependency diagnostics and guided install support for local voice runtime components.</li><li>Keeps VoiceClaw-specific bridge defaults isolated from unrelated local personal runtimes.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.90/VoiceClawCompanion-0.1.90-202607051707.dmg" length="3268360" type="application/octet-stream" sparkle:edSignature="0BFbWjOoKMBhlMv1Ns/96Z6Wd0rk2RJe1raMXQC5vVUpltqdAcQfmW6aYNwruy3V6ktCi5JlmyTAsSpG6o+4DQ=="/>
-        </item>
-        <item>
-            <title>0.1.89</title>
-            <pubDate>Sun, 05 Jul 2026 15:42:53 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607051539</sparkle:version>
-            <sparkle:shortVersionString>0.1.89</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.89</h2><ul><li>Moves Companion Realtime Voice streaming toward server-owned VAD/endpointing so the Companion can auto-send turns after silence instead of relying on iOS to commit every turn.</li><li>Adds a regression smoke test for WebSocket server VAD auto-commit without a client audio_end message.</li><li>Makes Kokoro Heart the preferred local TTS default when the HF/MLX runtime is installed, while preserving Piper fallback.</li><li>Keeps manual send available as a forced commit path for comparison and recovery.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.89/VoiceClawCompanion-0.1.89-202607051539.dmg" length="3253838" type="application/octet-stream" sparkle:edSignature="bU3YFEVrrGonVD+8UYvJ3ZDAEc0+SfCwI+B8dmlNHdPwzfgoVn4GllXQn2M324ofKR2qbTCvyXTYgQ06H326Dw=="/>
         </item>
     </channel>
 </rss>

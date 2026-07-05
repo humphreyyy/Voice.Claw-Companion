@@ -28,7 +28,8 @@ const HF_START_TIMEOUT_MS = Number.parseInt(process.env.VOICECLAW_HF_START_TIMEO
 const HF_DEFAULT_LOCAL_MODEL = process.env.VOICECLAW_HF_LOCAL_MODEL || 'mlx-community/Qwen3.5-2B-4bit';
 const HF_DEFAULT_CEREBRAS_MODEL = process.env.VOICECLAW_HF_CEREBRAS_MODEL || 'gemma-4-31b';
 const HF_DEFAULT_TTS = process.env.VOICECLAW_HF_TTS || 'qwen3';
-const HF_DEFAULT_STT = process.env.VOICECLAW_HF_STT || 'faster-whisper';
+const HF_DEFAULT_STT_PROFILE = process.env.VOICECLAW_HF_STT_PROFILE || 'parakeet-live';
+const HF_DEFAULT_STT = process.env.VOICECLAW_HF_STT || '';
 const HF_DEFAULT_STT_MODEL = process.env.VOICECLAW_HF_STT_MODEL || 'mlx-community/parakeet-tdt-0.6b-v3';
 const HF_FASTER_WHISPER_MODEL = process.env.VOICECLAW_HF_FASTER_WHISPER_MODEL || 'base.en';
 const HF_MLX_AUDIO_WHISPER_MODEL = process.env.VOICECLAW_HF_MLX_AUDIO_WHISPER_MODEL || 'mlx-community/whisper-base';
@@ -43,6 +44,29 @@ const VOICECLAW_CONFIG = process.env.VOICECLAW_CONFIG_PATH
 // The HF OpenAI-compatible realtime schema currently accepts PCM only at 24 kHz.
 const DEFAULT_HF_SAMPLE_RATE = 24_000;
 const RESPONSE_CREATE_FALLBACK_MS = Number.parseInt(process.env.VOICECLAW_HF_RESPONSE_CREATE_FALLBACK_MS || '3500', 10);
+
+const HF_STT_PROFILE_OPTIONS = [
+  {
+    id: 'parakeet-live',
+    label: 'Parakeet Live',
+    detail: 'Recommended. Uses HF speech-to-speech Parakeet TDT with live partial transcription and stronger realtime turn text.',
+  },
+  {
+    id: 'mlx-whisper-accurate',
+    label: 'Whisper MLX Accurate',
+    detail: 'Uses MLX Audio Whisper large-v3-turbo on Apple Silicon for higher accuracy, with more latency.',
+  },
+  {
+    id: 'faster-whisper-balanced',
+    label: 'Faster Whisper Balanced',
+    detail: 'Uses faster-whisper small.en with a modest beam for better accuracy than the fast profile.',
+  },
+  {
+    id: 'faster-whisper-fast',
+    label: 'Faster Whisper Fast',
+    detail: 'Uses faster-whisper base.en/int8/beam 1 for lower latency and lower accuracy.',
+  },
+];
 
 let sidecar = null;
 let sidecarKey = '';
@@ -155,8 +179,9 @@ async function hfModelCached(modelID, allowPatterns = null) {
   }
 }
 
-function requiredSTTPythonModules() {
-  switch (HF_DEFAULT_STT) {
+function requiredSTTPythonModules(sttProfile = '') {
+  const { backend } = sttProfileConfig(sttProfile);
+  switch (backend) {
     case 'faster-whisper':
       return [{ module: 'faster_whisper', package: 'faster-whisper', label: 'Faster Whisper speech-to-text runtime' }];
     case 'whisper-mlx':
@@ -164,25 +189,27 @@ function requiredSTTPythonModules() {
     case 'whisper':
       return [{ module: 'whisper', package: 'openai-whisper', label: 'Whisper speech-to-text runtime' }];
     case 'mlx-audio-whisper':
+      return [{ module: 'mlx_audio', package: 'mlx-audio', label: 'MLX Audio Whisper speech-to-text runtime' }];
     case 'parakeet-tdt':
     default:
       return [];
   }
 }
 
-function requiredSTTModels() {
-  switch (HF_DEFAULT_STT) {
+function requiredSTTModels(sttProfile = '') {
+  const settings = sttProfileConfig(sttProfile);
+  switch (settings.backend) {
     case 'faster-whisper':
       return [{
         id: 'stt-faster-whisper',
-        label: `Faster Whisper ${HF_FASTER_WHISPER_MODEL}`,
-        model: `Systran/faster-whisper-${HF_FASTER_WHISPER_MODEL}`,
+        label: `Faster Whisper ${settings.model}`,
+        model: `Systran/faster-whisper-${settings.model}`,
         allowPatterns: ['config.json', 'model.bin', 'tokenizer.json', 'vocabulary.txt', 'preprocessor_config.json'],
       }];
     case 'mlx-audio-whisper':
-      return [{ id: 'stt-mlx-audio-whisper', label: `MLX Audio Whisper ${HF_MLX_AUDIO_WHISPER_MODEL}`, model: HF_MLX_AUDIO_WHISPER_MODEL }];
+      return [{ id: 'stt-mlx-audio-whisper', label: `MLX Audio Whisper ${settings.model}`, model: settings.model }];
     case 'parakeet-tdt':
-      return [{ id: 'stt-parakeet-tdt', label: 'Parakeet TDT speech-to-text', model: HF_DEFAULT_STT_MODEL }];
+      return [{ id: 'stt-parakeet-tdt', label: 'Parakeet TDT live speech-to-text', model: settings.model }];
     default:
       return [];
   }
@@ -202,6 +229,69 @@ function localMiddleBrainRequired(brainMode = '') {
 
 function cerebrasMiddleBrainRequired(brainMode = '') {
   return normalizeBrainMode(brainMode).startsWith('cerebras:');
+}
+
+function normalizeSTTProfile(value = '') {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'fast' || raw === 'faster-whisper' || raw === 'faster-whisper-fast' || raw === 'base' || raw === 'base.en') {
+    return 'faster-whisper-fast';
+  }
+  if (raw === 'balanced' || raw === 'faster-whisper-balanced' || raw === 'small' || raw === 'small.en') {
+    return 'faster-whisper-balanced';
+  }
+  if (raw === 'accurate' || raw === 'whisper-mlx' || raw === 'mlx-whisper' || raw === 'mlx-audio-whisper' || raw === 'mlx-whisper-accurate') {
+    return 'mlx-whisper-accurate';
+  }
+  if (raw === 'parakeet' || raw === 'parakeet-tdt' || raw === 'parakeet-live' || raw === 'live') {
+    return 'parakeet-live';
+  }
+  if (HF_DEFAULT_STT === 'faster-whisper') return 'faster-whisper-fast';
+  if (HF_DEFAULT_STT === 'mlx-audio-whisper' || HF_DEFAULT_STT === 'whisper-mlx') return 'mlx-whisper-accurate';
+  if (HF_DEFAULT_STT === 'parakeet-tdt') return 'parakeet-live';
+  if (raw && raw !== String(HF_DEFAULT_STT_PROFILE || '').trim().toLowerCase()) {
+    return normalizeSTTProfile(HF_DEFAULT_STT_PROFILE || 'parakeet-live');
+  }
+  return 'parakeet-live';
+}
+
+function sttProfileConfig(value = '') {
+  const profile = normalizeSTTProfile(value);
+  if (profile === 'faster-whisper-fast') {
+    return {
+      id: profile,
+      backend: 'faster-whisper',
+      model: HF_FASTER_WHISPER_MODEL || 'base.en',
+      computeType: process.env.VOICECLAW_HF_FASTER_WHISPER_COMPUTE_TYPE || 'int8',
+      beamSize: process.env.VOICECLAW_HF_FASTER_WHISPER_BEAM_SIZE || '1',
+      liveTranscription: false,
+    };
+  }
+  if (profile === 'faster-whisper-balanced') {
+    return {
+      id: profile,
+      backend: 'faster-whisper',
+      model: process.env.VOICECLAW_HF_FASTER_WHISPER_BALANCED_MODEL || 'small.en',
+      computeType: process.env.VOICECLAW_HF_FASTER_WHISPER_BALANCED_COMPUTE_TYPE || 'int8',
+      beamSize: process.env.VOICECLAW_HF_FASTER_WHISPER_BALANCED_BEAM_SIZE || '3',
+      liveTranscription: false,
+    };
+  }
+  if (profile === 'mlx-whisper-accurate') {
+    return {
+      id: profile,
+      backend: 'mlx-audio-whisper',
+      model: process.env.VOICECLAW_HF_MLX_AUDIO_WHISPER_ACCURATE_MODEL || 'mlx-community/whisper-large-v3-turbo',
+      liveTranscription: false,
+    };
+  }
+  return {
+    id: 'parakeet-live',
+    backend: 'parakeet-tdt',
+    model: HF_DEFAULT_STT_MODEL,
+    device: process.env.VOICECLAW_HF_PARAKEET_DEVICE || 'mps',
+    computeType: process.env.VOICECLAW_HF_PARAKEET_COMPUTE_TYPE || 'float16',
+    liveTranscription: true,
+  };
 }
 
 async function prefetchHFModel(modelID, allowPatterns = null) {
@@ -240,6 +330,8 @@ async function hfPoolHealth() {
 
 export async function getHFRealtimeStatus(options = {}) {
   const brainMode = normalizeBrainMode(options.brainMode || process.env.VOICECLAW_HF_BRAIN_MODE || 'qwen3.5-2b');
+  const sttProfile = normalizeSTTProfile(options.sttProfile || process.env.VOICECLAW_HF_STT_PROFILE || '');
+  const sttConfig = sttProfileConfig(sttProfile);
   const requireLocalMiddleBrain = localMiddleBrainRequired(brainMode);
   const requireCerebrasKey = cerebrasMiddleBrainRequired(brainMode);
   const pythonReady = await fileExecutable(HF_PYTHON);
@@ -248,7 +340,7 @@ export async function getHFRealtimeStatus(options = {}) {
   const mlxReady = await pythonCanImport('mlx');
   const mlxAudioReady = await pythonCanImport('mlx_audio');
   const sttModuleStatuses = [];
-  for (const item of requiredSTTPythonModules()) {
+  for (const item of requiredSTTPythonModules(sttProfile)) {
     sttModuleStatuses.push({
       ...item,
       ready: await pythonCanImport(item.module),
@@ -257,7 +349,7 @@ export async function getHFRealtimeStatus(options = {}) {
     });
   }
   const sttRequiredModels = [];
-  for (const model of requiredSTTModels()) {
+  for (const model of requiredSTTModels(sttProfile)) {
     sttRequiredModels.push({
       ...model,
       cached: pythonReady ? await hfModelCached(model.model, model.allowPatterns || null) : false,
@@ -271,7 +363,7 @@ export async function getHFRealtimeStatus(options = {}) {
   const requiredModels = [
     ...sttRequiredModels,
     { id: 'tts-qwen3', label: 'Qwen3 local text-to-speech', model: HF_DEFAULT_TTS_MODEL, cached: ttsModelCached, required: HF_DEFAULT_TTS === 'qwen3' },
-    { id: 'middle-qwen35-2b-local', label: 'Qwen 3.5 2B local middle brain', model: HF_DEFAULT_LOCAL_MODEL, cached: localModelCached, required: requireLocalMiddleBrain },
+    { id: 'middle-qwen35-2b-local', label: 'Qwen 3.5 2B local Companion Realtime Voice LLM', model: HF_DEFAULT_LOCAL_MODEL, cached: localModelCached, required: requireLocalMiddleBrain },
   ];
   const cerebrasKeyReady = !requireCerebrasKey || !!cerebrasKeyFromPayload(options);
   const missingSTTModules = sttModuleStatuses.filter((item) => item.required && !item.ready);
@@ -288,7 +380,7 @@ export async function getHFRealtimeStatus(options = {}) {
     ...missingSTTModules.map((item) => ({
       id: item.module,
       label: item.label,
-      detail: `Installs ${item.package}, required by the selected ${HF_DEFAULT_STT} STT backend.`,
+      detail: `Installs ${item.package}, required by the selected ${sttProfile} STT profile.`,
       installable: true,
       command: `${HF_PYTHON} -m pip install ${item.package}`,
     })),
@@ -302,7 +394,7 @@ export async function getHFRealtimeStatus(options = {}) {
     ...(!cerebrasKeyReady ? [{
       id: 'cerebras-api-key',
       label: 'Cerebras API key',
-      detail: 'Add a Cerebras API key in VoiceClaw Companion or sync it from VoiceClaw Realtime before using the Cerebras middle brain.',
+      detail: 'Add a Cerebras API key in VoiceClaw Companion or sync it from VoiceClaw Realtime before using the Cerebras Companion Realtime Voice LLM.',
       installable: false,
       command: 'manual setup required',
     }] : []),
@@ -310,8 +402,8 @@ export async function getHFRealtimeStatus(options = {}) {
   return {
     state: ready ? 'ready' : 'needs_setup',
     summary: ready
-      ? `HF speech-to-speech runtime is installed at ${HF_ROOT}.`
-      : `HF speech-to-speech runtime needs setup at ${HF_ROOT}.`,
+      ? `HF speech-to-speech runtime is ready for ${HF_STT_PROFILE_OPTIONS.find((item) => item.id === sttProfile)?.label || sttProfile} at ${HF_ROOT}.`
+      : `HF speech-to-speech runtime or selected STT profile needs setup for ${HF_STT_PROFILE_OPTIONS.find((item) => item.id === sttProfile)?.label || sttProfile} at ${HF_ROOT}.`,
     root: HF_ROOT,
     python: pythonReady ? HF_PYTHON : '',
     cli: cliReady ? HF_CLI : '',
@@ -323,7 +415,11 @@ export async function getHFRealtimeStatus(options = {}) {
     requireLocalMiddleBrain,
     requireCerebrasKey,
     cerebrasKeyReady,
-    sttBackend: HF_DEFAULT_STT,
+    sttProfile,
+    sttProfileLabel: HF_STT_PROFILE_OPTIONS.find((item) => item.id === sttProfile)?.label || sttProfile,
+    sttProfiles: HF_STT_PROFILE_OPTIONS,
+    sttBackend: sttConfig.backend,
+    liveTranscriptionEnabled: !!sttConfig.liveTranscription,
     sttModules: sttModuleStatuses,
     requiredModels,
     missingSTTModules,
@@ -361,12 +457,13 @@ export async function installHFRealtimeRuntime(options = {}) {
     await runCommand(HF_PYTHON, ['-m', 'pip', 'install', '--upgrade', HF_PACKAGE_SPEC], {
       timeoutMs: HF_INSTALL_TIMEOUT_MS,
     });
-    for (const item of requiredSTTPythonModules()) {
+    const sttProfile = normalizeSTTProfile(options.sttProfile || process.env.VOICECLAW_HF_STT_PROFILE || '');
+    for (const item of requiredSTTPythonModules(sttProfile)) {
       await runCommand(HF_PYTHON, ['-m', 'pip', 'install', '--upgrade', item.package], {
         timeoutMs: HF_INSTALL_TIMEOUT_MS,
       });
     }
-    for (const model of requiredSTTModels()) {
+    for (const model of requiredSTTModels(sttProfile)) {
       await prefetchHFModel(model.model, model.allowPatterns || null);
     }
     if (HF_DEFAULT_TTS === 'qwen3') await prefetchHFModel(HF_DEFAULT_TTS_MODEL);
@@ -795,26 +892,26 @@ async function ensureCerebrasResponsesAdapter(apiKey) {
   throw new Error(`Could not bind Cerebras Responses adapter starting at ${CEREBRAS_RESPONSES_ADAPTER_HOST}:${CEREBRAS_RESPONSES_ADAPTER_PORT}.`);
 }
 
-function sttArgsForHF() {
-  const stt = String(HF_DEFAULT_STT || 'parakeet-tdt').trim();
-  if (stt === 'faster-whisper') {
+function sttArgsForHF(payload = {}) {
+  const settings = sttProfileConfig(payload.sttProfile || payload.sttQualityProfile || '');
+  if (settings.backend === 'faster-whisper') {
     return [
       '--stt', 'faster-whisper',
-      '--faster_whisper_stt_model_name', HF_FASTER_WHISPER_MODEL,
+      '--faster_whisper_stt_model_name', settings.model,
       '--faster_whisper_stt_device', process.env.VOICECLAW_HF_FASTER_WHISPER_DEVICE || 'auto',
-      '--faster_whisper_stt_compute_type', process.env.VOICECLAW_HF_FASTER_WHISPER_COMPUTE_TYPE || 'int8',
-      '--faster_whisper_stt_gen_beam_size', process.env.VOICECLAW_HF_FASTER_WHISPER_BEAM_SIZE || '1',
+      '--faster_whisper_stt_compute_type', settings.computeType,
+      '--faster_whisper_stt_gen_beam_size', settings.beamSize,
       '--faster_whisper_stt_gen_language', process.env.VOICECLAW_HF_STT_LANGUAGE || 'en',
       '--faster_whisper_stt_gen_task', 'transcribe',
     ];
   }
-  if (stt === 'mlx-audio-whisper') {
+  if (settings.backend === 'mlx-audio-whisper') {
     return [
       '--stt', 'mlx-audio-whisper',
-      '--mlx_audio_whisper_model_name', HF_MLX_AUDIO_WHISPER_MODEL,
+      '--mlx_audio_whisper_model_name', settings.model,
     ];
   }
-  if (stt === 'whisper-mlx') {
+  if (settings.backend === 'whisper-mlx') {
     return [
       '--stt', 'whisper-mlx',
       '--stt_model_name', HF_WHISPER_MLX_MODEL,
@@ -833,9 +930,9 @@ function sttArgsForHF() {
   }
   return [
     '--stt', 'parakeet-tdt',
-    '--parakeet_tdt_model_name', HF_DEFAULT_STT_MODEL,
-    '--parakeet_tdt_device', 'mps',
-    '--parakeet_tdt_compute_type', 'float16',
+    '--parakeet_tdt_model_name', settings.model,
+    '--parakeet_tdt_device', settings.device || 'mps',
+    '--parakeet_tdt_compute_type', settings.computeType || 'float16',
     '--parakeet_tdt_language', process.env.VOICECLAW_HF_STT_LANGUAGE || 'en',
   ];
 }
@@ -873,15 +970,19 @@ function ttsArgsForHF() {
 }
 
 async function sidecarConfigFromPayload(payload = {}) {
-  const sttArgs = sttArgsForHF();
+  const sttArgs = sttArgsForHF(payload);
   const ttsArgs = ttsArgsForHF();
+  const sttConfig = sttProfileConfig(payload.sttProfile || payload.sttQualityProfile || '');
+  const liveTranscriptionArgs = sttConfig.liveTranscription
+    ? ['--enable_live_transcription', '--live_transcription_min_silence_ms', process.env.VOICECLAW_HF_LIVE_TRANSCRIPTION_MIN_SILENCE_MS || '180']
+    : ['--enable_live_transcription'];
   const brainMode = String(payload.brainMode || '').trim();
   if (brainMode.startsWith('cerebras:')) {
     const model = normalizeCerebrasModel(String(payload.cerebrasModel || brainMode.slice('cerebras:'.length) || HF_DEFAULT_CEREBRAS_MODEL));
     const key = cerebrasKeyFromPayload(payload);
     const adapterBaseURL = await ensureCerebrasResponsesAdapter(key);
     return {
-      key: `cerebras:${model}`,
+      key: `cerebras:${model}:stt:${sttConfig.id}`,
       env: {
         OPENAI_API_KEY: 'voiceclaw-local-cerebras-responses-adapter',
       },
@@ -889,6 +990,7 @@ async function sidecarConfigFromPayload(payload = {}) {
         '--mode', 'realtime',
         '--ws_host', HF_HOST,
         '--ws_port', String(HF_PORT),
+        '--sample_rate', String(DEFAULT_HF_SAMPLE_RATE),
         ...sttArgs,
         '--llm_backend', 'responses-api',
         '--model_name', model,
@@ -899,7 +1001,7 @@ async function sidecarConfigFromPayload(payload = {}) {
         '--chat_size', '12',
         '--no_compact_history',
         ...ttsArgs,
-        '--no_enable_live_transcription',
+        ...liveTranscriptionArgs,
         '--thresh', '0.5',
         '--min_silence_ms', '360',
         '--min_speech_ms', '384',
@@ -911,12 +1013,13 @@ async function sidecarConfigFromPayload(payload = {}) {
   }
 
   return {
-    key: `local:${HF_DEFAULT_LOCAL_MODEL}`,
+    key: `local:${HF_DEFAULT_LOCAL_MODEL}:stt:${sttConfig.id}`,
     env: {},
     args: [
       '--mode', 'realtime',
       '--ws_host', HF_HOST,
       '--ws_port', String(HF_PORT),
+      '--sample_rate', String(DEFAULT_HF_SAMPLE_RATE),
       '--device', 'mps',
       ...sttArgs,
       '--llm_backend', 'mlx-lm',
@@ -925,7 +1028,7 @@ async function sidecarConfigFromPayload(payload = {}) {
       '--chat_size', '12',
       '--no_compact_history',
       ...ttsArgs,
-      '--no_enable_live_transcription',
+      ...liveTranscriptionArgs,
       '--llm_gen_max_new_tokens', '192',
       '--thresh', '0.5',
       '--min_silence_ms', '360',
@@ -947,7 +1050,7 @@ async function appendLog(path, chunk) {
 export async function ensureHFRealtimeSidecar(payload = {}) {
   const status = await getHFRealtimeStatus({ brainMode: payload.brainMode, ...payload });
   if (status.requireCerebrasKey && !status.cerebrasKeyReady) {
-    throw new Error('Cerebras API key is required for the HF/Cerebras middle brain.');
+    throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
   }
   if (status.state !== 'ready') {
     throw new Error('HF speech-to-speech runtime is not installed. Use Companion setup to install the HF runtime first.');
@@ -956,7 +1059,7 @@ export async function ensureHFRealtimeSidecar(payload = {}) {
   if (sidecarStarting) await sidecarStarting;
   const config = await sidecarConfigFromPayload(payload);
   if (config.key.startsWith('cerebras:') && !cerebrasKeyFromPayload(payload)) {
-    throw new Error('Cerebras API key is required for the HF/Cerebras middle brain.');
+    throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
   }
 
   sidecarStarting = (async () => {
@@ -1015,6 +1118,31 @@ export async function ensureHFRealtimeSidecar(payload = {}) {
 
 function safeJSONParse(text) {
   try { return JSON.parse(text); } catch { return null; }
+}
+
+function collectTextFields(value, out = []) {
+  if (!value) return out;
+  if (typeof value === 'string') return out;
+  if (Array.isArray(value)) {
+    for (const item of value) collectTextFields(item, out);
+    return out;
+  }
+  if (typeof value !== 'object') return out;
+  for (const key of ['transcript', 'text']) {
+    const text = typeof value[key] === 'string' ? value[key].trim() : '';
+    if (text) out.push(text);
+  }
+  for (const key of ['output', 'content', 'parts', 'item', 'message', 'response']) {
+    collectTextFields(value[key], out);
+  }
+  return out;
+}
+
+function extractHFResponseText(response = {}) {
+  return collectTextFields(response)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function encodePCMChunk(buffer) {
@@ -1089,6 +1217,10 @@ export class HFRealtimeBridge {
     this.pendingCommit = false;
     this.lastSilenceFlushAt = 0;
     this.responseTextById = new Map();
+    this.finalReplySentById = new Set();
+    this.inputTranscriptByItem = new Map();
+    this.lastFinalTranscript = '';
+    this.lastAssistantText = '';
     this.configureTimer = null;
     this.awaitingResponseAfterTranscript = false;
     this.responseCreateTimer = null;
@@ -1114,6 +1246,7 @@ export class HFRealtimeBridge {
       ws.on('close', () => {
         this.closed = true;
         if (!this.configured) return;
+        this.send({ type: 'error', message: 'HF realtime websocket closed unexpectedly' });
         this.send({ type: 'status', status: 'closed' });
       });
       ws.on('error', (error) => {
@@ -1231,7 +1364,11 @@ export class HFRealtimeBridge {
       hf: true,
       routeMode: this.payload.routeMode || this.payload.route || '',
       brainMode: this.payload.brainMode || '',
+      sttProfile: normalizeSTTProfile(this.payload.sttProfile || this.payload.sttQualityProfile || ''),
       planner: 'hf-speech-to-speech',
+      transcript: this.lastFinalTranscript,
+      rawText: this.lastFinalTranscript,
+      reply: this.lastAssistantText,
       elapsedMs: 0,
       audioStreamed: true,
     });
@@ -1330,27 +1467,37 @@ export class HFRealtimeBridge {
         break;
       case 'conversation.item.input_audio_transcription.delta':
         if (event.delta) {
+          const itemID = event.item_id || '';
+          this.inputTranscriptByItem.set(itemID, event.delta);
           this.send({
             type: 'transcript',
             text: event.delta,
             rawText: event.delta,
             final: false,
             hf: true,
-            itemID: event.item_id || '',
+            itemID,
           });
         }
         break;
       case 'conversation.item.input_audio_transcription.completed':
+        {
+        const itemID = event.item_id || '';
+        const transcript = event.transcript || this.inputTranscriptByItem.get(itemID) || '';
+        if (transcript) {
+          this.lastFinalTranscript = transcript;
+          this.inputTranscriptByItem.set(itemID, transcript);
+        }
         this.send({
           type: 'transcript',
-          text: event.transcript || '',
-          rawText: event.transcript || '',
+          text: transcript,
+          rawText: transcript,
           final: true,
           hf: true,
-          itemID: event.item_id || '',
+          itemID,
         });
         this.scheduleResponseCreateFallback();
         break;
+        }
       case 'response.created':
         this.responseInProgress = true;
         this.clearResponseCreateFallback();
@@ -1365,6 +1512,7 @@ export class HFRealtimeBridge {
           const responseID = event.response_id || '';
           const next = `${this.responseTextById.get(responseID) || ''}${event.delta}`;
           this.responseTextById.set(responseID, next);
+          this.lastAssistantText = next;
           this.send({ type: 'reply_delta', text: next, delta: event.delta, responseID, final: false });
         }
         break;
@@ -1376,7 +1524,12 @@ export class HFRealtimeBridge {
           this.responseInProgress = true;
           const responseID = event.response_id || '';
           const textValue = event.transcript || event.text || this.responseTextById.get(responseID) || '';
-          if (textValue) this.send({ type: 'reply', text: textValue, responseID, final: true });
+          if (textValue) {
+            this.responseTextById.set(responseID, textValue);
+            this.lastAssistantText = textValue;
+            this.finalReplySentById.add(responseID);
+            this.send({ type: 'reply', text: textValue, responseID, final: true });
+          }
         }
         break;
       case 'response.output_audio.delta':
@@ -1404,6 +1557,16 @@ export class HFRealtimeBridge {
         break;
       case 'response.done':
         this.responseInProgress = false;
+        {
+          const responseID = event.response_id || event.response?.id || '';
+          const responseText = extractHFResponseText(event.response) || this.responseTextById.get(responseID) || '';
+          if (responseText && !this.finalReplySentById.has(responseID)) {
+            this.lastAssistantText = responseText;
+            this.responseTextById.set(responseID, responseText);
+            this.finalReplySentById.add(responseID);
+            this.send({ type: 'reply', text: responseText, responseID, final: true });
+          }
+        }
         if (this.pendingToolFollowupResponse && this.audioStarted) {
           break;
         }

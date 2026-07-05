@@ -8,6 +8,7 @@ import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import JSON5 from 'json5';
 import { getHFRealtimeStatus, installHFRealtimeRuntime } from '../server/hf-realtime-sidecar.js';
 
 const execFileAsync = promisify(execFile);
@@ -104,7 +105,7 @@ Options:
   --json                     Print only the phone setup JSON
   --port 12321               Bridge/Tailscale HTTPS port
   --openclaw-path PATH       OpenClaw install/config folder, usually ~/.openclaw
-  --openclaw-agent NAME      OpenClaw agent name, usually main
+  --openclaw-agent NAME      OpenClaw agent id, usually the configured OpenClaw default
   --realtime-auth-mode MODE   api-key or openclaw-oauth
   --realtime-auth-fallback-to-api-key / --no-realtime-auth-fallback-to-api-key
 
@@ -144,6 +145,44 @@ function normalizeRealtimeAuthMode(value) {
 function normalizeOpenClawAgentName(value) {
   const trimmed = String(value || '').trim();
   return trimmed || DEFAULT_OPENCLAW_AGENT_NAME;
+}
+
+function normalizeOpenClawAgentID(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function parseOpenClawConfig(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return JSON5.parse(raw);
+  }
+}
+
+function configuredOpenClawAgentIDs(parsed) {
+  const ids = [];
+  const aliases = [];
+  const list = Array.isArray(parsed?.agents?.list) ? parsed.agents.list : null;
+  if (list) {
+    for (const entry of list) {
+      if (entry?.id) ids.push(String(entry.id));
+      if (entry?.name && entry.name !== entry?.id) aliases.push(String(entry.name));
+    }
+    return { ids, aliases, source: 'agents.list' };
+  }
+
+  const legacyAgents = parsed?.agents || parsed?.agent || parsed?.profiles || {};
+  if (Array.isArray(legacyAgents)) {
+    for (const entry of legacyAgents) {
+      if (entry?.id) ids.push(String(entry.id));
+      else if (entry?.name) ids.push(String(entry.name));
+    }
+    return { ids, aliases, source: 'legacy-array' };
+  }
+  if (legacyAgents && typeof legacyAgents === 'object') {
+    return { ids: Object.keys(legacyAgents), aliases, source: 'legacy-map' };
+  }
+  return { ids, aliases, source: 'none' };
 }
 
 async function resolveNodePath() {
@@ -491,14 +530,18 @@ async function checkOpenClawAccess(openClawInstallPath, openClawAgentName = DEFA
 
   if (configReadable) {
     try {
-      const parsed = JSON.parse(await readFile(openClawConfigPath, 'utf8'));
+      const parsed = parseOpenClawConfig(await readFile(openClawConfigPath, 'utf8'));
       jsonReadable = true;
-      const agents = parsed?.agents || parsed?.agent || parsed?.profiles || {};
-      const agentNames = Array.isArray(agents) ? agents.map((agent) => agent?.name).filter(Boolean) : Object.keys(agents || {});
-      agentConfigured = agentNames.length === 0 || agentNames.includes(openClawAgentName);
+      const agentConfig = configuredOpenClawAgentIDs(parsed);
+      const normalizedSelected = normalizeOpenClawAgentID(openClawAgentName);
+      const normalizedIDs = new Set(agentConfig.ids.map(normalizeOpenClawAgentID).filter(Boolean));
+      const normalizedAliases = new Set(agentConfig.aliases.map(normalizeOpenClawAgentID).filter(Boolean));
+      agentConfigured = normalizedIDs.size === 0
+        || normalizedIDs.has(normalizedSelected)
+        || normalizedAliases.has(normalizedSelected);
       summary = agentConfigured
-        ? `OpenClaw config is readable; selected agent ${openClawAgentName} is acceptable.`
-        : `OpenClaw config is readable, but selected agent ${openClawAgentName} was not found in configured agents.`;
+        ? `OpenClaw config is readable; selected agent ${openClawAgentName} is configured.`
+        : `OpenClaw config is readable, but selected agent ${openClawAgentName} was not found in configured agent ids${agentConfig.ids.length ? ` (${agentConfig.ids.join(', ')})` : ''}.`;
     } catch (error) {
       summary = `OpenClaw config exists but could not be parsed: ${error?.message || String(error)}`;
     }
@@ -809,7 +852,7 @@ async function checkCompanionVoiceDependencies(openClawInstallPath) {
   const result = {
     state: hfReady ? 'ready' : 'needs_setup',
     summary: hfReady
-      ? 'Companion Realtime Voice is ready: HF speech-to-speech realtime runtime is installed.'
+      ? `Companion Realtime Voice is ready: HF speech-to-speech runtime and selected STT profile${hfRealtime?.sttProfileLabel ? ` (${hfRealtime.sttProfileLabel})` : ''} are ready.`
       : `Companion Realtime Voice needs setup: ${missing.join(', ')}.`,
     hfRealtime,
     legacy: {
@@ -972,7 +1015,7 @@ async function installCompanionVoiceDependencies(openClawInstallPath) {
           await runCommand(brewPath, ['install', 'ollama']);
           ollamaPath = await resolveOptionalExecutable('ollama', process.env.OLLAMA_BIN || '');
         }
-        if (!ollamaPath) throw new Error('Ollama is required before pulling the local middle-brain model.');
+        if (!ollamaPath) throw new Error('Ollama is required before pulling the local Companion Realtime Voice LLM model.');
         const reachable = await ensureOllamaReachable(brewPath);
         if (!reachable) throw new Error(`Ollama is installed, but ${OLLAMA_BASE_URL} did not become reachable.`);
         await runCommand(ollamaPath, ['pull', DEFAULT_QWEN_MODEL], { timeoutMs: 60 * 60 * 1000 });

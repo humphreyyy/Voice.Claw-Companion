@@ -8,6 +8,7 @@
     "check": "node --check server/index.js && node --check server/hf-realtime-sidecar.js && node --check server/asr.js && node --check server/tts.js && node --check server/dialogue.js && node --check server/realtime-auth.js && node --check scripts/voiceclaw-bridge-setup.mjs && node --check ../scripts/smoke_companion_voice_hf_realtime.mjs && node scripts/check-realtime-prompts.mjs"
   },
   "dependencies": {
+    "json5": "^2.2.3",
     "ws": "^8.21.0"
   }
 }

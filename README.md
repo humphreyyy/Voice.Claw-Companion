@@ -59,7 +59,7 @@ The bridge can expose several route types to VoiceClaw:
   Companion available for Mac-side tools and auth setup.
 - **Companion Realtime Voice**: runs a local speech-to-speech pipeline on the
   Mac using a Hugging Face / MLX runtime, local speech models, the selected
-  middle brain, and optional OpenClaw/Hermes routing.
+  Companion Realtime Voice LLM, and optional OpenClaw/Hermes routing.
 
 Realtime should handle ordinary conversation directly when it can. OpenClaw or
 Hermes should be used when the request needs the Mac, local files, local tools,
@@ -98,7 +98,7 @@ The current HF realtime stack checks for:
 
 - Faster Whisper speech-to-text:
   `Systran/faster-whisper-base.en`
-- Qwen 3.5 2B local middle brain when Local Qwen is selected:
+- Qwen 3.5 2B local Companion Realtime Voice LLM when Local Qwen is selected:
   `mlx-community/Qwen3.5-2B-4bit`
 - Qwen3 local text-to-speech:
   `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit`
@@ -167,7 +167,7 @@ understand the exposure.
   Realtime auth, app updates, Hugging Face model cache, and Companion Realtime
   Voice dependencies.
 - A one-click installer for the user-local HF speech-to-speech runtime and the
-  required local STT, middle-brain, and TTS models.
+  required local STT, Companion Realtime Voice LLM, and TTS models.
 - Signed update checks through GitHub Releases.
 - Reset actions that remove only VoiceClaw Companion state and, when proven safe,
   only the matching Tailscale Serve mapping.
@@ -282,8 +282,8 @@ missing item can be installed automatically. Common fixes are:
 - Click **Install Voice Dependencies** to install the HF realtime runtime.
 - Make sure the Hugging Face model cache is writable.
 - Confirm the required Faster Whisper STT and Qwen3 TTS models are cached; Qwen
-  3.5 2B is also required when Local Qwen is the selected middle brain.
-- If you select the Cerebras middle brain, add a Cerebras API key before pairing
+  3.5 2B is also required when Local Qwen is the selected Companion Realtime Voice LLM.
+- If you select the Cerebras Companion Realtime Voice LLM, add a Cerebras API key before pairing
   or in VoiceClaw Realtime on iPhone.
 - If you deliberately use the legacy fallback, install `ffmpeg`, `whisper-cli`,
   the Whisper model, and a TTS fallback such as Piper, OpenAI TTS, or macOS

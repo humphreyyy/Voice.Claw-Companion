@@ -228,8 +228,8 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_prepare_voice_route_switch is legacy compatibility only for route switches; prefer iphone_confirm_voice_route_switch for new calls.
 - iphone_confirm_voice_route_switch changes VoiceClaw's selected route after an explicit user request to switch VoiceClaw mode or route. Do not ask a confirmation question. Say briefly that VoiceClaw is switching, then use the tool immediately. There is no stop-to-cancel window.
 - iphone_confirm_voice_engine_switch changes VoiceClaw's selected voice engine after an explicit user request to switch voice engine to GPT-Realtime-2, STT + GPT + TTS, or Companion Realtime Voice. Do not ask a confirmation question when the target is clear. Say briefly that VoiceClaw is switching engines, then use the tool immediately.
-- iphone_set_companion_middle_brain changes the Companion Realtime Voice middle brain when the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, or Cerebras.
-- iphone_set_cerebras_model changes the Cerebras model used by the Companion Realtime Voice middle brain when the user explicitly asks for Gemma 4 31B, GPT OSS 120B, or Z.ai GLM 4.7.
+- iphone_set_companion_middle_brain changes the Companion Realtime Voice LLM when the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, or Cerebras.
+- iphone_set_cerebras_model changes the Cerebras model used by the Companion Realtime Voice LLM when the user explicitly asks for Gemma 4 31B, GPT OSS 120B, or Z.ai GLM 4.7.
 - iphone_cancel_voice_route_switch is legacy compatibility only. Route switches and restarts normally happen immediately, so there should not be a pending switch or restart to cancel.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
 - iphone_open_app_settings opens the iOS Settings page for VoiceClaw when the user asks to change app permissions.
@@ -760,13 +760,13 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_set_companion_middle_brain',
-    description: 'Set the Companion Realtime Voice middle brain after the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, or Cerebras for the Companion Realtime Voice voice engine. Do not use this for ordinary route switches or model-answer questions.',
+    description: 'Set the Companion Realtime Voice LLM after the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, or Cerebras for the Companion Realtime Voice voice engine. Do not use this for ordinary route switches or model-answer questions.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        brain_mode: { type: 'string', enum: ['qwen3.5-2b', 'gpt55-fast-low', 'cerebras'], description: 'Target Companion Realtime Voice middle brain.' },
-        reason: { type: 'string', description: 'Brief reason the user requested this middle-brain change.' }
+        brain_mode: { type: 'string', enum: ['qwen3.5-2b', 'gpt55-fast-low', 'cerebras'], description: 'Target Companion Realtime Voice LLM.' },
+        reason: { type: 'string', description: 'Brief reason the user requested this Companion Realtime Voice LLM change.' }
       },
       required: ['brain_mode']
     }
@@ -774,7 +774,7 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_set_cerebras_model',
-    description: 'Set the Cerebras model used by the Companion Realtime Voice middle brain after the user explicitly asks for Gemma 4 31B, GPT OSS 120B, or Z.ai GLM 4.7. This also selects Cerebras as the Companion middle brain.',
+    description: 'Set the Cerebras model used by the Companion Realtime Voice LLM after the user explicitly asks for Gemma 4 31B, GPT OSS 120B, or Z.ai GLM 4.7. This also selects Cerebras as the Companion Realtime Voice LLM.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -2151,9 +2151,9 @@ function hfRealtimeInstructionsForCompanionPayload(payload = {}) {
   const routeMode = realtimeRouteForCompanionPayload(payload);
   const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
   const context = String(payload.context || '').trim();
-  const middleBrainNote = `\n# Companion Realtime Voice engine\n- You are running inside VoiceClaw's Companion Realtime Voice engine, using the Hugging Face speech-to-speech realtime pipeline for VAD, STT, middle-brain LLM, and TTS.\n- Preserve VoiceClaw live voice semantics: listen continuously, allow interruption, answer directly when appropriate, use iPhone tools for phone/device actions, and use the selected bottom route only when that route is the right tool for the user's request.\n- Selected middle brain: ${brainMode}.\n- Do not claim an iPhone action, OpenClaw/Hermes action, GPT-5.5 route, mute, route switch, engine switch, or model switch has happened unless you call the matching tool.\n- If audio is silence, typing sounds, [no audio], [BLANK_AUDIO], or not addressed to VoiceClaw, call wait_for_user and do not speak.\n`;
+  const companionLLMNote = `\n# Companion Realtime Voice engine\n- You are running inside VoiceClaw's Companion Realtime Voice engine, using the Hugging Face speech-to-speech realtime pipeline for VAD, STT, the selected Companion Realtime Voice LLM, and TTS.\n- Preserve VoiceClaw live voice semantics: listen continuously, allow interruption, answer directly when appropriate, use iPhone tools for phone/device actions, and use the selected bottom route only when that route is the right tool for the user's request.\n- Selected Companion Realtime Voice LLM: ${brainMode}.\n- Do not claim an iPhone action, OpenClaw/Hermes action, GPT-5.5 route, mute, route switch, engine switch, or model switch has happened unless you call the matching tool.\n- If audio is silence, typing sounds, [no audio], [BLANK_AUDIO], or not addressed to VoiceClaw, call wait_for_user and do not speak.\n`;
   const contextNote = context ? `\n# Recent iOS context\n${context}\n` : '';
-  return `${realtimeInstructionsForRoute(routeMode)}${middleBrainNote}${contextNote}`.trim();
+  return `${realtimeInstructionsForRoute(routeMode)}${companionLLMNote}${contextNote}`.trim();
 }
 
 function parseToolArgumentsJSON(argumentsJSON = '') {
@@ -3238,6 +3238,32 @@ function companionVoiceQwenThinkingEnabled(payload = {}) {
   return parseRealtimeBoolean(payload.qwenThinking ?? payload.qwenThinkingEnabled ?? payload.qwenThinkingMode, false);
 }
 
+function companionVoiceHFBridgeConfigKey(payload = {}, serverVad = {}) {
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
+  const vad = serverVad && typeof serverVad === 'object' ? serverVad : {};
+  return JSON.stringify({
+    routeMode,
+    brainMode,
+    qwenThinking: companionVoiceQwenThinkingEnabled(payload),
+    cerebrasModel: companionVoiceCerebrasModelID(brainMode, payload),
+    sttProfile: String(payload.sttProfile || payload.sttQualityProfile || ''),
+    voice: String(payload.voice || ''),
+    localVoice: String(payload.localVoice || ''),
+    ttsSpeed: String(payload.ttsSpeed || ''),
+    gpt55DirectReasoning: String(payload.gpt55DirectReasoning || ''),
+    openClawModel: String(payload.openClawModel || payload.agent || ''),
+    openClawReasoning: String(payload.openClawReasoning || payload.reasoning || ''),
+    serverVad: {
+      enabled: !!vad.enabled,
+      mode: String(vad.mode || ''),
+      sampleRate: Number(vad.sampleRate || 0),
+      sensitivity: Number(vad.sensitivity || 0),
+      silenceDurationMs: Number(vad.silenceDurationMs || vad.silenceMs || 0),
+    },
+  });
+}
+
 function companionVoiceLooksLikeIPhoneAction(text = '') {
   const normalized = String(text || '').trim().toLowerCase();
   if (!normalized) return false;
@@ -3254,8 +3280,7 @@ function companionVoiceLooksLikeMapsDirections(text = '') {
   if (!normalized) return false;
   return /\b(map|maps|directions|navigate|navigation|route)\b/i.test(normalized)
     || /\bhow\s+(?:(?:do|can|should)\s+i\s+|to\s+)?(?:get|go|drive|walk|travel)\b/i.test(normalized)
-    || /\bget\s+(?:me\s+)?(?:from\s+.+?\s+)?to\s+.+/i.test(normalized)
-    || /\bfrom\s+.+?\s+to\s+.+/i.test(normalized);
+    || /\bget\s+(?:me\s+)?(?:from\s+.+?\s+)?to\s+.+/i.test(normalized);
 }
 
 function companionVoiceExtractMapsDestination(text = '') {
@@ -3280,14 +3305,14 @@ function companionVoiceExtractMapsDestination(text = '') {
 function companionVoiceFallbackIPhoneTool(text = '') {
   const trimmed = String(text || '').trim();
   const normalized = trimmed.toLowerCase();
-  const looksLikeVoiceClawControl = /\b(mute|mic closed|close the mic|mute me|stop listening|voice\s*engine|middle\s*brain|cerebras|qwen|gpt[-\s]*5\.?5|gpt55|route|session|transcript)\b/i.test(normalized)
+  const looksLikeVoiceClawControl = /\b(mute|mic closed|close the mic|mute me|stop listening|voice\s*engine|companion\s+(?:realtime\s+voice\s+)?llm|llm|middle\s*brain|brain|cerebras|qwen|gpt[-\s]*5\.?5|gpt55|route|session|transcript)\b/i.test(normalized)
     && /\b(switch|change|set|use|mute|close|restart|end|clear|show|hide|open|stop)\b/i.test(normalized);
   if (!trimmed || (!companionVoiceLooksLikeIPhoneAction(trimmed) && !looksLikeVoiceClawControl)) return null;
   if (/\b(ask|tell|use|send(?: it)? to|route(?: it)? to)\s+(?:openclaw|open claw|hermes|agent|the agent|my mac|the mac|computer)\b/i.test(normalized)
       || /\b(openclaw|open claw|hermes)\b/i.test(normalized)) {
     return null;
   }
-  if (/\b(companion\s+)?middle\s*brain\b/i.test(normalized) && /\b(switch|change|set|use)\b/i.test(normalized)) {
+  if (/\b(?:companion\s+(?:realtime\s+voice\s+)?llm|companion\s+middle\s*brain|middle\s*brain|llm|brain)\b/i.test(normalized) && /\b(switch|change|set|use)\b/i.test(normalized)) {
     let brainMode = '';
     if (/\b(qwen|local)\b/i.test(normalized)) {
       brainMode = 'qwen3.5-2b';
@@ -3299,7 +3324,7 @@ function companionVoiceFallbackIPhoneTool(text = '') {
     if (brainMode) {
       return {
         name: 'iphone_set_companion_middle_brain',
-        reply: 'Switching the Companion middle brain.',
+        reply: 'Switching the Companion Realtime Voice LLM.',
         arguments: { brain_mode: brainMode, reason: trimmed },
       };
     }
@@ -3600,7 +3625,7 @@ function companionVoiceIPhoneToolMatchesRequest(name = '', text = '') {
   case 'iphone_set_cerebras_model':
   case 'iphone_cancel_voice_route_switch':
   case 'iphone_end_voice_session':
-    return /\b(restart|reconnect|switch|route|mode|engine|voice engine|middle brain|brain|cerebras|model|qwen|gpt|gemma|oss|glm|end|hang up|disconnect|stop listening)\b/i.test(normalized);
+    return /\b(restart|reconnect|switch|route|mode|engine|voice engine|companion realtime voice llm|companion voice llm|llm|brain|cerebras|model|qwen|gpt|gemma|oss|glm|end|hang up|disconnect|stop listening)\b/i.test(normalized);
   case 'iphone_current_location':
     return /\b(location|where am i|nearby|near me|directions|navigate)\b/i.test(normalized);
   case 'iphone_lookup_contact':
@@ -3767,7 +3792,7 @@ function companionVoiceLooksLikeHollowActionAnswer(answer = '', text = '') {
   if (!answerIsActionAck) return false;
   return companionVoiceLooksLikeIPhoneAction(normalizedText)
     || companionVoiceRequiresBottomRoute(normalizedText, '')
-    || /\b(openclaw|open claw|hermes|agent|calendar|schedule|reminder|message|text|email|maps?|safari|browser|website|url|shortcut|phone|call|voice\s*engine|middle\s*brain|cerebras|mic|mute)\b/.test(normalizedText);
+    || /\b(openclaw|open claw|hermes|agent|calendar|schedule|reminder|message|text|email|maps?|safari|browser|website|url|shortcut|phone|call|voice\s*engine|companion\s+(?:realtime\s+voice\s+)?llm|llm|brain|cerebras|mic|mute)\b/.test(normalizedText);
 }
 
 function finalizeCompanionVoicePlan(plan = {}, text = '', routeMode = '', planner = '') {
@@ -3901,7 +3926,7 @@ function extractCompanionVoicePlan(raw = '') {
 }
 
 function companionVoicePlannerPrompt(text, { routeMode, context } = {}) {
-  return `You are VoiceClaw's local middle-brain voice assistant. You are not just a router. Your default job is to answer the user directly in a concise spoken style. Use the selected bottom route only when the user asks for something you cannot responsibly do locally.
+  return `You are VoiceClaw's local Companion Realtime Voice LLM assistant. You are not just a router. Your default job is to answer the user directly in a concise spoken style. Use the selected bottom route only when the user asks for something you cannot responsibly do locally.
 
 Selected bottom route: ${normalizeCompanionVoiceRoute(routeMode)}
 Recent conversation context:
@@ -3916,11 +3941,11 @@ Return exactly one JSON object with these fields:
 Decision policy:
 - Default to call_route=false and answer in final_answer.
 - Answer locally for greetings, mic checks, simple factual questions, arithmetic, definitions, brief explanations, short jokes, simple advice, short drafting, and ordinary conversation.
-- For explicit iPhone/app actions, set iphone_tool_name and iphone_tool_arguments instead of saying you cannot do it. Good default: iphone_external_action.
-- Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_current_location for current location; iphone_list_calendar_events and iphone_create_calendar_event for Calendar; iphone_list_reminders and iphone_create_reminder for Reminders; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, iphone_set_companion_middle_brain, iphone_set_cerebras_model, and iphone_end_voice_session for VoiceClaw session/route/engine/middle-brain controls.
+- For explicit iPhone/app actions, set iphone_tool_name and iphone_tool_arguments instead of saying you cannot do it. Use a tool only when the user clearly asked for a phone/app/system action; do not use phone tools for spoken-only requests such as counting aloud, repeating text, explaining, translating, brainstorming, or ordinary conversation.
+- Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_current_location for current location; iphone_list_calendar_events and iphone_create_calendar_event for Calendar; iphone_list_reminders and iphone_create_reminder for Reminders; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, iphone_set_companion_middle_brain, iphone_set_cerebras_model, and iphone_end_voice_session for VoiceClaw session/route/engine/LLM controls.
 - For text/message drafts, only set iphone_tool_name when the recipient is clear. If the user asks to draft or send a text but does not say who it is for, leave iphone_tool_name empty and ask: "Who should I send the text to?"
 - If the user asks what voice engines are available, answer concisely: GPT-Realtime-2, STT + GPT + TTS, and Companion Realtime Voice. If the user asks what voice routes are available, answer concisely: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, and Hermes HTTPS Tunnel.
-- If the user asks what Companion middle brains are available, answer concisely: Local Qwen 3.5 2B, GPT-5.5, and Cerebras. If the user asks what Cerebras models are available, answer concisely: Gemma 4 31B, GPT OSS 120B, and Z.ai GLM 4.7.
+- If the user asks what Companion Realtime Voice LLMs are available, answer concisely: Local Qwen 3.5 2B, GPT-5.5, and Cerebras. If the user asks what Cerebras models are available, answer concisely: Gemma 4 31B, GPT OSS 120B, and Z.ai GLM 4.7.
 - Location, nearby, Maps, route, and directions requests are iPhone-side actions. Do not send them to OpenClaw/Hermes unless the user explicitly asks the Mac agent to handle them.
 - For directions from "here", "my current location", or "where I am", use iphone_external_action or iphone_open_maps with mode "directions", destination set to the actual destination only, and origin omitted so Apple Maps uses the iPhone's current location.
 - Use call_route=true for explicit OpenClaw/Hermes/computer work, private/current/user-specific state, files/attachments, Mac/computer control, long research/analysis, or when the user explicitly asks to use the selected route.
@@ -3945,7 +3970,7 @@ iPhone action examples:
 - "Ask OpenClaw what's on my calendar today" -> {"call_route":true,"route_message":"Check what is on my calendar today and summarize it concisely.","final_answer":"Checking with OpenClaw.","iphone_tool_name":"","iphone_tool_arguments":{}}
 - "Mute me" -> {"call_route":false,"route_message":"","final_answer":"Mic Muted","iphone_tool_name":"iphone_set_microphone_muted","iphone_tool_arguments":{"muted":true,"reason":"The user asked to mute the VoiceClaw microphone."}}
 - "Switch the voice engine to Companion Realtime Voice" -> {"call_route":false,"route_message":"","final_answer":"Switching voice engines.","iphone_tool_name":"iphone_confirm_voice_engine_switch","iphone_tool_arguments":{"engine":"companion-realtime-voice"}}
-- "Switch the Companion middle brain to Cerebras" -> {"call_route":false,"route_message":"","final_answer":"Switching the Companion middle brain.","iphone_tool_name":"iphone_set_companion_middle_brain","iphone_tool_arguments":{"brain_mode":"cerebras"}}
+- "Switch the Companion Realtime Voice LLM to Cerebras" -> {"call_route":false,"route_message":"","final_answer":"Switching the Companion Realtime Voice LLM.","iphone_tool_name":"iphone_set_companion_middle_brain","iphone_tool_arguments":{"brain_mode":"cerebras"}}
 - "Use GPT OSS 120B for Cerebras" -> {"call_route":false,"route_message":"","final_answer":"Switching the Cerebras model.","iphone_tool_name":"iphone_set_cerebras_model","iphone_tool_arguments":{"model":"gpt-oss-120b"}}
 - "What files are on my Mac desktop?" in an OpenClaw or Hermes route -> {"call_route":true,"route_message":"What files are on my Mac desktop?","final_answer":"Checking that now.","iphone_tool_name":"","iphone_tool_arguments":{}}`;
 }
@@ -3961,7 +3986,7 @@ User said: ${text}
 Rules:
 - Default: answer directly in final_answer, call_route=false, route_message="".
 - Answer directly for greetings, mic checks, simple facts, math, definitions, brief explanations, ordinary chat, and short drafting.
-- Use iPhone tools for phone/app actions; do not say you cannot open apps. Good default: iphone_external_action.
+- Use iPhone tools only for clear phone/app/system actions; do not say you cannot open apps when a real app action is requested. Do not use phone tools for spoken-only requests such as counting aloud, repeating text, explaining, translating, brainstorming, or ordinary chat.
 - Tool names: iphone_external_action, iphone_open_url, iphone_search_web, iphone_open_maps, iphone_current_location, iphone_list_calendar_events, iphone_create_calendar_event, iphone_list_reminders, iphone_create_reminder, iphone_draft_message, iphone_draft_email, iphone_start_phone_call, iphone_run_shortcut, iphone_share, iphone_read_clipboard, iphone_copy_text, iphone_set_transcript_visible, iphone_clear_transcript, iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, iphone_set_companion_middle_brain, iphone_set_cerebras_model, iphone_end_voice_session.
 - For "mute me", "mute the mic", "close the mic", or "stop listening" when the user means this VoiceClaw microphone, use iphone_set_microphone_muted with {"muted":true}. Do not use a voice unmute command.
 - If drafting/sending a text and recipient is missing, no tool; final_answer="Who should I send the text to?"
@@ -4204,7 +4229,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
   if (String(brainMode || '').startsWith('cerebras:')) {
     const cerebrasModel = companionVoiceCerebrasModelID(brainMode, payload);
     if (!hasCerebrasKeyForCompanionVoice(payload)) {
-      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras middle brain.');
+      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
     }
     try {
       const raw = await runCerebrasPlanner(prompt, {
@@ -4228,7 +4253,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
         plannerTimeoutMs,
         error: error?.message || String(error),
       });
-      throw new Error(`Cerebras ${cerebrasModel} middle brain failed: ${error?.message || String(error)}`);
+      throw new Error(`Cerebras ${cerebrasModel} Companion Realtime Voice LLM failed: ${error?.message || String(error)}`);
     }
   }
   try {
@@ -4259,7 +4284,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
     });
     const fallbackPlan = localPlan.callRoute === true || String(localPlan.finalAnswer || '').trim()
       ? localPlan
-      : { callRoute: false, routeMessage: '', finalAnswer: "I heard you, but the GPT-5.5 middle brain had trouble answering that. Try that again." };
+      : { callRoute: false, routeMessage: '', finalAnswer: "I heard you, but the GPT-5.5 Companion Realtime Voice LLM had trouble answering that. Try that again." };
     return finalizeCompanionVoicePlan(fallbackPlan, text, routeMode, 'local-after-gpt55-planner-error');
   }
 }
@@ -4545,7 +4570,7 @@ async function runCompanionVoiceTurn({ req, payload, signal } = {}) {
   const textInput = String(payload.text || '').trim();
   const audioBuffer = payload.audioBuffer || (payload.audioBase64 ? Buffer.from(String(payload.audioBase64), 'base64') : null);
   if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
-    throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras middle brain.');
+    throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
   }
   if (!textInput && !audioBuffer?.length) throw new Error('Companion Realtime Voice turn needs audio or text.');
 
@@ -4724,6 +4749,7 @@ const httpServer = createServer(async (req, res) => {
       const configURL = new URL(req.url, `http://localhost:${PORT}`);
       const hfRealtime = await getHFRealtimeStatus({
         brainMode: configURL.searchParams.get('brainMode') || 'qwen3.5-2b',
+        sttProfile: configURL.searchParams.get('sttProfile') || '',
       }).catch((error) => ({ state: 'error', error: error?.message || String(error) }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -4734,7 +4760,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, streamingPath: `${BASE_PATH}/ws`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, hfRealtimeStatusPath: `${BASE_PATH}/realtime/hf-status`, hfRealtimeInstallPath: `${BASE_PATH}/realtime/hf-install`, hfRealtime, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: tts.defaultVoice, ttsVoices: tts.voices, routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, streamingPath: `${BASE_PATH}/ws`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, hfRealtimeStatusPath: `${BASE_PATH}/realtime/hf-status`, hfRealtimeInstallPath: `${BASE_PATH}/realtime/hf-install`, hfRealtime, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', sttProfiles: hfRealtime.sttProfiles || [], defaultSTTProfile: hfRealtime.sttProfile || 'parakeet-live', ttsDefault: tts.defaultVoice, ttsVoices: tts.voices, routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;
@@ -4745,6 +4771,7 @@ const httpServer = createServer(async (req, res) => {
         const statusURL = new URL(req.url, `http://localhost:${PORT}`);
         const status = await getHFRealtimeStatus({
           brainMode: statusURL.searchParams.get('brainMode') || 'qwen3.5-2b',
+          sttProfile: statusURL.searchParams.get('sttProfile') || '',
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...status }));
@@ -4762,6 +4789,7 @@ const httpServer = createServer(async (req, res) => {
         try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
         const status = await installHFRealtimeRuntime({
           brainMode: payload.brainMode || 'qwen3.5-2b',
+          sttProfile: payload.sttProfile || '',
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...status }));
@@ -5393,6 +5421,7 @@ wss.on('connection', (ws) => {
     companionVoiceMode: false,
     companionVoicePayload: null,
     hfBridge: null,
+    hfBridgeConfigKey: '',
     serverVad: buildCompanionServerVADState({ companionVoice: false, serverVad: { enabled: false } }),
     pendingTextTurns: [],      // queued user turns captured while a prior turn is still running
     busyQueueSeq: 0,
@@ -5441,6 +5470,7 @@ wss.on('connection', (ws) => {
       localVoice: session.voiceConfig?.id || '',
       serverVad: session.serverVad,
     };
+    session.hfBridgeConfigKey = companionVoiceHFBridgeConfigKey(session.companionVoicePayload, session.serverVad);
     send({ type: 'status', status: 'preparing-hf-runtime', reason });
     session.hfBridge = new HFRealtimeBridge({
       clientWs: ws,
@@ -5461,8 +5491,9 @@ wss.on('connection', (ws) => {
       console.error('[hf-companion] start failed:', message);
       session.hfBridge?.close();
       session.hfBridge = null;
+      session.hfBridgeConfigKey = '';
       send({ type: 'error', message: `Companion Realtime Voice HF runtime failed to start: ${message}` });
-      send({ type: 'status', status: 'ready', reason });
+      send({ type: 'status', status: 'hf-runtime-failed', reason });
       return false;
     }
   }
@@ -5571,10 +5602,26 @@ wss.on('connection', (ws) => {
           }
         });
         if (session.companionVoiceMode) {
-          await restartHFCompanionBridge('config_update');
+          session.companionVoicePayload = {
+            ...(session.companionVoicePayload || {}),
+            sessionToken: session.companionVoicePayload?.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
+            voice: session.voiceConfig?.requested || session.voiceConfig?.id || REALTIME_VOICE,
+            localVoice: session.voiceConfig?.id || '',
+            serverVad: session.serverVad,
+          };
+          const nextBridgeConfigKey = companionVoiceHFBridgeConfigKey(session.companionVoicePayload, session.serverVad);
+          if (!session.hfBridge) {
+            await restartHFCompanionBridge('config_update');
+          } else if (nextBridgeConfigKey !== session.hfBridgeConfigKey) {
+            await restartHFCompanionBridge('config_update-runtime-change');
+          } else {
+            session.hfBridge.payload = session.companionVoicePayload;
+            send({ type: 'status', status: 'ready', reason: 'config_update-no-restart' });
+          }
         } else if (session.hfBridge) {
           session.hfBridge.close();
           session.hfBridge = null;
+          session.hfBridgeConfigKey = '';
         }
         break;
       }
@@ -6105,7 +6152,7 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
     const context = String(payload.context || '').trim();
 
     if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
-      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras middle brain.');
+      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
     }
 
     const planningStartedAt = Date.now();
@@ -6295,7 +6342,7 @@ async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = 
     const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
     const context = String(payload.context || '').trim();
     if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
-      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras middle brain.');
+      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
     }
 
     const planningStartedAt = Date.now();

@@ -706,7 +706,7 @@ private struct CompanionVoicePanel: View {
         VStack(alignment: .leading, spacing: 16) {
             PanelHeader(
                 title: "Companion Realtime Voice",
-                subtitle: "Prepare this Mac to run VoiceClaw's local speech-to-text, middle-brain, and text-to-speech pipeline for the Companion Realtime Voice engine.",
+                subtitle: "Prepare this Mac to run VoiceClaw's local speech-to-text, Companion Realtime Voice LLM, and text-to-speech pipeline for the Companion Realtime Voice engine.",
                 symbol: "brain.head.profile"
             )
 
@@ -735,7 +735,7 @@ private struct CompanionVoicePanel: View {
             InfoCallout(
                 symbol: "point.3.connected.trianglepath.dotted",
                 title: "What this powers",
-                bodyText: "Companion Realtime Voice keeps the iPhone live voice loop on this Mac: VAD and endpointing, Faster Whisper speech-to-text, the selected middle brain, and local streaming text-to-speech. OpenClaw and Hermes routes still run as the bottom layer when selected on iPhone; watchOS currently uses its GPT-Realtime-2 voice layer for the same route choices."
+                bodyText: "Companion Realtime Voice keeps the iPhone live voice loop on this Mac: VAD and endpointing, Faster Whisper speech-to-text, the selected Companion Realtime Voice LLM, and local streaming text-to-speech. OpenClaw and Hermes routes still run as the bottom layer when selected on iPhone; watchOS currently uses its GPT-Realtime-2 voice layer for the same route choices."
             )
             InfoCallout(
                 symbol: "arrow.triangle.2.circlepath",
@@ -1024,7 +1024,7 @@ private struct PairingPanel: View {
                         Toggle("Include Cerebras Key in Setup QR", isOn: $store.includeCerebrasAPIKeyInPairing)
                             .toggleStyle(.checkbox)
 
-                        Text("Used when VoiceClaw's Companion Realtime Voice engine is set to the Cerebras middle brain. The preview below redacts it.")
+                        Text("Used when VoiceClaw's Companion Realtime Voice engine is set to the Cerebras Companion Realtime Voice LLM. The preview below redacts it.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1046,7 +1046,7 @@ private struct PairingPanel: View {
             }
 
             InfoCallout(symbol: "key.radiowaves.forward", title: "OpenAI Auth Status", bodyText: store.realtimeAuthStatusSummary)
-            InfoCallout(symbol: "point.3.connected.trianglepath.dotted", title: "Which Runtime Handles the Work", bodyText: "The selected iOS voice engine handles live speech. GPT-Realtime-2 uses OpenAI Realtime directly; Companion Realtime Voice uses this Mac for speech-to-text, the selected middle brain, and text-to-speech. OpenClaw routes send substantive work to OpenClaw using the OpenClaw path and agent above. Hermes routes send substantive work to Hermes Agent through the hermes CLI; the OpenClaw path is not used for Hermes.")
+            InfoCallout(symbol: "point.3.connected.trianglepath.dotted", title: "Which Runtime Handles the Work", bodyText: "The selected iOS voice engine handles live speech. GPT-Realtime-2 uses OpenAI Realtime directly; Companion Realtime Voice uses this Mac for speech-to-text, the selected Companion Realtime Voice LLM, and text-to-speech. OpenClaw routes send substantive work to OpenClaw using the OpenClaw path and agent above. Hermes routes send substantive work to Hermes Agent through the hermes CLI; the OpenClaw path is not used for Hermes.")
             InfoCallout(symbol: "square.grid.2x2", title: "iOS Widgets and Watch Extras", bodyText: "For iPhone users, add VoiceClaw widgets from the iOS Home Screen widget gallery for one-tap route launches. You can also add VoiceClaw to the iPhone Lock Screen or Control Center for a quick Live launch; those controls open VoiceClaw directly on the iPhone, while this Companion is needed for OpenClaw and Hermes Bridge/Tunnel routes.")
 
             HStack(alignment: .top, spacing: 18) {

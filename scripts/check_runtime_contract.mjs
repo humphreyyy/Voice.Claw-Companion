@@ -260,9 +260,9 @@ return { companionVoiceFallbackIPhoneTool, companionVoiceRepairIPhoneTool, compa
     fail('calendar create fallback without a start time should ask for the time instead of emitting a malformed event');
   }
 
-  const middleBrainTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Switch the Companion middle brain to Cerebras');
-  if (middleBrainTool?.name !== 'iphone_set_companion_middle_brain' || middleBrainTool?.arguments?.brain_mode !== 'cerebras') {
-    fail('middle-brain voice command should produce iphone_set_companion_middle_brain');
+  const companionLLMTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Switch the Companion Realtime Voice LLM to Cerebras');
+  if (companionLLMTool?.name !== 'iphone_set_companion_middle_brain' || companionLLMTool?.arguments?.brain_mode !== 'cerebras') {
+    fail('Companion Realtime Voice LLM command should produce iphone_set_companion_middle_brain');
   }
 
   const cerebrasTool = fallbackHarness.companionVoiceFallbackIPhoneTool('Use GPT OSS 120B as the Cerebras model');
