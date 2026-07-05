@@ -586,8 +586,11 @@ async function installLaunchAgent(config) {
   const nodePath = await resolveNodePath();
   const openClawConfigPath = join(config.openClawInstallPath, 'openclaw.json');
   const logDir = join(CONFIG_DIR, 'logs');
+  const launchWorkingDir = join(CONFIG_DIR, 'runtime');
+  const runtimeEntryPoint = join(PROJECT_ROOT, 'server', 'index.js');
   await mkdir(join(HOME, 'Library', 'LaunchAgents'), { recursive: true });
   await mkdir(logDir, { recursive: true });
+  await mkdir(launchWorkingDir, { recursive: true });
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -598,10 +601,10 @@ async function installLaunchAgent(config) {
   <key>ProgramArguments</key>
   <array>
     <string>${xmlEscape(nodePath)}</string>
-    <string>server/index.js</string>
+    <string>${xmlEscape(runtimeEntryPoint)}</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>${xmlEscape(PROJECT_ROOT)}</string>
+  <string>${xmlEscape(launchWorkingDir)}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>VB_PORT</key>
