@@ -34,7 +34,7 @@ function startPayload() {
       cerebrasModel: process.env.VOICECLAW_COMPANION_STREAM_SMOKE_CEREBRAS_MODEL || 'gemma-4-31b',
       context: '',
       voice: 'cedar',
-      localVoice: 'piper-ryan-high',
+      localVoice: process.env.VOICECLAW_COMPANION_STREAM_SMOKE_LOCAL_VOICE || 'piper-ryan-high',
       ttsSpeed: 'normal',
       gpt55DirectReasoning: 'low',
       openClawModel: 'gpt-5.5',

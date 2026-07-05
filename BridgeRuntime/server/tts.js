@@ -1,6 +1,6 @@
 // TTS module — OpenAI streaming-first voice plus local fallbacks
 import { spawn, execFile as execFileCb } from 'node:child_process';
-import { readFile, unlink, access } from 'node:fs/promises';
+import { readFile, unlink, access, readdir } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -13,6 +13,7 @@ const execFile = promisify(execFileCb);
 normalizeProcessPath();
 
 const DEFAULT_PIPER_MODEL = process.env.PIPER_MODEL || join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-libritts-high.onnx');
+const PIPER_MODEL_DIR = process.env.PIPER_MODEL_DIR || join(os.homedir(), '.openclaw', 'models', 'piper');
 const DEFAULT_PIPER_LENGTH_SCALE = process.env.PIPER_LENGTH_SCALE || '0.7';
 const PIPER_BIN = executablePath(process.env.PIPER_BIN || 'python3');
 const FFMPEG_BIN = executablePath(process.env.FFMPEG_BIN || 'ffmpeg');
@@ -65,6 +66,7 @@ let openAICircuitUntil = 0;
 let lastOpenAIError = '';
 let lastEngine = '';
 let lastFallback = '';
+let cachedBackendStatus = null;
 
 function openAICircuitOpen() {
   return OPENAI_TTS?.apiKey && Date.now() < openAICircuitUntil;
@@ -88,6 +90,7 @@ export function getTtsStatus() {
     lastOpenAIError: lastOpenAIError || null,
     lastEngine: lastEngine || null,
     lastFallback: lastFallback || null,
+    backends: cachedBackendStatus || [],
   };
 }
 
@@ -178,9 +181,62 @@ async function fileExists(path) {
   }
 }
 
+function titleCaseWords(value = '') {
+  return String(value || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b([a-z])/g, (m) => m.toUpperCase())
+    .trim();
+}
+
+function piperIDFromModelPath(modelPath = '') {
+  const filename = String(modelPath || '').split('/').pop() || 'piper';
+  const stem = filename.replace(/\.onnx$/i, '');
+  const slug = stem
+    .toLowerCase()
+    .replace(/_/g, '-')
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `piper-${slug || 'voice'}`;
+}
+
+function piperLabelFromModelPath(modelPath = '') {
+  const filename = String(modelPath || '').split('/').pop() || 'Piper Voice';
+  const stem = filename.replace(/\.onnx$/i, '');
+  const parts = stem.split('-');
+  if (parts.length >= 3) {
+    const locale = parts[0].replace(/_/g, '-').toUpperCase();
+    const quality = parts[parts.length - 1];
+    const voice = parts.slice(1, -1).join(' ');
+    return `Piper ${titleCaseWords(voice)} (${locale}, ${titleCaseWords(quality)})`;
+  }
+  return `Piper ${titleCaseWords(stem)}`;
+}
+
+async function discoverPiperVoices() {
+  try {
+    const entries = await readdir(PIPER_MODEL_DIR, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.onnx'))
+      .map((entry) => {
+        const modelPath = join(PIPER_MODEL_DIR, entry.name);
+        return {
+          id: piperIDFromModelPath(modelPath),
+          label: piperLabelFromModelPath(modelPath),
+          engine: 'piper',
+          modelPath,
+          lengthScale: DEFAULT_PIPER_LENGTH_SCALE,
+          default: modelPath === DEFAULT_PIPER_MODEL,
+        };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  } catch {
+    return [];
+  }
+}
+
 async function loadSayVoices() {
   try {
-    const { stdout } = await execFile('say', ['-v', '?'], { timeout: 5000, maxBuffer: 1024 * 1024 });
+    const { stdout } = await execFile(SAY_BIN, ['-v', '?'], { timeout: 5000, maxBuffer: 1024 * 1024 });
     const set = new Set();
     for (const line of String(stdout || '').split('\n')) {
       const trimmed = line.trim();
@@ -194,14 +250,56 @@ async function loadSayVoices() {
   }
 }
 
+async function pythonModuleAvailable(moduleName) {
+  try {
+    await execFile(executablePath(process.env.PYTHON_BIN || 'python3'), [
+      '-c',
+      `import importlib.util, sys; sys.exit(0 if importlib.util.find_spec(${JSON.stringify(moduleName)}) else 1)`,
+    ], { timeout: 5000, maxBuffer: 1024 * 64 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function buildBackendStatus() {
+  const [speechToSpeech, mlxAudio, kokoro, pocket, fasterWhisper, whisperMLX] = await Promise.all([
+    pythonModuleAvailable('speech_to_speech'),
+    pythonModuleAvailable('mlx_audio'),
+    pythonModuleAvailable('kokoro'),
+    pythonModuleAvailable('pocket_tts'),
+    pythonModuleAvailable('faster_whisper'),
+    pythonModuleAvailable('whisper_mlx'),
+  ]);
+
+  return [
+    { id: 'openai', label: 'OpenAI TTS', installed: !!OPENAI_TTS?.apiKey, selectable: !!OPENAI_TTS?.apiKey, role: 'tts' },
+    { id: 'piper', label: 'Piper local TTS', installed: true, selectable: true, role: 'tts' },
+    { id: 'macos-say', label: 'macOS system voices', installed: true, selectable: true, role: 'tts' },
+    { id: 'speech-to-speech', label: 'Hugging Face speech-to-speech runtime', installed: speechToSpeech, selectable: false, role: 'pipeline' },
+    { id: 'qwen3-tts-mlx', label: 'Qwen3-TTS via MLX Audio', installed: speechToSpeech && mlxAudio, selectable: false, role: 'tts' },
+    { id: 'kokoro-mlx', label: 'Kokoro via MLX Audio', installed: speechToSpeech && (mlxAudio || kokoro), selectable: false, role: 'tts' },
+    { id: 'pocket-tts', label: 'Pocket TTS', installed: speechToSpeech && pocket, selectable: false, role: 'tts' },
+    { id: 'faster-whisper', label: 'Faster Whisper STT', installed: fasterWhisper, selectable: false, role: 'stt' },
+    { id: 'whisper-mlx', label: 'Whisper MLX STT', installed: whisperMLX, selectable: false, role: 'stt' },
+  ];
+}
+
 async function buildVoiceOptions() {
   const availableSayVoices = await loadSayVoices();
+  const dynamicPiperVoices = await discoverPiperVoices();
+  cachedBackendStatus = await buildBackendStatus();
   const options = [];
+  const seenPiperModelPaths = new Set();
 
-  for (const candidate of CURATED_VOICES) {
+  for (const candidate of [...CURATED_VOICES, ...dynamicPiperVoices]) {
     if (candidate.engine === 'piper') {
       const modelPath = candidate.modelPath || DEFAULT_PIPER_MODEL;
-      if (await fileExists(modelPath)) options.push({ ...candidate, modelPath });
+      if (seenPiperModelPaths.has(modelPath)) continue;
+      if (await fileExists(modelPath)) {
+        seenPiperModelPaths.add(modelPath);
+        options.push({ ...candidate, modelPath });
+      }
       continue;
     }
     if (candidate.engine === 'say') {
@@ -276,6 +374,17 @@ export async function resolveVoiceConfig(requestedVoiceId) {
   };
 }
 
+function piperSampleRate(modelPath) {
+  try {
+    const raw = readFileSync(`${modelPath}.json`, 'utf8');
+    const json = JSON.parse(raw);
+    const rate = Number(json?.audio?.sample_rate || 0);
+    return Number.isFinite(rate) && rate > 0 ? rate : 22050;
+  } catch {
+    return 22050;
+  }
+}
+
 /**
  * Synthesize text using a validated curated voice config.
  * OpenAI uses fetch body streaming so audio bytes are consumed incrementally by
@@ -328,6 +437,89 @@ export async function synthesize(text, { signal, voice, speed } = {}) {
   return audio;
 }
 
+/**
+ * Synthesize text and stream raw PCM chunks as soon as the selected engine
+ * produces them. Returns a small summary when streaming succeeds, or a batch
+ * WAV buffer for engines that cannot stream in the current process.
+ */
+export async function synthesizeStream(text, { signal, voice, speed, onStart, onChunk, onEnd } = {}) {
+  const voiceCfg = await resolveVoiceConfig(voice?.id || voice);
+  const speedPreset = resolveSpeedPreset(speed);
+  const reply = String(text || '');
+  console.log(`[tts-stream] voice=${voiceCfg.id} engine=${voiceCfg.engine} speed=${speedPreset.id}`);
+
+  if (voiceCfg.engine === 'openai' && !openAICircuitOpen()) {
+    try {
+      const summary = await synthesizeOpenAIPCMStreaming(reply, {
+        signal,
+        model: voiceCfg.model,
+        voice: voiceCfg.openaiVoice,
+        speed: speedPreset.openai,
+        onStart,
+        onChunk,
+        onEnd,
+      });
+      lastEngine = 'openai-streaming-pcm';
+      lastFallback = '';
+      return summary;
+    } catch (err) {
+      if (err.message === 'aborted') throw err;
+      markOpenAIFailure(err);
+      console.warn(`[tts-stream] OpenAI PCM streaming (${voiceCfg.id}) failed, falling back to Piper Ryan:`, err.message);
+      return await synthesizePiperPCMStreaming(reply, {
+        signal,
+        modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx'),
+        lengthScale: speedPreset.piperLengthScale,
+        fallbackReason: 'openai-stream-failed',
+        onStart,
+        onChunk,
+        onEnd,
+      });
+    }
+  }
+
+  if (voiceCfg.engine === 'openai' && openAICircuitOpen()) {
+    console.warn(`[tts-stream] OpenAI circuit open until ${new Date(openAICircuitUntil).toISOString()}, using local streaming fallback`);
+    return await synthesizePiperPCMStreaming(reply, {
+      signal,
+      modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx'),
+      lengthScale: speedPreset.piperLengthScale,
+      fallbackReason: 'openai-circuit-open',
+      onStart,
+      onChunk,
+      onEnd,
+    });
+  }
+
+  if (voiceCfg.engine === 'piper') {
+    try {
+      const summary = await synthesizePiperPCMStreaming(reply, {
+        signal,
+        modelPath: voiceCfg.modelPath,
+        lengthScale: speedPreset.piperLengthScale,
+        onStart,
+        onChunk,
+        onEnd,
+      });
+      lastEngine = 'piper-streaming-pcm';
+      lastFallback = '';
+      return summary;
+    } catch (err) {
+      if (err.message === 'aborted') throw err;
+      console.warn(`[tts-stream] Piper streaming (${voiceCfg.id}) failed, falling back to batch macOS say:`, err.message);
+      lastFallback = 'say-after-piper-stream-failed';
+      const audio = await synthesizeSay(reply, { signal, sayVoice: 'Samantha', rate: speedPreset.sayRate });
+      lastEngine = 'say';
+      return { streamed: false, audio, audioContentType: 'audio/wav', audioBytes: audio.length, engine: 'say' };
+    }
+  }
+
+  const audio = await synthesizeSay(reply, { signal, sayVoice: voiceCfg.sayVoice, rate: speedPreset.sayRate });
+  lastEngine = 'say';
+  lastFallback = '';
+  return { streamed: false, audio, audioContentType: 'audio/wav', audioBytes: audio.length, engine: 'say' };
+}
+
 async function synthesizeLocalFallback(text, { signal, speedPreset, reason } = {}) {
   try {
     const audio = await synthesizePiper(text, { signal, modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx'), lengthScale: speedPreset.piperLengthScale });
@@ -342,6 +534,88 @@ async function synthesizeLocalFallback(text, { signal, speedPreset, reason } = {
     lastFallback = `${reason || 'fallback'};piper-failed`;
     return audio;
   }
+}
+
+async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScale, fallbackReason, onStart, onChunk, onEnd } = {}) {
+  console.log(`[tts-stream] piper model=${modelPath}`);
+  const sampleRate = piperSampleRate(modelPath);
+  const proc = spawn(PIPER_BIN, ['-m', 'piper', '--model', modelPath, '--length-scale', String(lengthScale || DEFAULT_PIPER_LENGTH_SCALE), '--output-raw'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  let total = 0;
+  let settled = false;
+  let started = false;
+
+  const closePromise = new Promise((resolve, reject) => {
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const onAbort = () => {
+      proc.kill('SIGTERM');
+      finish(() => reject(new Error('aborted')));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    proc.stderr.on('data', d => { stderr += d; });
+    proc.on('close', code => {
+      if (code !== 0) return finish(() => reject(new Error(`piper exited ${code}: ${stderr.slice(0, 200)}`)));
+      finish(resolve);
+    });
+    proc.on('error', err => finish(() => reject(err)));
+  });
+
+  if (signal?.aborted) {
+    proc.kill('SIGTERM');
+    throw new Error('aborted');
+  }
+
+  proc.stdin.write(text);
+  proc.stdin.end();
+
+  try {
+    for await (const chunk of proc.stdout) {
+      if (signal?.aborted) throw new Error('aborted');
+      if (!chunk?.length) continue;
+      const buffer = Buffer.from(chunk);
+      if (!started) {
+        started = true;
+        await onStart?.({
+          streamed: true,
+          engine: 'piper',
+          encoding: 'pcm_s16le',
+          sampleRate,
+          channels: 1,
+          contentType: 'audio/pcm',
+        });
+      }
+      total += buffer.length;
+      await onChunk?.(buffer);
+    }
+    await closePromise;
+  } catch (err) {
+    proc.kill('SIGTERM');
+    throw err;
+  }
+
+  if (!total) throw new Error('piper returned no audio');
+  const summary = {
+    streamed: true,
+    engine: 'piper',
+    encoding: 'pcm_s16le',
+    sampleRate,
+    channels: 1,
+    audioBytes: total,
+    audioContentType: 'audio/pcm',
+  };
+  if (fallbackReason) {
+    lastEngine = 'piper-streaming-pcm';
+    lastFallback = fallbackReason;
+  }
+  await onEnd?.(summary);
+  return summary;
 }
 
 async function synthesizePiper(text, { signal, modelPath, lengthScale } = {}) {
@@ -367,6 +641,97 @@ async function synthesizePiper(text, { signal, modelPath, lengthScale } = {}) {
     return await readFile(wavPath);
   } finally {
     unlink(wavPath).catch(() => {});
+  }
+}
+
+async function synthesizeOpenAIPCMStreaming(text, { signal, model, voice, speed, onStart, onChunk, onEnd } = {}) {
+  if (!OPENAI_TTS?.apiKey) throw new Error('openai tts not configured');
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(new Error('aborted'));
+  if (signal?.aborted) throw new Error('aborted');
+  signal?.addEventListener('abort', onAbort, { once: true });
+  let total = 0;
+  let started = false;
+  try {
+    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_TTS.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model || OPENAI_TTS.model || OPENAI_TTS_MODEL,
+        voice: voice || OPENAI_TTS.voice || OPENAI_TTS_VOICE,
+        input: String(text || ''),
+        response_format: 'pcm',
+        speed: speed || 1.0,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`openai tts ${response.status}: ${detail.slice(0, 220)}`);
+    }
+
+    if (!response.body?.getReader) {
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      total += buffer.length;
+      if (buffer.length) {
+        started = true;
+        await onStart?.({
+          streamed: true,
+          engine: 'openai',
+          encoding: 'pcm_s16le',
+          sampleRate: 24000,
+          channels: 1,
+          contentType: 'audio/pcm',
+          model: model || OPENAI_TTS.model || OPENAI_TTS_MODEL,
+          voice: voice || OPENAI_TTS.voice || OPENAI_TTS_VOICE,
+        });
+        await onChunk?.(buffer);
+      }
+    } else {
+      const reader = response.body.getReader();
+      while (true) {
+        if (signal?.aborted) throw new Error('aborted');
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value?.length) {
+          const buffer = Buffer.from(value);
+          if (!started) {
+            started = true;
+            await onStart?.({
+              streamed: true,
+              engine: 'openai',
+              encoding: 'pcm_s16le',
+              sampleRate: 24000,
+              channels: 1,
+              contentType: 'audio/pcm',
+              model: model || OPENAI_TTS.model || OPENAI_TTS_MODEL,
+              voice: voice || OPENAI_TTS.voice || OPENAI_TTS_VOICE,
+            });
+          }
+          total += buffer.length;
+          await onChunk?.(buffer);
+        }
+      }
+    }
+    if (!total) throw new Error('openai tts returned no audio');
+    const summary = {
+      streamed: true,
+      engine: 'openai',
+      encoding: 'pcm_s16le',
+      sampleRate: 24000,
+      channels: 1,
+      audioBytes: total,
+      audioContentType: 'audio/pcm',
+    };
+    await onEnd?.(summary);
+    return summary;
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 

@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import WebSocket, { WebSocketServer } from 'ws';
 import { executablePath, normalizeProcessPath } from './bin-paths.js';
 import { transcribe } from './asr.js';
-import { synthesize, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
+import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
 import {
   REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
@@ -3682,7 +3682,7 @@ function companionVoiceJobID(routeMode = '', sessionToken = '') {
 
 function companionVoiceTtsVoice(payload = {}) {
   const requested = String(payload.localVoice || payload.voice || 'piper-ryan-high').trim();
-  return requested.startsWith('openai-') ? 'piper-ryan-high' : (requested || 'piper-ryan-high');
+  return requested || 'piper-ryan-high';
 }
 
 function companionVoiceRouteAck(routeMode = '', plan = {}) {
@@ -3703,6 +3703,111 @@ async function synthesizeCompanionVoiceReply(reply, payload = {}, options = {}) 
     audioBase64: audio.toString('base64'),
     audioContentType: 'audio/wav',
     audioBytes: audio.length,
+  };
+}
+
+async function streamCompanionVoiceReplyToWebSocket(ws, send, reply, payload = {}, options = {}) {
+  const turnId = options.turnId;
+  let streamedAudioStarted = false;
+  let streamedAudioEnded = false;
+  let streamedAudioBytes = 0;
+  let lastStreamMeta = {};
+
+  let summary;
+  try {
+    summary = await synthesizeStream(reply, {
+      signal: options.signal,
+      voice: companionVoiceTtsVoice(payload),
+      speed: payload.ttsSpeed || 'normal',
+      onStart: async (meta = {}) => {
+        streamedAudioStarted = !!meta.streamed;
+        if (!streamedAudioStarted) return;
+        lastStreamMeta = { ...lastStreamMeta, ...meta };
+        send({
+          type: 'tts_audio_start',
+          turnId,
+          encoding: meta.encoding || 'pcm_s16le',
+          sampleRate: meta.sampleRate || 22050,
+          channels: meta.channels || 1,
+          engine: meta.engine || '',
+          contentType: meta.contentType || 'audio/pcm',
+        });
+        send({ type: 'tts_start', turnId, streamed: true });
+      },
+      onChunk: async (chunk) => {
+        if (!chunk?.length) return;
+        streamedAudioBytes += chunk.length;
+        if (ws.readyState === ws.OPEN) {
+          ws.send(chunk);
+        }
+      },
+      onEnd: async (meta = {}) => {
+        if (!streamedAudioStarted) return;
+        lastStreamMeta = { ...lastStreamMeta, ...meta };
+        streamedAudioEnded = true;
+        send({
+          type: 'tts_audio_end',
+          turnId,
+          encoding: meta.encoding || 'pcm_s16le',
+          sampleRate: meta.sampleRate || 22050,
+          channels: meta.channels || 1,
+          engine: meta.engine || '',
+          audioBytes: meta.audioBytes || streamedAudioBytes,
+          contentType: meta.audioContentType || 'audio/pcm',
+        });
+        send({ type: 'tts_end', turnId, streamed: true });
+      },
+    });
+  } catch (err) {
+    if (streamedAudioStarted && !streamedAudioEnded && err.message !== 'aborted') {
+      send({
+        type: 'tts_audio_end',
+        turnId,
+        encoding: lastStreamMeta.encoding || 'pcm_s16le',
+        sampleRate: lastStreamMeta.sampleRate || 22050,
+        channels: lastStreamMeta.channels || 1,
+        engine: lastStreamMeta.engine || '',
+        audioBytes: streamedAudioBytes,
+        contentType: lastStreamMeta.audioContentType || lastStreamMeta.contentType || 'audio/pcm',
+      });
+      send({ type: 'tts_end', turnId, streamed: true, error: true });
+    }
+    throw err;
+  }
+
+  if (summary?.streamed === false && summary.audio?.length) {
+    send({ type: 'tts_start', turnId, streamed: false });
+    if (ws.readyState === ws.OPEN) {
+      ws.send(summary.audio);
+    }
+    send({ type: 'tts_end', turnId, streamed: false });
+    return {
+      audioBase64: summary.audio.toString('base64'),
+      audioContentType: summary.audioContentType || 'audio/wav',
+      audioBytes: summary.audioBytes || summary.audio.length,
+      audioStreamed: false,
+    };
+  }
+
+  if (streamedAudioStarted && !streamedAudioEnded) {
+    send({
+      type: 'tts_audio_end',
+      turnId,
+      encoding: summary?.encoding || 'pcm_s16le',
+      sampleRate: summary?.sampleRate || 22050,
+      channels: summary?.channels || 1,
+      engine: summary?.engine || '',
+      audioBytes: summary?.audioBytes || streamedAudioBytes,
+      contentType: summary?.audioContentType || 'audio/pcm',
+    });
+    send({ type: 'tts_end', turnId, streamed: true });
+  }
+
+  return {
+    audioBase64: '',
+    audioContentType: summary?.audioContentType || 'audio/pcm',
+    audioBytes: summary?.audioBytes || streamedAudioBytes,
+    audioStreamed: true,
   };
 }
 
@@ -4022,7 +4127,7 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, streamingPath: `${BASE_PATH}/ws`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: 'piper-ryan-high', routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, streamingPath: `${BASE_PATH}/ws`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', ttsDefault: tts.defaultVoice, ttsVoices: tts.voices, routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
       return;
@@ -5135,31 +5240,129 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send) {
 
   try {
     send({ type: 'status', status: 'transcribing', turnId });
-    const payload = {
-      ...(session.companionVoicePayload || {}),
-      sessionToken: session.companionVoicePayload?.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
-      audioBuffer: rawAudio,
-    };
-    const result = await runCompanionVoiceTurn({
-      req: { headers: { 'x-voice-session-token': payload.sessionToken } },
-      payload,
-      signal: controller.signal,
-    });
+    const asrStart = Date.now();
+    const { text, source: asrSource = 'unknown', fallback: asrFallback = false } = await transcribe(rawAudio, { signal: controller.signal });
+    const asrMs = Date.now() - asrStart;
+    const transcript = String(text || '').trim();
+    console.log(`[companion-stream] asr_ms=${asrMs} asr_source=${asrSource}${asrFallback ? ' fallback=1' : ''} turn=${turnId} text=${JSON.stringify(transcript.slice(0, 120))}`);
 
     if (isTurnStale(session, turnId)) {
-      console.log(`[companion-stream] stale_after_turn turn=${turnId} active=${session.activeTurnId} cancelledThrough=${session.cancelledThroughTurnId}`);
+      console.log(`[companion-stream] stale_after_asr turn=${turnId} active=${session.activeTurnId} cancelledThrough=${session.cancelledThroughTurnId}`);
       return;
     }
 
-    const transcript = String(result.transcript || '').trim();
-    if (!transcript || result.filtered) {
-      send({ type: 'transcript', text: transcript || '(no speech detected)', final: true, filtered: true, reason: result.filterReason || 'empty', turnId });
+    if (!transcript || isAsrPlaceholderText(transcript)) {
+      send({ type: 'transcript', text: transcript || '(no speech detected)', final: true, filtered: true, reason: transcript ? 'asr-placeholder' : 'empty', turnId });
       send({ type: 'status', status: 'ready', turnId });
       return;
     }
 
-    send({ type: 'transcript', text: transcript, final: true, turnId });
-    if (result.reply) send({ type: 'reply', text: result.reply, turnId });
+    const gate = actionability(transcript, { allowWake: false, allowShortCommand: true, context: 'companion-stream' });
+    if (!gate.actionable) {
+      send({ type: 'transcript', text: gate.reason === 'noise-only' ? '(background noise ignored)' : '(unclear audio ignored)', rawText: transcript, final: true, filtered: true, reason: gate.reason, turnId });
+      send({ type: 'status', status: 'ready', turnId });
+      return;
+    }
+
+    const routedTranscript = gate.text || transcript;
+    send({ type: 'transcript', text: routedTranscript, rawText: transcript, final: true, turnId });
+
+    send({ type: 'status', status: 'planning', turnId });
+    const payload = {
+      ...(session.companionVoicePayload || {}),
+      sessionToken: session.companionVoicePayload?.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
+    };
+    const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || `companion-voice-${Date.now().toString(36)}`);
+    const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
+    const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+    const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
+    const context = String(payload.context || '').trim();
+
+    if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
+      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras middle brain.');
+    }
+
+    const planningStartedAt = Date.now();
+    const plan = await planCompanionVoiceTurn(routedTranscript, {
+      brainMode,
+      routeMode,
+      sessionToken,
+      context,
+      payload,
+      signal: controller.signal,
+    });
+    const planningMs = Date.now() - planningStartedAt;
+
+    if (isTurnStale(session, turnId)) {
+      console.log(`[companion-stream] stale_after_plan turn=${turnId} active=${session.activeTurnId} cancelledThrough=${session.cancelledThroughTurnId}`);
+      return;
+    }
+
+    const routeMessage = (plan.routeMessage || routedTranscript).trim();
+    const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
+    const iphoneToolName = String(plan.iphoneToolName || '').trim();
+    const iphoneToolArguments = plan.iphoneToolArguments && typeof plan.iphoneToolArguments === 'object' && !Array.isArray(plan.iphoneToolArguments)
+      ? plan.iphoneToolArguments
+      : {};
+    const shouldCallRoute = !iphoneToolName && plan.callRoute !== false && !!routeMessage;
+    const routeJob = shouldCallRoute
+      ? startCompanionVoiceRouteJob({
+          sessionToken,
+          routeMode,
+          brainMode,
+          planner: plan.planner || '',
+          transcript: routedTranscript,
+          routeMessage,
+          processing,
+          payload,
+          asrMs,
+          planningMs,
+        })
+      : null;
+    const routeReply = '';
+    let reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : String(plan.finalAnswer || '').trim();
+    if (!reply) reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : "I heard you.";
+    if (reply) send({ type: 'reply', text: reply, turnId });
+
+    const ttsStart = Date.now();
+    const audio = await streamCompanionVoiceReplyToWebSocket(ws, send, reply, payload, {
+      turnId,
+      signal: controller.signal,
+    });
+    const ttsMs = Date.now() - ttsStart;
+    const elapsedMs = Date.now() - turnStart;
+
+    if (isTurnStale(session, turnId)) {
+      console.log(`[companion-stream] stale_after_tts turn=${turnId} active=${session.activeTurnId} cancelledThrough=${session.cancelledThroughTurnId}`);
+      return;
+    }
+
+    const result = {
+      ok: true,
+      async: !!routeJob,
+      jobID: routeJob?.id || '',
+      jobStatus: routeJob?.status || 'done',
+      done: !routeJob,
+      routeMode,
+      brainMode,
+      qwenThinking,
+      planner: plan.planner,
+      iphoneToolName,
+      iphoneToolArguments,
+      sessionToken,
+      transcript: routedTranscript,
+      routeMessage,
+      routeReply,
+      reply,
+      elapsedMs,
+      asrMs,
+      asrSource,
+      asrFallback,
+      planningMs,
+      routeMs: 0,
+      ttsMs,
+      ...audio,
+    };
     send({
       type: 'companion_voice_result',
       turnId,
@@ -5168,15 +5371,32 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send) {
       audioContentType: result.audioContentType || '',
       transport: 'websocket-pcm-stream',
     });
-    if (result.audioBase64) {
-      send({ type: 'tts_start', turnId });
-      if (ws.readyState === ws.OPEN) {
-        ws.send(Buffer.from(String(result.audioBase64), 'base64'));
-      }
-      send({ type: 'tts_end', turnId });
-    }
     send({ type: 'status', status: 'ready', turnId });
-    console.log(`[companion-stream] total_ms=${Date.now() - turnStart} turn=${turnId} async=${!!result.async} planner=${result.planner || ''}`);
+    await appendRealtimeLog({
+      kind: 'companion_realtime_voice_streaming_turn',
+      sessionToken,
+      routeMode,
+      brainMode,
+      qwenThinking,
+      planner: plan.planner,
+      iphoneToolName,
+      iphoneToolArguments,
+      transcriptPreview: routedTranscript.slice(0, 300),
+      routeMessagePreview: routeMessage.slice(0, 300),
+      replyPreview: reply.slice(0, 300),
+      async: !!routeJob,
+      jobID: routeJob?.id || '',
+      asrMs,
+      asrSource,
+      asrFallback,
+      planningMs,
+      routeMs: 0,
+      ttsMs,
+      elapsedMs,
+      audioBytes: audio.audioBytes,
+      audioStreamed: audio.audioStreamed,
+    });
+    console.log(`[companion-stream] total_ms=${elapsedMs} asr_ms=${asrMs} planning_ms=${planningMs} tts_ms=${ttsMs} turn=${turnId} async=${!!result.async} planner=${result.planner || ''}`);
   } catch (err) {
     if (err.message === 'aborted') {
       send({ type: 'interrupted', reason: 'aborted', turnId });
@@ -5211,20 +5431,99 @@ async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = 
   session.ttsAbort = controller;
 
   try {
-    send({ type: 'status', status: 'thinking', turnId });
+    const gate = actionability(trimmed, { allowWake: false, allowShortCommand: true, context: 'companion-stream-text' });
+    if (!gate.actionable) {
+      send({ type: 'transcript', text: gate.reason === 'noise-only' ? '(background noise ignored)' : '(unclear text ignored)', rawText: trimmed, final: true, filtered: true, reason: gate.reason, turnId });
+      send({ type: 'status', status: 'ready', turnId });
+      return;
+    }
+    const routedTranscript = gate.text || trimmed;
+    send({ type: 'transcript', text: routedTranscript, rawText: trimmed, final: true, turnId });
+    send({ type: 'status', status: 'planning', turnId });
     const payload = {
       ...(session.companionVoicePayload || {}),
       sessionToken: session.companionVoicePayload?.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
-      text: trimmed,
     };
-    const result = await runCompanionVoiceTurn({
-      req: { headers: { 'x-voice-session-token': payload.sessionToken } },
+    const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || `companion-voice-${Date.now().toString(36)}`);
+    const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
+    const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+    const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
+    const context = String(payload.context || '').trim();
+    if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
+      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras middle brain.');
+    }
+
+    const planningStartedAt = Date.now();
+    const plan = await planCompanionVoiceTurn(routedTranscript, {
+      brainMode,
+      routeMode,
+      sessionToken,
+      context,
       payload,
       signal: controller.signal,
     });
+    const planningMs = Date.now() - planningStartedAt;
     if (isTurnStale(session, turnId)) return;
-    send({ type: 'transcript', text: result.transcript || trimmed, final: true, turnId });
-    if (result.reply) send({ type: 'reply', text: result.reply, turnId });
+
+    const routeMessage = (plan.routeMessage || routedTranscript).trim();
+    const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
+    const iphoneToolName = String(plan.iphoneToolName || '').trim();
+    const iphoneToolArguments = plan.iphoneToolArguments && typeof plan.iphoneToolArguments === 'object' && !Array.isArray(plan.iphoneToolArguments)
+      ? plan.iphoneToolArguments
+      : {};
+    const shouldCallRoute = !iphoneToolName && plan.callRoute !== false && !!routeMessage;
+    const routeJob = shouldCallRoute
+      ? startCompanionVoiceRouteJob({
+          sessionToken,
+          routeMode,
+          brainMode,
+          planner: plan.planner || '',
+          transcript: routedTranscript,
+          routeMessage,
+          processing,
+          payload,
+          asrMs: 0,
+          planningMs,
+        })
+      : null;
+    const routeReply = '';
+    let reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : String(plan.finalAnswer || '').trim();
+    if (!reply) reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : "I heard you.";
+    if (reply) send({ type: 'reply', text: reply, turnId });
+
+    const ttsStart = Date.now();
+    const audio = await streamCompanionVoiceReplyToWebSocket(ws, send, reply, payload, {
+      turnId,
+      signal: controller.signal,
+    });
+    const ttsMs = Date.now() - ttsStart;
+    const elapsedMs = Date.now() - startedAt;
+    if (isTurnStale(session, turnId)) return;
+
+    const result = {
+      ok: true,
+      async: !!routeJob,
+      jobID: routeJob?.id || '',
+      jobStatus: routeJob?.status || 'done',
+      done: !routeJob,
+      routeMode,
+      brainMode,
+      qwenThinking,
+      planner: plan.planner,
+      iphoneToolName,
+      iphoneToolArguments,
+      sessionToken,
+      transcript: routedTranscript,
+      routeMessage,
+      routeReply,
+      reply,
+      elapsedMs,
+      asrMs: 0,
+      planningMs,
+      routeMs: 0,
+      ttsMs,
+      ...audio,
+    };
     send({
       type: 'companion_voice_result',
       turnId,
@@ -5233,12 +5532,29 @@ async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = 
       audioContentType: result.audioContentType || '',
       transport: 'websocket-text-smoke',
     });
-    if (result.audioBase64 && ws.readyState === ws.OPEN) {
-      send({ type: 'tts_start', turnId });
-      ws.send(Buffer.from(String(result.audioBase64), 'base64'));
-      send({ type: 'tts_end', turnId });
-    }
     send({ type: 'status', status: 'ready', turnId });
+    await appendRealtimeLog({
+      kind: 'companion_realtime_voice_streaming_text_turn',
+      sessionToken,
+      routeMode,
+      brainMode,
+      qwenThinking,
+      planner: plan.planner,
+      iphoneToolName,
+      iphoneToolArguments,
+      transcriptPreview: routedTranscript.slice(0, 300),
+      routeMessagePreview: routeMessage.slice(0, 300),
+      replyPreview: reply.slice(0, 300),
+      async: !!routeJob,
+      jobID: routeJob?.id || '',
+      asrMs: 0,
+      planningMs,
+      routeMs: 0,
+      ttsMs,
+      elapsedMs,
+      audioBytes: audio.audioBytes,
+      audioStreamed: audio.audioStreamed,
+    });
     console.log(`[companion-stream-smoke] total_ms=${Date.now() - startedAt} turn=${turnId} async=${!!result.async} planner=${result.planner || ''}`);
   } catch (err) {
     if (err.message === 'aborted') {
