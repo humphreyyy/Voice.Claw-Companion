@@ -130,34 +130,14 @@ function modeSpec(mode = DEFAULT_MODE) {
     maximum: {
       mode: 'maximum',
       label: 'Maximum',
-      summary: 'Aggressively installs, verifies, cycles fallback profiles, restores the primary hot runtime, and warms TTS, route, and network paths.',
+      summary: 'Aggressively installs and verifies full dependencies, restores the primary hot runtime, and warms TTS, route, and network paths without launching fallback voice fleets.',
       installPrepareSet: 'full',
       maxParallel: 3,
       ttsProbeRepeats: 1,
       routePrewarmRepeats: 1,
       networkProbeRepeats: 1,
       profileWarmRepeats: 1,
-      profiles: [
-        basePrimary,
-        {
-          id: 'fast-whisper',
-          label: 'Fast STT fallback',
-          options: { brainMode: 'qwen3.5-2b', sttProfile: 'faster-whisper-fast', localVoice: 'kokoro-af-heart', prepareSet: '' },
-          required: false,
-        },
-        {
-          id: 'balanced-whisper',
-          label: 'Balanced STT fallback',
-          options: { brainMode: 'qwen3.5-2b', sttProfile: 'faster-whisper-balanced', localVoice: 'kokoro-af-heart', prepareSet: '' },
-          required: false,
-        },
-        {
-          id: 'accurate-mlx-whisper',
-          label: 'Accurate MLX STT fallback',
-          options: { brainMode: 'qwen3.5-2b', sttProfile: 'mlx-whisper-accurate', localVoice: 'kokoro-af-heart', prepareSet: '' },
-          required: false,
-        },
-      ],
+      profiles: [basePrimary],
       routePrewarm: true,
       networkPrewarm: true,
       ttsProbe: true,
@@ -165,40 +145,20 @@ function modeSpec(mode = DEFAULT_MODE) {
     presentation: {
       mode: 'presentation',
       label: 'Presentation',
-      summary: 'Uses the Mac like a realtime appliance: full local prep, repeated warm probes, fallback cycling, and primary-runtime restoration for lowest-latency live demos.',
+      summary: 'Uses the Mac like a realtime appliance: full local prep, bounded warm probes, and primary-runtime restoration without launching duplicate fallback voice fleets.',
       installPrepareSet: 'full',
       maxParallel: 4,
       ttsProbeRepeats: 2,
       routePrewarmRepeats: 1,
       networkProbeRepeats: 2,
       profileWarmRepeats: 1,
-      profiles: [
-        basePrimary,
-        {
-          id: 'fast-whisper',
-          label: 'Fast STT fallback',
-          options: { brainMode: 'qwen3.5-2b', sttProfile: 'faster-whisper-fast', localVoice: 'kokoro-af-heart', prepareSet: '' },
-          required: false,
-        },
-        {
-          id: 'balanced-whisper',
-          label: 'Balanced STT fallback',
-          options: { brainMode: 'qwen3.5-2b', sttProfile: 'faster-whisper-balanced', localVoice: 'kokoro-af-heart', prepareSet: '' },
-          required: false,
-        },
-        {
-          id: 'accurate-mlx-whisper',
-          label: 'Accurate MLX STT fallback',
-          options: { brainMode: 'qwen3.5-2b', sttProfile: 'mlx-whisper-accurate', localVoice: 'kokoro-af-heart', prepareSet: '' },
-          required: false,
-        },
-      ],
+      profiles: [basePrimary],
       routePrewarm: true,
       networkPrewarm: true,
       ttsProbe: true,
     },
   };
-  return specs[normalized] || specs.maximum;
+  return specs[normalized] || specs.balanced;
 }
 
 function memoryPressure(snapshot = {}) {
