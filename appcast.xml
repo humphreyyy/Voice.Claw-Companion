@@ -3,16 +3,16 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
-            <title>0.1.111</title>
-            <pubDate>Mon, 06 Jul 2026 13:50:46 +0300</pubDate>
+            <title>0.1.112</title>
+            <pubDate>Mon, 06 Jul 2026 14:02:17 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607061046</sparkle:version>
-            <sparkle:shortVersionString>0.1.111</sparkle:shortVersionString>
+            <sparkle:version>202607061401</sparkle:version>
+            <sparkle:shortVersionString>0.1.112</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.111</h2><ul><li>Stops Companion voice, HF, Qwen, TTS, keep-hot, and Powerhouse prewarming from running automatically at bridge startup.</li><li>Keeps Powerhouse warming and dependency preparation as explicit user actions.</li><li>Removes the realtime priority-helper installer path while preserving legacy helper diagnostics.</li><li>Keeps the default Powerhouse mode at Light.</li></ul>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.112</h2><ul><li>Corrects Sparkle update ordering with a build number newer than 0.1.110.</li><li>Stops Companion voice, HF, Qwen, TTS, keep-hot, and Powerhouse prewarming from running automatically at bridge startup.</li><li>Keeps Powerhouse warming and dependency preparation as explicit user actions.</li><li>Removes the realtime priority-helper installer path while preserving legacy helper diagnostics.</li><li>Keeps the default Powerhouse mode at Light.</li></ul>
 ]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.111/VoiceClawCompanion-0.1.111-202607061046.dmg" length="3567288" type="application/octet-stream" sparkle:edSignature="cipzfCqe+Mf1depH9p4Y4rxj54Hz3cVeO6tCTbZd7l6NfrBVH1JcK+eLD7+FrbEKPQ9trmIzDkShYaIja2IiAg=="/>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.112/VoiceClawCompanion-0.1.112-202607061401.dmg" length="3566017" type="application/octet-stream" sparkle:edSignature="+jbxRWWkMHTtAKNbkE3Be0fdTDeAcgQtTrx8H+qeGXSRa4/7BxI1GG+pjYW/rKuCiVdzTuoNqnPkwFKHUURwAg=="/>
         </item>
         <item>
             <title>0.1.110</title>
