@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.97</title>
+            <pubDate>Mon, 06 Jul 2026 05:43:20 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607060241</sparkle:version>
+            <sparkle:shortVersionString>0.1.97</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.97</h2><ul><li>Adds Powerhouse preparation modes so the Companion can proactively warm local STT, local LLM, streaming TTS, route, and network paths.</li><li>Adds pooled HF speech-to-speech sidecars: the primary/default profile comes online first, then fallback STT profiles are warmed in parallel.</li><li>Adds an optional realtime priority helper so hot VoiceClaw sidecars and bridge runtime processes can receive elevated scheduling priority.</li><li>Improves Companion Realtime Voice diagnostics, runtime manifest verification, packaged-app validation, and interrupt-safe TTS streaming behavior.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.97/VoiceClawCompanion-0.1.97-202607060241.dmg" length="3560924" type="application/octet-stream" sparkle:edSignature="9OXegSqttRiXeV4QCpjPy97zUvWOH4v/F9/2DbvSZwi+jzfw0Ak0r8C3CzDQSo025hu416hwszgEB27WxtcGBw=="/>
+        </item>
+        <item>
             <title>0.1.96</title>
             <pubDate>Mon, 06 Jul 2026 02:10:31 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.95</h2><ul><li>Adds a packaged runtime manifest with Companion version, build, runtime package version, source commit, and runtime hash.</li><li>Exposes the runtime manifest through bridge health, config, and Realtime status endpoints so the Companion can prove the running bridge matches the installed app runtime.</li><li>Adds launch-time stale-runtime detection and one-shot self-healing: if the LaunchAgent points at an old runtime or the running bridge reports an old/missing runtime hash, the Companion refreshes and restarts only the bridge LaunchAgent from saved config.</li><li>Adds a Bridge Runtime diagnostics row and release verification checks so future packages cannot ship without runtime identity metadata.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.95/VoiceClawCompanion-0.1.95-202607060004.dmg" length="3446652" type="application/octet-stream" sparkle:edSignature="6+Jra9o+5XUhIWCTG8J95lo92tNwPzVmTYgPKuh9TDvKR4MSBB2VZOYwofM9T4p/1DtJfy2R33Re/bd0V+mODQ=="/>
-        </item>
-        <item>
-            <title>0.1.94</title>
-            <pubDate>Sun, 05 Jul 2026 23:57:12 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607052356</sparkle:version>
-            <sparkle:shortVersionString>0.1.94</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.94</h2><ul><li>Fixes Companion Realtime Voice HF runtime startup failing with “stt is not defined” when the selected STT profile starts the HF speech-to-speech runtime.</li><li>Adds a release guard so this undefined-STT startup regression fails packaging checks if it returns.</li><li>Includes the restored Sparkle Install Update flow from 0.1.93 for signed in-app updates.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.94/VoiceClawCompanion-0.1.94-202607052356.dmg" length="3435888" type="application/octet-stream" sparkle:edSignature="qfDulyrBuRmf725z/P+kUWmiiwuNHI7Ql+jadI7SFiLM2E4ccPENnakaVtHN+rAtOZVovIb3O9rpBiviJkW2Ag=="/>
         </item>
     </channel>
 </rss>
