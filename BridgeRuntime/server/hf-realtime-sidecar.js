@@ -962,6 +962,11 @@ function localMiddleBrainRequired(brainMode = '') {
   return normalized === 'qwen3.5-2b';
 }
 
+function openAIMiddleBrainRequired(brainMode = '') {
+  const normalized = normalizeBrainMode(brainMode);
+  return normalized === 'gpt55-fast-low';
+}
+
 function cerebrasMiddleBrainRequired(brainMode = '') {
   return normalizeBrainMode(brainMode).startsWith('cerebras:');
 }
@@ -1124,6 +1129,8 @@ function hfSidecarIdentityKey(options = {}) {
   const ttsConfig = ttsConfigForHF(options);
   const prefix = brainMode.startsWith('cerebras:')
     ? `cerebras:${normalizeCerebrasModel(String(options.cerebrasModel || brainMode.slice('cerebras:'.length) || HF_DEFAULT_CEREBRAS_MODEL))}`
+    : brainMode === 'gpt55-fast-low'
+      ? `openai:${process.env.VOICECLAW_HF_OPENAI_MODEL || 'gpt-5.5'}`
     : `local:${HF_DEFAULT_LOCAL_MODEL}`;
   return `${prefix}:stt:${sttConfig.id}:tts:${ttsConfig.engine}:${ttsConfig.device || 'default'}:${ttsConfig.voice}`;
 }
@@ -1285,6 +1292,7 @@ async function getHFRealtimeSingleStatus(options = {}) {
     }))
     : { before: null, after: await hfRuntimeProcessSnapshot(), changed: false, skipped: true };
   const requireLocalMiddleBrain = localMiddleBrainRequired(brainMode);
+  const requireOpenAIKey = openAIMiddleBrainRequired(brainMode);
   const requireCerebrasKey = cerebrasMiddleBrainRequired(brainMode);
   const pythonReady = await fileExecutable(HF_PYTHON);
   const cliReady = await fileExecutable(HF_CLI);
@@ -1352,11 +1360,12 @@ async function getHFRealtimeSingleStatus(options = {}) {
     ...ttsRequiredModels,
     { id: 'middle-qwen35-2b-local', label: 'Qwen 3.5 2B local Companion Realtime Voice LLM', model: HF_DEFAULT_LOCAL_MODEL, cached: localModelCached, required: requireLocalMiddleBrain },
   ];
+  const openAIKeyReady = !requireOpenAIKey || !!openAIKeyFromPayload(options);
   const cerebrasKeyReady = !requireCerebrasKey || !!cerebrasKeyFromPayload(options);
   const missingSTTModules = sttModuleStatuses.filter((item) => item.required && !item.ready);
   const missingTTSModules = ttsModuleStatuses.filter((item) => item.required && !item.ready);
   const missingRequiredModels = requiredModels.filter((model) => model.required && !model.cached);
-  const ready = runtimeReady && missingSTTModules.length === 0 && missingTTSModules.length === 0 && missingRequiredModels.length === 0 && cerebrasKeyReady;
+  const ready = runtimeReady && missingSTTModules.length === 0 && missingTTSModules.length === 0 && missingRequiredModels.length === 0 && openAIKeyReady && cerebrasKeyReady;
   const installItems = ready ? [] : [
     ...(!runtimeReady ? [{
       id: 'hf-speech-to-speech-runtime',
@@ -1395,6 +1404,13 @@ async function getHFRealtimeSingleStatus(options = {}) {
       installable: false,
       command: 'manual setup required',
     }] : []),
+    ...(!openAIKeyReady ? [{
+      id: 'openai-api-key',
+      label: 'OpenAI API key',
+      detail: 'Add an OpenAI API key in VoiceClaw Companion before using GPT-5.5 as the Companion Realtime Voice LLM.',
+      installable: false,
+      command: 'manual setup required',
+    }] : []),
   ];
   return {
     state: ready ? 'ready' : 'needs_setup',
@@ -1410,6 +1426,8 @@ async function getHFRealtimeSingleStatus(options = {}) {
     runtimeReady,
     brainMode,
     requireLocalMiddleBrain,
+    requireOpenAIKey,
+    openAIKeyReady,
     requireCerebrasKey,
     cerebrasKeyReady,
     sttProfile,
@@ -1528,6 +1546,17 @@ function cerebrasKeyFromPayload(payload = {}) {
     if (configured) return configured;
   } catch {}
   return String(process.env.CEREBRAS_API_KEY || '').trim();
+}
+
+function openAIKeyFromPayload(payload = {}) {
+  const forwarded = String(payload.openAIAPIKey || payload.openAIApiKey || payload.openaiAPIKey || payload.openaiApiKey || payload.openaiKey || '').trim();
+  if (forwarded) return forwarded;
+  try {
+    const parsed = JSON.parse(readFileSync(VOICECLAW_CONFIG, 'utf8'));
+    const configured = String(parsed.openAIAPIKey || parsed.openAIApiKey || parsed.openaiAPIKey || parsed.openaiApiKey || parsed.apiKey || '').trim();
+    if (configured) return configured;
+  } catch {}
+  return String(process.env.OPENAI_API_KEY || '').trim();
 }
 
 function normalizeCerebrasModel(model = '') {
@@ -2051,7 +2080,7 @@ async function sidecarConfigFromPayload(payload = {}, { port = HF_PORT } = {}) {
   const sttConfig = sttProfileConfig(payload.sttProfile || payload.sttQualityProfile || '');
   const liveTranscriptionArgs = sttConfig.liveTranscription
     ? ['--enable_live_transcription', '--live_transcription_min_silence_ms', process.env.VOICECLAW_HF_LIVE_TRANSCRIPTION_MIN_SILENCE_MS || '180']
-    : ['--enable_live_transcription'];
+    : [];
   const brainMode = normalizeBrainMode(payload.brainMode || '');
   if (brainMode.startsWith('cerebras:')) {
     const model = normalizeCerebrasModel(String(payload.cerebrasModel || brainMode.slice('cerebras:'.length) || HF_DEFAULT_CEREBRAS_MODEL));
@@ -2071,6 +2100,44 @@ async function sidecarConfigFromPayload(payload = {}, { port = HF_PORT } = {}) {
         '--llm_backend', 'responses-api',
         '--model_name', model,
         '--responses_api_base_url', adapterBaseURL,
+        '--responses_api_stream',
+        '--responses_api_disable_thinking',
+        '--stream_batch_sentences', '1',
+        '--chat_size', '12',
+        '--no_compact_history',
+        ...ttsArgs,
+        ...liveTranscriptionArgs,
+        '--thresh', '0.5',
+        '--min_silence_ms', '360',
+        '--min_speech_ms', '384',
+        '--speech_pad_ms', '240',
+        '--num_pipelines', String(VOICECLAW_HF_NUM_PIPELINES),
+        '--log_level', process.env.VOICECLAW_HF_LOG_LEVEL || 'info',
+      ],
+      port,
+    };
+  }
+
+  if (brainMode === 'gpt55-fast-low') {
+    const model = process.env.VOICECLAW_HF_OPENAI_MODEL || 'gpt-5.5';
+    const apiKey = openAIKeyFromPayload(payload);
+    if (!apiKey) {
+      throw new Error('OpenAI API key is required for the GPT-5.5 Companion Realtime Voice LLM.');
+    }
+    return {
+      key: `openai:${model}:stt:${sttConfig.id}:tts:${ttsConfig.engine}:${ttsConfig.device || 'default'}:${ttsConfig.voice}`,
+      env: {
+        OPENAI_API_KEY: apiKey,
+      },
+      args: [
+        '--mode', 'realtime',
+        '--ws_host', HF_HOST,
+        '--ws_port', String(port),
+        '--sample_rate', String(DEFAULT_HF_SAMPLE_RATE),
+        ...sttArgs,
+        '--llm_backend', 'responses-api',
+        '--model_name', model,
+        '--responses_api_base_url', process.env.VOICECLAW_HF_OPENAI_BASE_URL || 'https://api.openai.com/v1',
         '--responses_api_stream',
         '--responses_api_disable_thinking',
         '--stream_batch_sentences', '1',
@@ -2205,6 +2272,9 @@ async function launchHFRealtimeSidecarOnce(config, attempt) {
 
 export async function ensureHFRealtimeSidecar(payload = {}) {
   const status = await getHFRealtimeStatus({ brainMode: payload.brainMode, ...payload });
+  if (status.requireOpenAIKey && !status.openAIKeyReady) {
+    throw new Error('OpenAI API key is required for the GPT-5.5 Companion Realtime Voice LLM.');
+  }
   if (status.requireCerebrasKey && !status.cerebrasKeyReady) {
     throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
   }
@@ -2222,6 +2292,9 @@ export async function ensureHFRealtimeSidecar(payload = {}) {
   const config = await sidecarConfigFromPayload(payload, { port });
   if (config.key.startsWith('cerebras:') && !cerebrasKeyFromPayload(payload)) {
     throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
+  }
+  if (config.key.startsWith('openai:') && !openAIKeyFromPayload(payload)) {
+    throw new Error('OpenAI API key is required for the GPT-5.5 Companion Realtime Voice LLM.');
   }
 
   const startPromise = (async () => {
@@ -2430,6 +2503,7 @@ export class HFRealtimeBridge {
       });
       ws.on('message', (data) => this.handleHFMessage(data));
       ws.on('close', () => {
+        if (this.closed) return;
         this.closed = true;
         if (!this.configured) return;
         this.send({ type: 'error', message: 'HF realtime websocket closed unexpectedly' });
@@ -2701,6 +2775,14 @@ export class HFRealtimeBridge {
     this.hfWs.send(JSON.stringify({ type: 'session.update', session }));
     if (this.configureTimer) clearTimeout(this.configureTimer);
     this.configureTimer = setTimeout(() => this.markConfigured('session.update-accepted'), 900);
+  }
+
+  updateSession({ payload = this.payload, tools = this.tools, instructions = this.instructions } = {}) {
+    this.payload = payload || {};
+    this.tools = Array.isArray(tools) ? tools : [];
+    this.instructions = instructions || 'You are VoiceClaw Realtime, a fast conversational voice assistant.';
+    this.configured = false;
+    this.sendSessionUpdate();
   }
 
   handleHFMessage(raw) {
