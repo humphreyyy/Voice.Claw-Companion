@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.99</title>
+            <pubDate>Mon, 06 Jul 2026 05:53:09 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607060252</sparkle:version>
+            <sparkle:shortVersionString>0.1.99</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.99</h2><ul><li>Supersedes the local 0.1.98 test package with the public GitHub/Appcast release line.</li><li>Adds the Powerhouse runtime manager for aggressive Companion Realtime Voice prewarming, runtime health checks, and priority-helper diagnostics.</li><li>Improves packaged HF runtime verification, Sparkle updater helper validation, and Companion readiness reporting.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.99/VoiceClawCompanion-0.1.99-202607060252.dmg" length="3560894" type="application/octet-stream" sparkle:edSignature="sbz+GQ0bwiH6DIms0LdjKfLnzgYMVoyFmr/D4mdGwO9kAMkPg7K+fTf0dGjajBPAsehbpocvSPAoU2fCVTTsAg=="/>
+        </item>
+        <item>
             <title>0.1.97</title>
             <pubDate>Mon, 06 Jul 2026 05:43:20 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.96</h2><ul><li>Prepares the Mac as a ready Companion Realtime Voice workstation with recommended local voice dependencies.</li><li>Adds HF runtime prewarming, broader readiness checks, and selected-profile dependency installation.</li><li>Standardizes Companion Realtime Voice audio transport on 16 kHz and uses Kokoro CPU TTS with local Qwen to avoid MPS contention.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.96/VoiceClawCompanion-0.1.96-202607060020.dmg" length="3450584" type="application/octet-stream" sparkle:edSignature="aqdatNqydCmJz+oTRNUxJ8cdt+dzCQGZ/uWsxhcy3UtCsqnLbDXeOpKoXiTY7DJygWtn+QLPAgRZNMM0vxyICA=="/>
-        </item>
-        <item>
-            <title>0.1.95</title>
-            <pubDate>Mon, 06 Jul 2026 00:05:39 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607060004</sparkle:version>
-            <sparkle:shortVersionString>0.1.95</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.95</h2><ul><li>Adds a packaged runtime manifest with Companion version, build, runtime package version, source commit, and runtime hash.</li><li>Exposes the runtime manifest through bridge health, config, and Realtime status endpoints so the Companion can prove the running bridge matches the installed app runtime.</li><li>Adds launch-time stale-runtime detection and one-shot self-healing: if the LaunchAgent points at an old runtime or the running bridge reports an old/missing runtime hash, the Companion refreshes and restarts only the bridge LaunchAgent from saved config.</li><li>Adds a Bridge Runtime diagnostics row and release verification checks so future packages cannot ship without runtime identity metadata.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.95/VoiceClawCompanion-0.1.95-202607060004.dmg" length="3446652" type="application/octet-stream" sparkle:edSignature="6+Jra9o+5XUhIWCTG8J95lo92tNwPzVmTYgPKuh9TDvKR4MSBB2VZOYwofM9T4p/1DtJfy2R33Re/bd0V+mODQ=="/>
         </item>
     </channel>
 </rss>
