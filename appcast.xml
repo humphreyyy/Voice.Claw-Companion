@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.119</title>
+            <pubDate>Mon, 06 Jul 2026 20:57:38 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607062100</sparkle:version>
+            <sparkle:shortVersionString>0.1.119</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.119</h2><ul><li>Fixes Sparkle update eligibility by enforcing strictly increasing Companion build numbers.</li><li>Adds appcast verification so the published update feed matches the notarized DMG bundle version and Sparkle signature.</li><li>Converts Powerhouse warmup into a nonblocking background job with live progress, cancel, retry, and UI recovery controls.</li><li>Keeps QR pairing, bridge readiness, and route start independent from Powerhouse warm/prewarm completion.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.119/VoiceClawCompanion-0.1.119-202607062100.dmg" length="3588866" type="application/octet-stream" sparkle:edSignature="raIDWI6fyI3leeyFFVbY9aaog/56ge68a7YYU9eXmkDqT2Qly+/ZnRG2z5aFkFdNGBN4E8y6sWUZgRpNhfKzDg=="/>
+        </item>
+        <item>
             <title>0.1.118</title>
             <pubDate>Mon, 06 Jul 2026 20:12:45 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
