@@ -1311,7 +1311,7 @@ async function diagnoseBridge(port) {
 
   const launchAgent = await checkLaunchAgentAccess(local);
   const runtimeIntegrity = checkRuntimeIntegrity(local, launchAgent);
-  const powerhouseMode = normalizePowerhouseMode(existing.powerhouseMode || existing.PowerhouseMode || 'maximum');
+  const powerhouseMode = normalizePowerhouseMode(existing.powerhouseMode || existing.PowerhouseMode || 'balanced');
   const companionPrepareSet = prepareSetForPowerhouseMode(powerhouseMode);
   let suggestedAction = 'Click Install and Start to install the bridge and configure Tailscale Serve for this port.';
   if (runtimeIntegrity.selfHealRecommended) {
@@ -1531,8 +1531,9 @@ async function installLaunchAgent(config) {
   const launchWorkingDir = join(CONFIG_DIR, 'runtime');
   const runtimeEntryPoint = join(PROJECT_ROOT, 'server', 'index.js');
   const logicalCores = Math.max(4, os.cpus().length || 4);
-  const aggressiveThreads = Math.max(128, logicalCores * 32);
-  const hfPipelines = Math.max(8, logicalCores * 2);
+  const aggressiveThreads = Math.max(2, Math.min(16, logicalCores * 2));
+  const hfPipelines = 1;
+  const hfPoolSize = 2;
   await mkdir(join(HOME, 'Library', 'LaunchAgents'), { recursive: true });
   await mkdir(logDir, { recursive: true });
   await mkdir(launchWorkingDir, { recursive: true });
@@ -1573,13 +1574,15 @@ async function installLaunchAgent(config) {
     <key>VOICECLAW_CONFIG</key>
     <string>${xmlEscape(CONFIG_FILE)}</string>
     <key>VOICECLAW_POWERHOUSE_MODE</key>
-    <string>${xmlEscape(config.powerhouseMode || 'maximum')}</string>
+    <string>${xmlEscape(config.powerhouseMode || 'balanced')}</string>
     <key>VOICECLAW_POWERHOUSE_BOOT_PREWARM</key>
     <string>true</string>
     <key>VOICECLAW_AGGRESSIVE_THREADS</key>
     <string>${xmlEscape(aggressiveThreads)}</string>
     <key>VOICECLAW_HF_NUM_PIPELINES</key>
     <string>${xmlEscape(hfPipelines)}</string>
+    <key>VOICECLAW_HF_POOL_SIZE</key>
+    <string>${xmlEscape(hfPoolSize)}</string>
     <key>OMP_NUM_THREADS</key>
     <string>${xmlEscape(aggressiveThreads)}</string>
     <key>MKL_NUM_THREADS</key>
@@ -1589,7 +1592,7 @@ async function installLaunchAgent(config) {
     <key>NUMEXPR_NUM_THREADS</key>
     <string>${xmlEscape(aggressiveThreads)}</string>
     <key>OMP_WAIT_POLICY</key>
-    <string>ACTIVE</string>
+    <string>PASSIVE</string>
     <key>TOKENIZERS_PARALLELISM</key>
     <string>true</string>
     <key>HF_HUB_ENABLE_HF_TRANSFER</key>
@@ -1646,7 +1649,7 @@ function buildPairingPayload(config) {
     RealtimeModel: 'gpt-realtime-2',
     RealtimeAuthMode: config.realtimeAuthMode,
     RealtimeAuthFallbackToAPIKey: config.realtimeAuthFallbackToAPIKey,
-    PowerhouseMode: config.powerhouseMode || 'maximum',
+    PowerhouseMode: config.powerhouseMode || 'balanced',
   };
 }
 
@@ -1657,7 +1660,7 @@ function printSummary(config, pairingPayload, actions) {
   console.log(`Bridge URL: ${config.tailscaleBaseURL || '(Tailscale DNS unavailable)'}`);
   console.log(`OpenClaw path: ${config.openClawInstallPath}`);
   console.log(`OpenClaw agent: ${config.openClawAgentName}`);
-  console.log(`Powerhouse mode: ${config.powerhouseMode || 'maximum'}`);
+  console.log(`Powerhouse mode: ${config.powerhouseMode || 'balanced'}`);
   console.log(`Token: ${config.gatewayToken ? 'generated' : 'missing'}`);
   for (const action of actions) console.log(`- ${action}`);
   console.log('\nPaste this setup JSON into VoiceClaw Settings, or show it as a QR code from the Mac companion:\n');
@@ -1683,7 +1686,7 @@ async function main() {
   if (options.installCompanionVoiceDependencies) {
     const existing = await readBridgeConfig();
     const openClawInstallPath = normalizeInstallPath(options.openClawInstallPath || existing.openClawInstallPath);
-    const prepareSet = prepareSetForPowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'maximum');
+    const prepareSet = prepareSetForPowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'balanced');
     const result = await installCompanionVoiceDependencies(openClawInstallPath, { prepareSet });
     if (options.jsonOnly) {
       console.log(JSON.stringify(result, null, 2));
@@ -1742,7 +1745,7 @@ async function main() {
       realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'openclaw-oauth'),
       realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? false,
       cerebrasAPIKey: existing.cerebrasAPIKey || '',
-      powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'maximum'),
+      powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'balanced'),
     };
     await writeBridgeConfig(config);
     await installLaunchAgent(config);
@@ -1787,7 +1790,7 @@ async function main() {
     realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'openclaw-oauth'),
     realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? false,
     cerebrasAPIKey: existing.cerebrasAPIKey || '',
-    powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'maximum'),
+    powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'balanced'),
   };
   config.tailscaleBaseURL = config.tailscaleDNSName ? `https://${config.tailscaleDNSName}:${config.port}` : (existing.tailscaleBaseURL || '');
 

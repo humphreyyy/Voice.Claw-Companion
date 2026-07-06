@@ -114,8 +114,8 @@ const COMPANION_VOICE_QWEN_PREWARM = !['0', 'false', 'off', 'no'].includes(Strin
 const COMPANION_VOICE_TTS_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_TTS_PREWARM || '1').toLowerCase());
 const COMPANION_VOICE_HF_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_HF_PREWARM || '1').toLowerCase());
 const COMPANION_VOICE_HF_KEEPHOT = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_HF_KEEPHOT || '1').toLowerCase());
-const COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS = Math.max(15_000, Number.parseInt(process.env.COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS || '45000', 10));
-const COMPANION_VOICE_HF_BOOT_BURSTS = Math.max(1, Number.parseInt(process.env.COMPANION_VOICE_HF_BOOT_BURSTS || '4', 10));
+const COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS = Math.max(120_000, Number.parseInt(process.env.COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS || '300000', 10));
+const COMPANION_VOICE_HF_BOOT_BURSTS = Math.min(1, Math.max(0, Number.parseInt(process.env.COMPANION_VOICE_HF_BOOT_BURSTS || '1', 10)));
 const COMPANION_VOICE_WS_HEARTBEAT_MS = Math.max(5_000, Number.parseInt(process.env.COMPANION_VOICE_WS_HEARTBEAT_MS || '15000', 10));
 const COMPANION_VOICE_PLANNER_SCHEMA = {
   type: 'object',
@@ -6981,9 +6981,16 @@ let companionVoiceKeepHotRunning = false;
 async function runCompanionVoiceKeepHot(reason = 'keep-hot') {
   if (!COMPANION_VOICE_HF_PREWARM || !COMPANION_VOICE_HF_KEEPHOT || companionVoiceKeepHotRunning) return;
   companionVoiceKeepHotRunning = true;
-  const profiles = companionVoiceWarmProfiles();
+  const profiles = companionVoiceWarmProfiles().slice(0, 1);
   try {
-    const results = await Promise.allSettled(profiles.map((profile) => prewarmHFRealtimeRuntime(profile.options)));
+    const results = [];
+    for (const profile of profiles) {
+      // Keep-hot should keep the selected runtime fresh, not launch a fleet of
+      // duplicate sidecars or provider probes.
+      results.push(await prewarmHFRealtimeRuntime(profile.options)
+        .then((value) => ({ status: 'fulfilled', value }))
+        .catch((reason) => ({ status: 'rejected', reason })));
+    }
     const ready = results.filter((result) => result.status === 'fulfilled').length;
     const failed = results
       .map((result, index) => ({ result, profile: profiles[index] }))

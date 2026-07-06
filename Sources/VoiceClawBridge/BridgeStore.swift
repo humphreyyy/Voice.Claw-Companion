@@ -183,7 +183,7 @@ final class BridgeStore: ObservableObject {
             Task { await persistBridgeAuthDefaults() }
         }
     }
-    @Published var powerhouseMode: CompanionPowerhouseMode = .maximum {
+    @Published var powerhouseMode: CompanionPowerhouseMode = .balanced {
         didSet {
             lastAutomaticPowerhousePrewarmDate = nil
             UserDefaults.standard.set(powerhouseMode.rawValue, forKey: DefaultsKeys.powerhouseMode)

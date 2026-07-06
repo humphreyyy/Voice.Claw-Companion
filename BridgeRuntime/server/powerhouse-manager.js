@@ -9,11 +9,13 @@ import { prewarmProcessing } from './dialogue.js';
 const execFile = promisify(execFileCb);
 
 const VALID_MODES = new Set(['light', 'balanced', 'maximum', 'presentation']);
-const DEFAULT_MODE = normalizePowerhouseMode(process.env.VOICECLAW_POWERHOUSE_MODE || 'maximum');
+const DEFAULT_MODE = normalizePowerhouseMode(process.env.VOICECLAW_POWERHOUSE_MODE || 'balanced');
 const CONFIG_PATH = process.env.VOICECLAW_CONFIG_PATH || process.env.VOICECLAW_CONFIG || `${os.homedir()}/.voiceclaw/bridge.json`;
 const HF_ROOT = process.env.VOICECLAW_HF_ROOT || `${os.homedir()}/.voiceclaw/hf-runtime`;
 const HF_PYTHON = process.env.VOICECLAW_HF_PYTHON || `${HF_ROOT}/bin/python`;
-const AGGRESSIVE_THREADS = Math.max(128, Number.parseInt(process.env.VOICECLAW_AGGRESSIVE_THREADS || String((os.cpus().length || 4) * 32), 10));
+const LOGICAL_CORES = Math.max(1, os.cpus().length || 1);
+const requestedAggressiveThreads = Number.parseInt(process.env.VOICECLAW_AGGRESSIVE_THREADS || String(LOGICAL_CORES * 2), 10);
+const AGGRESSIVE_THREADS = Math.max(2, Math.min(16, Number.isFinite(requestedAggressiveThreads) ? requestedAggressiveThreads : LOGICAL_CORES * 2));
 const HARDWARE_SNAPSHOT_TTL_MS = 10_000;
 const STATUS_TTL_MS = 4_000;
 
@@ -115,11 +117,11 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Balanced',
       summary: 'Keeps the primary/default local realtime stack warm and prepares the recommended fallback STT/TTS profiles.',
       installPrepareSet: 'recommended',
-      maxParallel: Math.max(48, AGGRESSIVE_THREADS * 4),
-      ttsProbeRepeats: 8,
-      routePrewarmRepeats: 6,
-      networkProbeRepeats: 8,
-      profileWarmRepeats: 4,
+      maxParallel: 2,
+      ttsProbeRepeats: 1,
+      routePrewarmRepeats: 1,
+      networkProbeRepeats: 1,
+      profileWarmRepeats: 1,
       profiles: [basePrimary],
       routePrewarm: true,
       networkPrewarm: true,
@@ -130,11 +132,11 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Maximum',
       summary: 'Aggressively installs, verifies, cycles fallback profiles, restores the primary hot runtime, and warms TTS, route, and network paths.',
       installPrepareSet: 'full',
-      maxParallel: Math.max(144, AGGRESSIVE_THREADS * 8),
-      ttsProbeRepeats: 24,
-      routePrewarmRepeats: 16,
-      networkProbeRepeats: 16,
-      profileWarmRepeats: 6,
+      maxParallel: 3,
+      ttsProbeRepeats: 1,
+      routePrewarmRepeats: 1,
+      networkProbeRepeats: 1,
+      profileWarmRepeats: 1,
       profiles: [
         basePrimary,
         {
@@ -165,11 +167,11 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Presentation',
       summary: 'Uses the Mac like a realtime appliance: full local prep, repeated warm probes, fallback cycling, and primary-runtime restoration for lowest-latency live demos.',
       installPrepareSet: 'full',
-      maxParallel: Math.max(256, AGGRESSIVE_THREADS * 12),
-      ttsProbeRepeats: 36,
-      routePrewarmRepeats: 24,
-      networkProbeRepeats: 24,
-      profileWarmRepeats: 8,
+      maxParallel: 4,
+      ttsProbeRepeats: 2,
+      routePrewarmRepeats: 1,
+      networkProbeRepeats: 2,
+      profileWarmRepeats: 1,
       profiles: [
         basePrimary,
         {
@@ -402,7 +404,7 @@ export async function getHardwareSnapshot({ force = false } = {}) {
 async function runLimited(tasks, limit = 2) {
   const results = new Array(tasks.length);
   let next = 0;
-  const workerCount = Math.max(1, tasks.length);
+  const workerCount = Math.max(1, Math.min(tasks.length, Math.max(1, Number.parseInt(String(limit || 1), 10) || 1)));
   async function worker() {
     while (next < tasks.length) {
       const index = next;

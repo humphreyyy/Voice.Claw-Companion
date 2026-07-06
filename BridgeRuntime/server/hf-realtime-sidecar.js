@@ -22,9 +22,11 @@ const HF_STDERR_LOG = join(HF_LOG_DIR, 'hf-speech-to-speech.err.log');
 const PRIORITY_HELPER_PLIST = '/Library/LaunchDaemons/ai.voiceclaw.priority-helper.plist';
 const HF_HOST = process.env.VOICECLAW_HF_HOST || '127.0.0.1';
 const HF_PORT = Number.parseInt(process.env.VOICECLAW_HF_PORT || '18765', 10);
-const HF_POOL_SIZE = Math.max(1, Number.parseInt(process.env.VOICECLAW_HF_POOL_SIZE || '8', 10));
 const VOICECLAW_LOGICAL_CORES = Math.max(1, os.cpus().length || 1);
-const VOICECLAW_AGGRESSIVE_THREADS = Math.max(4, Number.parseInt(process.env.VOICECLAW_AGGRESSIVE_THREADS || String(VOICECLAW_LOGICAL_CORES), 10));
+const requestedHFPoolSize = Number.parseInt(process.env.VOICECLAW_HF_POOL_SIZE || '2', 10);
+const HF_POOL_SIZE = Math.max(1, Math.min(2, Number.isFinite(requestedHFPoolSize) ? requestedHFPoolSize : 2));
+const requestedAggressiveThreads = Number.parseInt(process.env.VOICECLAW_AGGRESSIVE_THREADS || String(VOICECLAW_LOGICAL_CORES), 10);
+const VOICECLAW_AGGRESSIVE_THREADS = Math.max(2, Math.min(16, Number.isFinite(requestedAggressiveThreads) ? requestedAggressiveThreads : VOICECLAW_LOGICAL_CORES));
 // HF speech-to-speech currently disables live transcription on Apple Silicon
 // when --num_pipelines > 1 because progressive STT contends on the global MLX
 // lock. VoiceClaw gets parallelism from multiple hot sidecars instead.
