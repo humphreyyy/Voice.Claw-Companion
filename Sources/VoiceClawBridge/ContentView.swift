@@ -1298,6 +1298,14 @@ private struct PairingPanel: View {
                         .disabled(store.pairingURL.isEmpty)
                     }
                     .buttonStyle(.bordered)
+
+                    if !store.pairingQRCodeValue.isEmpty,
+                       store.pairingQRCodeValue != store.pairingURL {
+                        Text("The QR code uses a compact secure setup link. Copy Setup JSON still contains the full payload shown above.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }
@@ -1310,7 +1318,8 @@ private struct PairingPanel: View {
     }
 
     private var setupCodeValue: String {
-        store.pairingURL.isEmpty ? store.pairingJSON : store.pairingURL
+        if !store.pairingQRCodeValue.isEmpty { return store.pairingQRCodeValue }
+        return store.pairingURL.isEmpty ? store.pairingJSON : store.pairingURL
     }
 }
 

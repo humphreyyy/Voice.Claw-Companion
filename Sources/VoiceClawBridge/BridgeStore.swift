@@ -219,6 +219,7 @@ final class BridgeStore: ObservableObject {
     @Published var pairingJSON: String = ""
     @Published var pairingPreview: String = ""
     @Published var pairingURL: String = ""
+    @Published var pairingQRCodeValue: String = ""
     @Published var lastLog: String = ""
     @Published var lastRefreshDate: Date?
     @Published var setupAdvice: String = "Click Install and Start to install the bridge and configure Tailscale Serve for this port."
@@ -468,6 +469,7 @@ final class BridgeStore: ObservableObject {
         pairingJSON = ""
         pairingPreview = ""
         pairingURL = ""
+        pairingQRCodeValue = ""
         lastLog = "Selected the default bridge port. Click Install and Start to create a fresh setup payload for this port."
     }
 
@@ -526,6 +528,7 @@ final class BridgeStore: ObservableObject {
         pairingJSON = ""
         pairingPreview = ""
         pairingURL = ""
+        pairingQRCodeValue = ""
         lastLog = "Selected OpenClaw install folder: \(url.path). Click Install and Start to apply it to the bridge."
     }
 
@@ -764,6 +767,7 @@ final class BridgeStore: ObservableObject {
             pairingJSON = ""
             pairingPreview = ""
             pairingURL = ""
+            pairingQRCodeValue = ""
             lastLog = "Selected unused test port \(response.suggestedPort). Nothing changed on this Mac yet. Click Install and Start to configure the bridge and Tailscale Serve for this port, then pair the phone again."
             status = .idle
             await refreshStatus()
@@ -791,6 +795,7 @@ final class BridgeStore: ObservableObject {
             pairingJSON = ""
             pairingPreview = ""
             pairingURL = ""
+            pairingQRCodeValue = ""
             if removeTailscaleMapping {
                 let networkSummary = resetResponse?.tailscaleReset?.summary ?? "No matching VoiceClaw Tailscale Serve mapping needed removal."
                 lastLog = "Reset complete. VoiceClaw removed its LaunchAgent and local bridge config. \(networkSummary) Tailscale itself, OpenClaw, and Node.js were not changed."
@@ -1071,6 +1076,7 @@ final class BridgeStore: ObservableObject {
             pairingJSON = json
             pairingPreview = Self.redactedPairingJSON(json)
             pairingURL = Self.deepLink(for: json)
+            pairingQRCodeValue = pairingURL
             return
         }
 
@@ -1114,6 +1120,7 @@ final class BridgeStore: ObservableObject {
         pairingJSON = json
         pairingPreview = Self.redactedPairingJSON(json)
         pairingURL = Self.deepLink(for: json)
+        pairingQRCodeValue = Self.compactDeepLink(for: updated) ?? pairingURL
     }
 
     private func refreshPairingPayloadSecrets() {
@@ -1760,6 +1767,52 @@ final class BridgeStore: ObservableObject {
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
         return "voiceclaw://setup?payload=\(encoded)"
+    }
+
+    private static func compactDeepLink(for payload: [String: Any]) -> String? {
+        guard let baseURLString = payload["TailscaleBaseURL"] as? String,
+              !baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let payloadURL = bridgeEndpointURL(baseURLString: baseURLString, path: "/realtime/setup-payload"),
+              var components = URLComponents(string: "voiceclaw://setup")
+        else { return nil }
+
+        var items = [
+            URLQueryItem(name: "v", value: "2"),
+            URLQueryItem(name: "payload_url", value: payloadURL.absoluteString),
+            URLQueryItem(name: "include_openai_key", value: ((payload["OpenAIAPIKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? "1" : "0"),
+            URLQueryItem(name: "include_cerebras_key", value: ((payload["CerebrasAPIKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? "1" : "0"),
+        ]
+
+        if let token = payload["OpenClawGatewayToken"] as? String,
+           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(URLQueryItem(name: "gateway_token", value: token))
+        }
+
+        if let password = payload["OpenClawGatewayPassword"] as? String,
+           !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(URLQueryItem(name: "gateway_password", value: password))
+        }
+
+        components.queryItems = items
+        return components.url?.absoluteString
+    }
+
+    private static func bridgeEndpointURL(baseURLString: String, path: String) -> URL? {
+        let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard var components = URLComponents(string: candidate),
+              components.host?.isEmpty == false
+        else { return nil }
+
+        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let endpointPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.path = "/" + [basePath, endpointPath]
+            .filter { !$0.isEmpty }
+            .joined(separator: "/")
+        components.query = nil
+        return components.url
     }
 
     private static func redactedPairingJSON(_ json: String) -> String {

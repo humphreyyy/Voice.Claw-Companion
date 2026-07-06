@@ -270,6 +270,38 @@ function loadVoiceClawBridgeConfig() {
   }
 }
 
+function setupPayloadFromBridgeConfig(options = {}) {
+  const cfg = loadVoiceClawBridgeConfig();
+  const includeOpenAIAPIKey = options.includeOpenAIAPIKey !== false;
+  const includeCerebrasAPIKey = options.includeCerebrasAPIKey !== false;
+  return {
+    VoiceClawSetupVersion: 2,
+    TailscaleBaseURL: String(cfg.tailscaleBaseURL || ''),
+    BridgePath: '/realtime/openclaw-turn',
+    OpenClawInstallPath: String(cfg.openClawInstallPath || join(homedir(), '.openclaw')),
+    OpenClawGatewayToken: String(cfg.gatewayToken || ''),
+    OpenClawGatewayPassword: String(cfg.gatewayPassword || ''),
+    OpenClawAgent: String(cfg.openClawAgentName || cfg.openClawAgent || 'main'),
+    RouteMode: 'openclaw-bridge',
+    RealtimeModel: REALTIME_MODEL,
+    InstantModel: String(cfg.instantModel || 'gpt-5-chat-latest'),
+    InstantWebSearch: cfg.instantWebSearch !== false,
+    RealtimeAuthMode: String(cfg.realtimeAuthMode || 'api-key'),
+    RealtimeAuthFallbackToAPIKey: cfg.realtimeAuthFallbackToAPIKey === true,
+    OpenAIAPIKey: includeOpenAIAPIKey ? String(cfg.openAIAPIKey || cfg.OpenAIAPIKey || cfg.openAIApiKey || cfg.openaiAPIKey || cfg.openaiApiKey || cfg.apiKey || '') : '',
+    ChatGPTOAuthAccessToken: String(cfg.ChatGPTOAuthAccessToken || cfg.openAIChatGPTOAuthAccessToken || cfg.openAIOAuthAccessToken || ''),
+    ChatGPTOAuthRefreshToken: String(cfg.ChatGPTOAuthRefreshToken || cfg.openAIChatGPTOAuthRefreshToken || cfg.openAIOAuthRefreshToken || ''),
+    ChatGPTOAuthExpiresAt: cfg.ChatGPTOAuthExpiresAt || cfg.openAIChatGPTOAuthExpiresAt || cfg.openAIOAuthExpiresAt || 0,
+    ChatGPTOAuthAccountID: String(cfg.ChatGPTOAuthAccountID || cfg.openAIChatGPTOAuthAccountID || cfg.openAIOAuthAccountID || ''),
+    CerebrasAPIKey: includeCerebrasAPIKey ? String(cfg.cerebrasAPIKey || cfg.CerebrasAPIKey || '') : '',
+    WatchPublicBridgeURL: String(cfg.watchPublicBridgeURL || ''),
+    PowerhouseMode: String(cfg.powerhouseMode || 'light'),
+    CompanionVersion: RUNTIME_MANIFEST.version || '',
+    CompanionBuild: RUNTIME_MANIFEST.build || '',
+    CompanionReleaseTag: RUNTIME_MANIFEST.version ? `v${RUNTIME_MANIFEST.version}` : '',
+  };
+}
+
 function companionVoiceRuntimeProfileFromPayload(payload = {}) {
   const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
   return {
@@ -4873,6 +4905,16 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (isProtectedBridgePath(urlPath) && !requireBridgeAuth(req, res)) {
+      return;
+    }
+
+    if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/setup-payload`) {
+      const setupURL = new URL(req.url, `http://localhost:${PORT}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(setupPayloadFromBridgeConfig({
+        includeOpenAIAPIKey: setupURL.searchParams.get('include_openai_key') !== '0',
+        includeCerebrasAPIKey: setupURL.searchParams.get('include_cerebras_key') !== '0',
+      })));
       return;
     }
 
