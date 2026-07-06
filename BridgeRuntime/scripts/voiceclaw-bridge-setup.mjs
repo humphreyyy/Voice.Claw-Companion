@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import JSON5 from 'json5';
 import { getHFRealtimeStatus, installHFRealtimeRuntime } from '../server/hf-realtime-sidecar.js';
+import { getPowerhouseStatus, normalizePowerhouseMode } from '../server/powerhouse-manager.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,9 @@ const CONFIG_FILE = join(CONFIG_DIR, 'bridge.json');
 const RUNTIME_MANIFEST_FILE = join(PROJECT_ROOT, 'runtime-manifest.json');
 const LAUNCH_AGENT_LABEL = 'ai.voiceclaw.bridge';
 const LAUNCH_AGENT_FILE = join(HOME, 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
+const PRIORITY_HELPER_LABEL = 'ai.voiceclaw.priority-helper';
+const PRIORITY_HELPER_FILE = `/Library/LaunchDaemons/${PRIORITY_HELPER_LABEL}.plist`;
+const PRIORITY_HELPER_SCRIPT = '/Library/Application Support/VoiceClaw Companion/voiceclaw-priority-helper.sh';
 const DEFAULT_BRIDGE_PORT = 12321;
 const DEFAULT_OPENCLAW_AGENT_NAME = 'main';
 const DEFAULT_QWEN_MODEL = process.env.COMPANION_VOICE_QWEN_MODEL || 'qwen3.5:2b';
@@ -46,12 +50,15 @@ function parseArgs(argv) {
     diagnose: false,
     suggestPort: false,
     installCompanionVoiceDependencies: false,
+    installPriorityHelper: false,
+    uninstallPriorityHelper: false,
     refreshLaunchAgent: false,
     port: null,
     openClawInstallPath: null,
     openClawAgentName: null,
     realtimeAuthMode: null,
     realtimeAuthFallbackToAPIKey: null,
+    powerhouseMode: null,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -65,6 +72,8 @@ function parseArgs(argv) {
     else if (arg === '--diagnose') options.diagnose = true;
     else if (arg === '--suggest-port') options.suggestPort = true;
     else if (arg === '--install-companion-voice-deps') options.installCompanionVoiceDependencies = true;
+    else if (arg === '--install-priority-helper') options.installPriorityHelper = true;
+    else if (arg === '--uninstall-priority-helper') options.uninstallPriorityHelper = true;
     else if (arg === '--refresh-launch-agent') options.refreshLaunchAgent = true;
     else if (arg === '--port') options.port = Number(argv[++index]);
     else if (arg.startsWith('--port=')) options.port = Number(arg.slice('--port='.length));
@@ -76,6 +85,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--realtime-auth-mode=')) options.realtimeAuthMode = normalizeRealtimeAuthMode(arg.slice('--realtime-auth-mode='.length));
     else if (arg === '--realtime-auth-fallback-to-api-key') options.realtimeAuthFallbackToAPIKey = true;
     else if (arg === '--no-realtime-auth-fallback-to-api-key') options.realtimeAuthFallbackToAPIKey = false;
+    else if (arg === '--powerhouse-mode') options.powerhouseMode = normalizePowerhouseMode(argv[++index]);
+    else if (arg.startsWith('--powerhouse-mode=')) options.powerhouseMode = normalizePowerhouseMode(arg.slice('--powerhouse-mode='.length));
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -105,6 +116,9 @@ Options:
   --suggest-port             Print a fresh unused test port without changing system state
   --install-companion-voice-deps
                              Install missing Companion Realtime Voice dependencies after app confirmation
+  --install-priority-helper  Install optional root LaunchDaemon that renices VoiceClaw realtime sidecars
+  --uninstall-priority-helper
+                             Remove the optional VoiceClaw realtime priority LaunchDaemon
   --refresh-launch-agent     Reinstall and restart only VoiceClaw's LaunchAgent from the current app runtime
   --json                     Print only the phone setup JSON
   --port 12321               Bridge/Tailscale HTTPS port
@@ -112,6 +126,7 @@ Options:
   --openclaw-agent NAME      OpenClaw agent id, usually the configured OpenClaw default
   --realtime-auth-mode MODE   api-key or openclaw-oauth
   --realtime-auth-fallback-to-api-key / --no-realtime-auth-fallback-to-api-key
+  --powerhouse-mode MODE      light, balanced, maximum, or presentation
 
 Recommended first run:
   node scripts/voiceclaw-bridge-setup.mjs --install --start --tailscale
@@ -153,6 +168,13 @@ function normalizeOpenClawAgentName(value) {
 
 function normalizeOpenClawAgentID(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function prepareSetForPowerhouseMode(mode = 'maximum') {
+  const normalized = normalizePowerhouseMode(mode || 'maximum');
+  if (normalized === 'maximum' || normalized === 'presentation') return 'full';
+  if (normalized === 'balanced') return 'recommended';
+  return 'selected';
 }
 
 function parseOpenClawConfig(raw) {
@@ -788,9 +810,51 @@ async function checkNetworkAccess(port, tailscale = {}) {
   };
 }
 
-async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallPath, openClawAgentName, companionVoice, launchAgent, runtimeIntegrity }) {
+async function checkPriorityAccess() {
+  const taskpolicyPath = await resolveOptionalExecutable('taskpolicy', '/usr/bin/taskpolicy');
+  const renicePath = await resolveOptionalExecutable('renice', '/usr/bin/renice');
+  const sudoPath = await resolveOptionalExecutable('sudo', '/usr/bin/sudo');
+  const helper = await checkPriorityHelper();
+  let sudoNonInteractive = false;
+  let sudoSummary = helper.loaded
+    ? 'Noninteractive sudo is not required because the VoiceClaw priority helper is loaded.'
+    : 'sudo is not available, so negative nice priority cannot be applied.';
+  if (sudoPath) {
+    if (!helper.loaded) {
+      try {
+        await execFileAsync(sudoPath, ['-n', 'true'], { timeout: 2500 });
+        sudoNonInteractive = true;
+        sudoSummary = 'Noninteractive sudo is currently authorized; VoiceClaw can apply negative nice priority to hot realtime sidecars.';
+      } catch {
+        sudoSummary = 'Noninteractive sudo is not currently authorized; VoiceClaw will still use taskpolicy foreground scheduling, but negative nice priority will be skipped unless the priority helper is installed.';
+      }
+    }
+  }
+  const taskpolicySummary = taskpolicyPath
+    ? 'taskpolicy is available for foreground latency/throughput policy.'
+    : 'taskpolicy is not available; process scheduling policy cannot be adjusted.';
+  const reniceSummary = renicePath
+    ? (helper.loaded ? 'renice can be applied through the loaded root helper.' : (sudoNonInteractive ? 'renice can be applied through sudo -n.' : 'renice exists, but negative nice requires admin authorization.'))
+    : 'renice is not available.';
+  const helperSummary = helper.loaded
+    ? 'The VoiceClaw priority helper is loaded and will continuously boost realtime sidecars and bridge runtime processes.'
+    : 'The optional VoiceClaw priority helper is not loaded.';
+  return {
+    state: taskpolicyPath ? (sudoNonInteractive || helper.loaded ? 'ready' : 'partial') : 'needs_action',
+    taskpolicyPath: taskpolicyPath || '',
+    renicePath: renicePath || '',
+    sudoPath: sudoPath || '',
+    sudoNonInteractive,
+    helper,
+    helperLoaded: helper.loaded,
+    summary: `${taskpolicySummary} ${reniceSummary} ${sudoSummary} ${helperSummary}`,
+  };
+}
+
+async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallPath, openClawAgentName, companionVoice, launchAgent, runtimeIntegrity, priority }) {
   launchAgent = launchAgent || await checkLaunchAgentAccess(local);
   runtimeIntegrity = runtimeIntegrity || checkRuntimeIntegrity(local, launchAgent);
+  priority = priority || await checkPriorityAccess();
   const openClaw = await checkOpenClawAccess(openClawInstallPath, openClawAgentName);
   const hermes = await checkHermesAccess();
   const network = await checkNetworkAccess(port, tailscale);
@@ -881,6 +945,14 @@ async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallP
       installable: companionVoice?.state !== 'ready',
     }),
     statusItem({
+      id: 'realtime-priority',
+      label: 'Realtime process priority',
+      state: priority.state === 'ready' ? 'ready' : (priority.state === 'partial' ? 'manual' : 'needs_action'),
+      summary: priority.summary,
+      detail: `taskpolicy: ${priority.taskpolicyPath || '(missing)'}\nrenice: ${priority.renicePath || '(missing)'}\nsudo -n: ${priority.sudoNonInteractive ? 'authorized' : 'not authorized'}\nhelper: ${priority.helperLoaded ? 'loaded' : 'not loaded'}`,
+      action: priority.helperLoaded || priority.sudoNonInteractive ? 'Verify Everything' : 'Install Realtime Priority Helper',
+    }),
+    statusItem({
       id: 'hf-cache',
       label: 'HF model cache',
       state: hfCacheWritable ? 'ready' : 'needs_action',
@@ -922,6 +994,7 @@ async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallP
     openClaw,
     hermes,
     network,
+    priority,
   };
 }
 
@@ -971,8 +1044,8 @@ async function suggestFreshPort() {
   throw new Error('Could not find an unused local test port.');
 }
 
-async function checkCompanionVoiceDependencies(openClawInstallPath) {
-  const hfRealtime = await getHFRealtimeStatus({ prepareSet: 'recommended' }).catch((error) => ({
+async function checkCompanionVoiceDependencies(openClawInstallPath, { prepareSet = 'recommended' } = {}) {
+  const hfRealtime = await getHFRealtimeStatus({ prepareSet }).catch((error) => ({
     state: 'error',
     summary: `HF speech-to-speech runtime check failed: ${error?.message || String(error)}`,
     installPlan: {
@@ -1032,6 +1105,7 @@ async function checkCompanionVoiceDependencies(openClawInstallPath) {
     summary: hfReady
       ? (hfRealtime?.summary || `Companion Realtime Voice is ready: HF speech-to-speech runtime and selected STT profile${hfRealtime?.sttProfileLabel ? ` (${hfRealtime.sttProfileLabel})` : ''} are ready.`)
       : `Companion Realtime Voice needs setup: ${missing.join(', ')}.`,
+    prepareSet,
     hfRealtime,
     legacy: {
       state: sttReady && qwenReady && ttsReady ? 'ready' : 'needs_setup',
@@ -1091,19 +1165,17 @@ function buildCompanionVoiceInstallPlan({
 }) {
   const items = [];
   const brewAvailable = !!brewPath;
-  if (hfRealtime?.state !== 'ready') {
-    const hfItems = Array.isArray(hfRealtime?.installPlan?.items) ? hfRealtime.installPlan.items : [];
-    if (hfItems.length) {
-      items.push(...hfItems);
-    } else {
-      items.push({
-        id: 'hf-speech-to-speech-runtime',
-        label: 'HF speech-to-speech runtime',
-        detail: 'Installs the OpenAI Realtime-compatible Hugging Face VAD -> STT -> LLM -> TTS pipeline.',
-        installable: true,
-        command: 'install HF speech-to-speech runtime',
-      });
-    }
+  const hfItems = Array.isArray(hfRealtime?.installPlan?.items) ? hfRealtime.installPlan.items : [];
+  if (hfItems.length) {
+    items.push(...hfItems);
+  } else if (hfRealtime?.state !== 'ready') {
+    items.push({
+      id: 'hf-speech-to-speech-runtime',
+      label: 'HF speech-to-speech runtime',
+      detail: 'Installs the OpenAI Realtime-compatible Hugging Face VAD -> STT -> LLM -> TTS pipeline.',
+      installable: true,
+      command: 'install HF speech-to-speech runtime',
+    });
   }
   const hfInstallableCount = items.filter((item) => item.installable).length;
   return {
@@ -1160,8 +1232,8 @@ async function ensureOllamaReachable(brewPath = '') {
   return false;
 }
 
-async function installCompanionVoiceDependencies(openClawInstallPath) {
-  const before = await checkCompanionVoiceDependencies(openClawInstallPath);
+async function installCompanionVoiceDependencies(openClawInstallPath, { prepareSet = 'recommended' } = {}) {
+  const before = await checkCompanionVoiceDependencies(openClawInstallPath, { prepareSet });
   const items = before.installPlan?.items || [];
   const installed = [];
   const skipped = [];
@@ -1175,7 +1247,7 @@ async function installCompanionVoiceDependencies(openClawInstallPath) {
     }
     try {
       if (isHFRealtimeInstallItem(item)) {
-        await installHFRealtimeRuntime({ prepareSet: 'recommended' });
+        await installHFRealtimeRuntime({ prepareSet });
       } else if (item.id === 'ffmpeg') {
         if (!brewPath) throw new Error('Homebrew is required to install ffmpeg automatically.');
         await runCommand(brewPath, ['install', 'ffmpeg']);
@@ -1209,7 +1281,7 @@ async function installCompanionVoiceDependencies(openClawInstallPath) {
     }
   }
 
-  const diagnostics = await checkCompanionVoiceDependencies(openClawInstallPath);
+  const diagnostics = await checkCompanionVoiceDependencies(openClawInstallPath, { prepareSet });
   return {
     ok: failures.length === 0,
     installed,
@@ -1238,6 +1310,8 @@ async function diagnoseBridge(port) {
 
   const launchAgent = await checkLaunchAgentAccess(local);
   const runtimeIntegrity = checkRuntimeIntegrity(local, launchAgent);
+  const powerhouseMode = normalizePowerhouseMode(existing.powerhouseMode || existing.PowerhouseMode || 'maximum');
+  const companionPrepareSet = prepareSetForPowerhouseMode(powerhouseMode);
   let suggestedAction = 'Click Install and Start to install the bridge and configure Tailscale Serve for this port.';
   if (runtimeIntegrity.selfHealRecommended) {
     suggestedAction = 'The bridge is using an older runtime. VoiceClaw Companion will refresh the LaunchAgent from the current app bundle, then check again.';
@@ -1251,7 +1325,15 @@ async function diagnoseBridge(port) {
     suggestedAction = 'Choose a different port or manually review this Tailscale Serve mapping outside Voice.Claw. The app will not remove mappings it cannot identify as its own.';
   }
 
-  const companionVoice = await checkCompanionVoiceDependencies(openClawInstallPath);
+  const companionVoice = await checkCompanionVoiceDependencies(openClawInstallPath, { prepareSet: companionPrepareSet });
+  const powerhouse = await getPowerhouseStatus({
+    mode: powerhouseMode,
+  }).catch((error) => ({
+    state: 'error',
+    mode: powerhouseMode,
+    summary: `Powerhouse runtime status could not be checked: ${error?.message || String(error)}`,
+  }));
+  const priority = await checkPriorityAccess();
   const access = await buildAccessDiagnostics({
     port,
     local,
@@ -1261,6 +1343,7 @@ async function diagnoseBridge(port) {
     companionVoice,
     launchAgent,
     runtimeIntegrity,
+    priority,
   });
 
   return {
@@ -1270,6 +1353,8 @@ async function diagnoseBridge(port) {
     tailscale,
     runtimeIntegrity,
     companionVoice,
+    powerhouse,
+    priority,
     access,
     suggestedAction,
   };
@@ -1289,6 +1374,153 @@ function xmlEscape(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;');
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function priorityHelperScript() {
+  const niceValue = process.env.VOICECLAW_HF_NICE || '-5';
+  const projectEntryPoint = join(PROJECT_ROOT, 'server', 'index.js');
+  return `#!/bin/zsh
+set -u
+PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+NICE_VALUE=${shellQuote(niceValue)}
+HF_CLI=${shellQuote(join(HOME, '.voiceclaw', 'hf-runtime', 'bin', 'speech-to-speech'))}
+BRIDGE_ENTRY=${shellQuote(projectEntryPoint)}
+BRIDGE_PATTERNS=(
+  "$BRIDGE_ENTRY"
+  "/Applications/VoiceClaw Companion.app/Contents/Resources/BridgeRuntime/server/index.js"
+  "Voice.Claw-Companion/BridgeRuntime/server/index.js"
+  "VoiceClaw-Companion/BridgeRuntime/server/index.js"
+)
+
+boost_pid() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
+  /usr/sbin/taskpolicy -B -t 0 -l 0 -p "$pid" >/dev/null 2>&1 || true
+  /usr/bin/renice -n "$NICE_VALUE" -p "$pid" >/dev/null 2>&1 || true
+}
+
+if [[ -x "$HF_CLI" ]]; then
+  /usr/bin/pgrep -f "$HF_CLI" 2>/dev/null | while read -r pid; do
+    boost_pid "$pid"
+  done
+fi
+
+if [[ -f "$BRIDGE_ENTRY" ]]; then
+  /usr/bin/pgrep -f "$BRIDGE_ENTRY" 2>/dev/null | while read -r pid; do
+    boost_pid "$pid"
+  done
+fi
+
+for pattern in "\${BRIDGE_PATTERNS[@]}"; do
+  [[ -n "$pattern" ]] || continue
+  /usr/bin/pgrep -f "$pattern" 2>/dev/null | while read -r pid; do
+    boost_pid "$pid"
+  done
+done
+
+exit 0
+`;
+}
+
+function priorityHelperPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${PRIORITY_HELPER_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${xmlEscape(PRIORITY_HELPER_SCRIPT)}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(join(CONFIG_DIR, 'logs', 'priority-helper.out.log'))}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(join(CONFIG_DIR, 'logs', 'priority-helper.err.log'))}</string>
+</dict>
+</plist>
+`;
+}
+
+async function runAdministratorShell(command) {
+  const escaped = command.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+  await execFileAsync('/usr/bin/osascript', [
+    '-e',
+    `do shell script "${escaped}" with administrator privileges`,
+  ], { timeout: 60_000, maxBuffer: 1024 * 1024 });
+}
+
+async function checkPriorityHelper() {
+  const plistExists = existsSync(PRIORITY_HELPER_FILE);
+  const scriptExists = existsSync(PRIORITY_HELPER_SCRIPT);
+  let loaded = false;
+  let detail = '';
+  try {
+    const { stdout } = await execFileAsync('/bin/launchctl', ['print', `system/${PRIORITY_HELPER_LABEL}`], {
+      timeout: 5000,
+      maxBuffer: 256 * 1024,
+    });
+    loaded = true;
+    detail = stdout.split('\n').slice(0, 12).join('\n');
+  } catch (error) {
+    detail = error?.message || String(error);
+  }
+  return {
+    label: PRIORITY_HELPER_LABEL,
+    plist: PRIORITY_HELPER_FILE,
+    script: PRIORITY_HELPER_SCRIPT,
+    plistExists,
+    scriptExists,
+    loaded,
+    state: loaded && plistExists && scriptExists ? 'ready' : (plistExists || scriptExists ? 'needs_restart' : 'not_installed'),
+    summary: loaded && plistExists && scriptExists
+      ? 'VoiceClaw realtime priority helper is installed and loaded; it can apply root-level renice to hot HF sidecars.'
+      : (plistExists || scriptExists)
+        ? 'VoiceClaw realtime priority helper files exist, but launchd does not report the helper loaded.'
+        : 'VoiceClaw realtime priority helper is not installed; the Companion will use taskpolicy and noninteractive sudo only.',
+    detail,
+  };
+}
+
+async function installPriorityHelper() {
+  await mkdir(CONFIG_DIR, { recursive: true });
+  await mkdir(join(CONFIG_DIR, 'logs'), { recursive: true });
+  const stagingDir = join(CONFIG_DIR, 'priority-helper-staging');
+  await mkdir(stagingDir, { recursive: true });
+  const stagedScript = join(stagingDir, 'voiceclaw-priority-helper.sh');
+  const stagedPlist = join(stagingDir, `${PRIORITY_HELPER_LABEL}.plist`);
+  await writeFile(stagedScript, priorityHelperScript(), { mode: 0o700 });
+  await writeFile(stagedPlist, priorityHelperPlist(), { mode: 0o600 });
+  const command = [
+    `mkdir -p ${shellQuote(dirname(PRIORITY_HELPER_SCRIPT))}`,
+    `cp ${shellQuote(stagedScript)} ${shellQuote(PRIORITY_HELPER_SCRIPT)}`,
+    `cp ${shellQuote(stagedPlist)} ${shellQuote(PRIORITY_HELPER_FILE)}`,
+    `chown root:wheel ${shellQuote(PRIORITY_HELPER_SCRIPT)} ${shellQuote(PRIORITY_HELPER_FILE)}`,
+    `chmod 755 ${shellQuote(PRIORITY_HELPER_SCRIPT)}`,
+    `chmod 644 ${shellQuote(PRIORITY_HELPER_FILE)}`,
+    `/bin/launchctl bootout system/${PRIORITY_HELPER_LABEL} >/dev/null 2>&1 || true`,
+    `/bin/launchctl bootstrap system ${shellQuote(PRIORITY_HELPER_FILE)}`,
+    `/bin/launchctl kickstart -k system/${PRIORITY_HELPER_LABEL}`,
+  ].join(' && ');
+  await runAdministratorShell(command);
+  return await checkPriorityHelper();
+}
+
+async function uninstallPriorityHelper() {
+  const command = [
+    `/bin/launchctl bootout system/${PRIORITY_HELPER_LABEL} >/dev/null 2>&1 || true`,
+    `rm -f ${shellQuote(PRIORITY_HELPER_FILE)} ${shellQuote(PRIORITY_HELPER_SCRIPT)}`,
+  ].join(' && ');
+  await runAdministratorShell(command);
+  return await checkPriorityHelper();
 }
 
 async function installLaunchAgent(config) {
@@ -1332,6 +1564,14 @@ async function installLaunchAgent(config) {
     <string>${xmlEscape(config.openClawAgentName)}</string>
     <key>REALTIME_LOG_DIR</key>
     <string>${xmlEscape(logDir)}</string>
+    <key>VOICECLAW_CONFIG_PATH</key>
+    <string>${xmlEscape(CONFIG_FILE)}</string>
+    <key>VOICECLAW_CONFIG</key>
+    <string>${xmlEscape(CONFIG_FILE)}</string>
+    <key>VOICECLAW_POWERHOUSE_MODE</key>
+    <string>${xmlEscape(config.powerhouseMode || 'maximum')}</string>
+    <key>VOICECLAW_POWERHOUSE_BOOT_PREWARM</key>
+    <string>true</string>
     <key>PATH</key>
     <string>${xmlEscape(RUNTIME_PATH)}</string>
   </dict>
@@ -1378,6 +1618,7 @@ function buildPairingPayload(config) {
     RealtimeModel: 'gpt-realtime-2',
     RealtimeAuthMode: config.realtimeAuthMode,
     RealtimeAuthFallbackToAPIKey: config.realtimeAuthFallbackToAPIKey,
+    PowerhouseMode: config.powerhouseMode || 'maximum',
   };
 }
 
@@ -1388,6 +1629,7 @@ function printSummary(config, pairingPayload, actions) {
   console.log(`Bridge URL: ${config.tailscaleBaseURL || '(Tailscale DNS unavailable)'}`);
   console.log(`OpenClaw path: ${config.openClawInstallPath}`);
   console.log(`OpenClaw agent: ${config.openClawAgentName}`);
+  console.log(`Powerhouse mode: ${config.powerhouseMode || 'maximum'}`);
   console.log(`Token: ${config.gatewayToken ? 'generated' : 'missing'}`);
   for (const action of actions) console.log(`- ${action}`);
   console.log('\nPaste this setup JSON into VoiceClaw Settings, or show it as a QR code from the Mac companion:\n');
@@ -1413,11 +1655,46 @@ async function main() {
   if (options.installCompanionVoiceDependencies) {
     const existing = await readBridgeConfig();
     const openClawInstallPath = normalizeInstallPath(options.openClawInstallPath || existing.openClawInstallPath);
-    const result = await installCompanionVoiceDependencies(openClawInstallPath);
+    const prepareSet = prepareSetForPowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'maximum');
+    const result = await installCompanionVoiceDependencies(openClawInstallPath, { prepareSet });
     if (options.jsonOnly) {
       console.log(JSON.stringify(result, null, 2));
     } else {
       console.log(result.diagnostics?.companionVoice?.summary || result.diagnostics?.summary || 'Companion Realtime Voice dependency install completed.');
+    }
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
+
+  if (options.installPriorityHelper) {
+    const helper = await installPriorityHelper();
+    const result = {
+      ok: helper.state === 'ready',
+      installedPriorityHelper: helper.state === 'ready',
+      priority: await checkPriorityAccess(),
+      helper,
+    };
+    if (options.jsonOnly) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(helper.summary);
+    }
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
+
+  if (options.uninstallPriorityHelper) {
+    const helper = await uninstallPriorityHelper();
+    const result = {
+      ok: helper.state === 'not_installed',
+      uninstalledPriorityHelper: helper.state === 'not_installed',
+      priority: await checkPriorityAccess(),
+      helper,
+    };
+    if (options.jsonOnly) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(helper.summary);
     }
     if (!result.ok) process.exitCode = 1;
     return;
@@ -1437,6 +1714,7 @@ async function main() {
       realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'openclaw-oauth'),
       realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? false,
       cerebrasAPIKey: existing.cerebrasAPIKey || '',
+      powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'maximum'),
     };
     await writeBridgeConfig(config);
     await installLaunchAgent(config);
@@ -1481,6 +1759,7 @@ async function main() {
     realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'openclaw-oauth'),
     realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? false,
     cerebrasAPIKey: existing.cerebrasAPIKey || '',
+    powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'maximum'),
   };
   config.tailscaleBaseURL = config.tailscaleDNSName ? `https://${config.tailscaleDNSName}:${config.port}` : (existing.tailscaleBaseURL || '');
 

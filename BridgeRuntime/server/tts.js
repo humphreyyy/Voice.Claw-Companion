@@ -72,6 +72,26 @@ let lastEngine = '';
 let lastFallback = '';
 let cachedBackendStatus = null;
 
+function isAbortError(err) {
+  return err?.message === 'aborted'
+    || err?.name === 'AbortError'
+    || err?.code === 'ABORT_ERR'
+    || String(err || '').includes('aborted');
+}
+
+function abortedStreamSummary({ engine, sampleRate = 16000, total = 0, started = false } = {}) {
+  return {
+    streamed: !!started,
+    aborted: true,
+    engine,
+    encoding: 'pcm_s16le',
+    sampleRate,
+    channels: 1,
+    audioBytes: total,
+    audioContentType: 'audio/pcm',
+  };
+}
+
 function openAICircuitOpen() {
   return OPENAI_TTS?.apiKey && Date.now() < openAICircuitUntil;
 }
@@ -483,7 +503,7 @@ export async function synthesize(text, { signal, voice, speed } = {}) {
       lastFallback = '';
       return audio;
     } catch (err) {
-      if (err.message === 'aborted') throw err;
+      if (isAbortError(err)) throw err;
       markOpenAIFailure(err);
       console.warn(`[tts] OpenAI streaming (${voiceCfg.id}) failed, falling back to Piper Ryan:`, err.message);
       return await synthesizeLocalFallback(text, { signal, speedPreset, reason: 'openai-failed' });
@@ -502,7 +522,7 @@ export async function synthesize(text, { signal, voice, speed } = {}) {
       lastFallback = '';
       return audio;
     } catch (err) {
-      if (err.message === 'aborted') throw err;
+      if (isAbortError(err)) throw err;
       console.warn(`[tts] Piper (${voiceCfg.id}) failed, falling back to macOS say:`, err.message);
       lastFallback = 'say-after-piper-failed';
       const audio = await synthesizeSay(text, { signal, sayVoice: 'Samantha', rate: speedPreset.sayRate });
@@ -525,7 +545,7 @@ export async function synthesize(text, { signal, voice, speed } = {}) {
       lastFallback = '';
       return audio;
     } catch (err) {
-      if (err.message === 'aborted') throw err;
+      if (isAbortError(err)) throw err;
       console.warn(`[tts] Kokoro (${voiceCfg.id}) failed, falling back to Piper Ryan:`, err.message);
       return await synthesizeLocalFallback(text, { signal, speedPreset, reason: 'kokoro-failed' });
     }
@@ -563,7 +583,7 @@ export async function synthesizeStream(text, { signal, voice, speed, onStart, on
       lastFallback = '';
       return summary;
     } catch (err) {
-      if (err.message === 'aborted') throw err;
+      if (isAbortError(err)) return abortedStreamSummary({ engine: 'openai', sampleRate: 24000 });
       markOpenAIFailure(err);
       console.warn(`[tts-stream] OpenAI PCM streaming (${voiceCfg.id}) failed, falling back to Piper Ryan:`, err.message);
       return await synthesizePiperPCMStreaming(reply, {
@@ -605,7 +625,7 @@ export async function synthesizeStream(text, { signal, voice, speed, onStart, on
       lastFallback = '';
       return summary;
     } catch (err) {
-      if (err.message === 'aborted') throw err;
+      if (isAbortError(err)) return abortedStreamSummary({ engine: 'piper', sampleRate: piperSampleRate(voiceCfg.modelPath) });
       console.warn(`[tts-stream] Piper streaming (${voiceCfg.id}) failed, falling back to batch macOS say:`, err.message);
       lastFallback = 'say-after-piper-stream-failed';
       const audio = await synthesizeSay(reply, { signal, sayVoice: 'Samantha', rate: speedPreset.sayRate });
@@ -631,7 +651,7 @@ export async function synthesizeStream(text, { signal, voice, speed, onStart, on
       lastFallback = '';
       return summary;
     } catch (err) {
-      if (err.message === 'aborted') throw err;
+      if (isAbortError(err)) return abortedStreamSummary({ engine: 'kokoro', sampleRate: 16000 });
       console.warn(`[tts-stream] Kokoro streaming (${voiceCfg.id}) failed, falling back to Piper Ryan:`, err.message);
       return await synthesizePiperPCMStreaming(reply, {
         signal,
@@ -658,7 +678,7 @@ async function synthesizeLocalFallback(text, { signal, speedPreset, reason } = {
     lastFallback = reason || 'fallback';
     return audio;
   } catch (piperErr) {
-    if (piperErr.message === 'aborted') throw piperErr;
+    if (isAbortError(piperErr)) throw piperErr;
     console.warn('[tts] Piper fallback failed after OpenAI failure, falling back to macOS say:', piperErr.message);
     const audio = await synthesizeSay(text, { signal, sayVoice: 'Samantha', rate: speedPreset.sayRate });
     lastEngine = 'say';
@@ -677,6 +697,7 @@ async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScal
   let total = 0;
   let settled = false;
   let started = false;
+  let aborted = false;
 
   let closeError = null;
   const closePromise = new Promise((resolve, reject) => {
@@ -687,8 +708,9 @@ async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScal
       fn();
     };
     const onAbort = () => {
+      aborted = true;
       proc.kill('SIGTERM');
-      finish(() => reject(new Error('aborted')));
+      finish(resolve);
     };
     signal?.addEventListener('abort', onAbort, { once: true });
     proc.stderr.on('data', d => { stderr += d; });
@@ -702,8 +724,9 @@ async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScal
   });
 
   if (signal?.aborted) {
+    aborted = true;
     proc.kill('SIGTERM');
-    throw new Error('aborted');
+    return abortedStreamSummary({ engine: 'piper', sampleRate, total, started });
   }
 
   proc.stdin.write(text);
@@ -711,7 +734,10 @@ async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScal
 
   try {
     for await (const chunk of proc.stdout) {
-      if (signal?.aborted) throw new Error('aborted');
+      if (signal?.aborted) {
+        aborted = true;
+        break;
+      }
       if (!chunk?.length) continue;
       const buffer = Buffer.from(chunk);
       if (!started) {
@@ -729,11 +755,24 @@ async function synthesizePiperPCMStreaming(text, { signal, modelPath, lengthScal
       await onChunk?.(buffer);
     }
     await closePromise;
-    if (closeError) throw closeError;
+    if (closeError && !(aborted || isAbortError(closeError))) throw closeError;
   } catch (err) {
     proc.kill('SIGTERM');
     await closePromise;
+    if (aborted || isAbortError(err)) {
+      const summary = abortedStreamSummary({ engine: 'piper', sampleRate, total, started });
+      if (started) await onEnd?.(summary);
+      console.log(`[tts-stream] piper aborted after ${total} bytes`);
+      return summary;
+    }
     throw err;
+  }
+
+  if (aborted || signal?.aborted) {
+    const summary = abortedStreamSummary({ engine: 'piper', sampleRate, total, started });
+    if (started) await onEnd?.(summary);
+    console.log(`[tts-stream] piper aborted after ${total} bytes`);
+    return summary;
   }
 
   if (!total) throw new Error('piper returned no audio');
@@ -770,6 +809,7 @@ async function synthesizeKokoroPCMStreaming(text, { signal, pythonBin, model, ko
   let total = 0;
   let settled = false;
   let started = false;
+  let aborted = false;
 
   let closeError = null;
   const closePromise = new Promise((resolve, reject) => {
@@ -780,8 +820,9 @@ async function synthesizeKokoroPCMStreaming(text, { signal, pythonBin, model, ko
       fn();
     };
     const onAbort = () => {
+      aborted = true;
       proc.kill('SIGTERM');
-      finish(() => reject(new Error('aborted')));
+      finish(resolve);
     };
     signal?.addEventListener('abort', onAbort, { once: true });
     proc.stderr.on('data', d => { stderr += d; });
@@ -795,8 +836,9 @@ async function synthesizeKokoroPCMStreaming(text, { signal, pythonBin, model, ko
   });
 
   if (signal?.aborted) {
+    aborted = true;
     proc.kill('SIGTERM');
-    throw new Error('aborted');
+    return abortedStreamSummary({ engine: 'kokoro', sampleRate: 16000, total, started });
   }
 
   proc.stdin.write(text);
@@ -804,7 +846,10 @@ async function synthesizeKokoroPCMStreaming(text, { signal, pythonBin, model, ko
 
   try {
     for await (const chunk of proc.stdout) {
-      if (signal?.aborted) throw new Error('aborted');
+      if (signal?.aborted) {
+        aborted = true;
+        break;
+      }
       if (!chunk?.length) continue;
       const buffer = Buffer.from(chunk);
       if (!started) {
@@ -822,11 +867,24 @@ async function synthesizeKokoroPCMStreaming(text, { signal, pythonBin, model, ko
       await onChunk?.(buffer);
     }
     await closePromise;
-    if (closeError) throw closeError;
+    if (closeError && !(aborted || isAbortError(closeError))) throw closeError;
   } catch (err) {
     proc.kill('SIGTERM');
     await closePromise;
+    if (aborted || isAbortError(err)) {
+      const summary = abortedStreamSummary({ engine: 'kokoro', sampleRate: 16000, total, started });
+      if (started) await onEnd?.(summary);
+      console.log(`[tts-stream] kokoro aborted after ${total} bytes`);
+      return summary;
+    }
     throw err;
+  }
+
+  if (aborted || signal?.aborted) {
+    const summary = abortedStreamSummary({ engine: 'kokoro', sampleRate: 16000, total, started });
+    if (started) await onEnd?.(summary);
+    console.log(`[tts-stream] kokoro aborted after ${total} bytes`);
+    return summary;
   }
 
   if (!total) throw new Error(`kokoro returned no audio${stderr ? `: ${stderr.slice(0, 240)}` : ''}`);
@@ -896,6 +954,7 @@ async function synthesizeOpenAIPCMStreaming(text, { signal, model, voice, speed,
   signal?.addEventListener('abort', onAbort, { once: true });
   let total = 0;
   let started = false;
+  let aborted = false;
   try {
     const response = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
@@ -939,7 +998,10 @@ async function synthesizeOpenAIPCMStreaming(text, { signal, model, voice, speed,
     } else {
       const reader = response.body.getReader();
       while (true) {
-        if (signal?.aborted) throw new Error('aborted');
+        if (signal?.aborted) {
+          aborted = true;
+          break;
+        }
         const { done, value } = await reader.read();
         if (done) break;
         if (value?.length) {
@@ -961,6 +1023,12 @@ async function synthesizeOpenAIPCMStreaming(text, { signal, model, voice, speed,
           await onChunk?.(buffer);
         }
       }
+    }
+    if (aborted || signal?.aborted) {
+      const summary = abortedStreamSummary({ engine: 'openai', sampleRate: 24000, total, started });
+      if (started) await onEnd?.(summary);
+      console.log(`[tts-stream] openai aborted after ${total} bytes`);
+      return summary;
     }
     if (!total) throw new Error('openai tts returned no audio');
     const summary = {

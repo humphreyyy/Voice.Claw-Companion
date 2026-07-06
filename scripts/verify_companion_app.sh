@@ -56,7 +56,18 @@ MAIN_EXECUTABLE="$CONTENTS_DIR/MacOS/$EXECUTABLE_NAME"
 require_executable "$MAIN_EXECUTABLE"
 
 RUNTIME_MANIFEST="$CONTENTS_DIR/Resources/BridgeRuntime/runtime-manifest.json"
+RUNTIME_DIR="$CONTENTS_DIR/Resources/BridgeRuntime"
 require_path "$RUNTIME_MANIFEST"
+require_path "$RUNTIME_DIR/package.json"
+require_path "$RUNTIME_DIR/package-lock.json"
+require_path "$RUNTIME_DIR/server/index.js"
+require_path "$RUNTIME_DIR/server/hf-realtime-sidecar.js"
+require_path "$RUNTIME_DIR/scripts/check-runtime-imports.mjs"
+(
+  cd "$RUNTIME_DIR"
+  node scripts/check-runtime-imports.mjs
+  node scripts/check-realtime-prompts.mjs
+)
 /usr/bin/python3 - "$RUNTIME_MANIFEST" "$SHORT_VERSION" "$BUNDLE_VERSION" <<'PY'
 import json
 import sys

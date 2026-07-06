@@ -72,6 +72,10 @@ fi
 
 cd "$ROOT_DIR"
 node "$ROOT_DIR/scripts/check_runtime_contract.mjs"
+(
+  cd "$RUNTIME_SOURCE_DIR"
+  npm run check
+)
 swift build -c release
 
 rm -rf "$RELEASE_DIR" "$ZIP_PATH" "$DMG_PATH"
@@ -212,6 +216,8 @@ rsync -a --delete \
 (
   cd "$RUNTIME_DIR"
   npm ci --omit=dev --ignore-scripts
+  node scripts/check-runtime-imports.mjs
+  node scripts/check-realtime-prompts.mjs
 )
 
 /usr/bin/python3 - "$RUNTIME_DIR" "$VERSION" "$BUILD_NUMBER" <<'PY'

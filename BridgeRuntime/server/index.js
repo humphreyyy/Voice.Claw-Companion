@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile, stat, mkdir, appendFile, readdir, writeFile, unlink } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { join, extname, dirname } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -16,6 +16,7 @@ import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
 import { getHFRealtimeStatus, installHFRealtimeRuntime, prewarmHFRealtimeRuntime, HFRealtimeBridge } from './hf-realtime-sidecar.js';
+import { getPowerhouseStatus, maybeStartPowerhouseOnBoot, powerhouseModes, prewarmPowerhouseRuntime, readPowerhouseModeFromConfig } from './powerhouse-manager.js';
 import {
   REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
   buildRealtimeAuthStatus,
@@ -92,7 +93,7 @@ const DEFAULT_APP_SUPPORT_DIR = join(homedir(), 'Library', 'Application Support'
 const REALTIME_LOG_DIR = process.env.REALTIME_LOG_DIR || join(DEFAULT_APP_SUPPORT_DIR, 'logs');
 const REALTIME_TRANSCRIPT_LOG = join(REALTIME_LOG_DIR, 'realtime-transcripts.jsonl');
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(homedir(), '.openclaw', 'openclaw.json');
-const VOICECLAW_CONFIG = process.env.VOICECLAW_CONFIG || join(homedir(), '.voiceclaw', 'bridge.json');
+const VOICECLAW_CONFIG = process.env.VOICECLAW_CONFIG_PATH || process.env.VOICECLAW_CONFIG || join(homedir(), '.voiceclaw', 'bridge.json');
 const REALTIME_VAD_THRESHOLD = Number(process.env.REALTIME_VAD_THRESHOLD || 0.68);
 const REALTIME_VAD_PREFIX_PADDING_MS = Number(process.env.REALTIME_VAD_PREFIX_PADDING_MS || 240);
 const REALTIME_VAD_SILENCE_DURATION_MS = Number(process.env.REALTIME_VAD_SILENCE_DURATION_MS || 330);
@@ -111,6 +112,7 @@ const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434'
 const COMPANION_VOICE_QWEN_KEEP_ALIVE = process.env.COMPANION_VOICE_QWEN_KEEP_ALIVE || '30m';
 const COMPANION_VOICE_QWEN_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_QWEN_PREWARM || '1').toLowerCase());
 const COMPANION_VOICE_TTS_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_TTS_PREWARM || '1').toLowerCase());
+const COMPANION_VOICE_HF_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_HF_PREWARM || '1').toLowerCase());
 const COMPANION_VOICE_PLANNER_SCHEMA = {
   type: 'object',
   properties: {
@@ -222,6 +224,35 @@ function loadVoiceClawBridgeConfig() {
     return JSON.parse(readFileSync(VOICECLAW_CONFIG, 'utf8'));
   } catch {
     return {};
+  }
+}
+
+function companionVoiceRuntimeProfileFromPayload(payload = {}) {
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  return {
+    brainMode,
+    sttProfile: String(payload.sttProfile || payload.sttQualityProfile || 'parakeet-live').trim() || 'parakeet-live',
+    localVoice: String(payload.localVoice || payload.voice || 'kokoro-af-heart').trim() || 'kokoro-af-heart',
+    cerebrasModel: companionVoiceCerebrasModelID(brainMode, payload),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function persistLastCompanionVoiceRuntimeProfile(payload = {}, source = 'unknown') {
+  try {
+    const profile = companionVoiceRuntimeProfileFromPayload(payload);
+    const existing = loadVoiceClawBridgeConfig();
+    const next = {
+      ...existing,
+      lastCompanionVoiceRuntimeProfile: {
+        ...profile,
+        source,
+      },
+    };
+    await mkdir(dirname(VOICECLAW_CONFIG), { recursive: true });
+    await writeFile(VOICECLAW_CONFIG, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  } catch (error) {
+    console.warn(`[companion-voice] could not persist last runtime profile: ${error?.message || String(error)}`);
   }
 }
 
@@ -4769,8 +4800,9 @@ const httpServer = createServer(async (req, res) => {
     let urlPath = new URL(req.url, `http://localhost:${PORT}`).pathname;
 
     if (urlPath === '/healthz') {
+      const powerhouse = await getPowerhouseStatus({ mode: readPowerhouseModeFromConfig() }).catch((error) => ({ state: 'error', summary: error?.message || String(error) }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, port: PORT, bindHost: BIND_HOST, basePath: BASE_PATH || '/', wakePhrase: WAKE_PHRASE, realtimeBridge: true, runtime: RUNTIME_MANIFEST, auth: bridgeAuthSummary(), tts: getTtsStatus() }));
+      res.end(JSON.stringify({ ok: true, port: PORT, bindHost: BIND_HOST, basePath: BASE_PATH || '/', wakePhrase: WAKE_PHRASE, realtimeBridge: true, runtime: RUNTIME_MANIFEST, auth: bridgeAuthSummary(), tts: getTtsStatus(), powerhouse }));
       return;
     }
 
@@ -4787,6 +4819,9 @@ const httpServer = createServer(async (req, res) => {
         localVoice: configURL.searchParams.get('localVoice') || 'kokoro-af-heart',
         prepareSet: configURL.searchParams.get('prepareSet') || 'recommended',
       }).catch((error) => ({ state: 'error', error: error?.message || String(error) }));
+      const powerhouse = await getPowerhouseStatus({
+        mode: configURL.searchParams.get('powerhouseMode') || readPowerhouseModeFromConfig(),
+      }).catch((error) => ({ state: 'error', error: error?.message || String(error) }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
@@ -4797,9 +4832,43 @@ const httpServer = createServer(async (req, res) => {
         realtimePath: `${BASE_PATH}/realtime/session` || '/realtime/session',
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
-        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, streamingPath: `${BASE_PATH}/ws`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, hfRealtimeStatusPath: `${BASE_PATH}/realtime/hf-status`, hfRealtimeInstallPath: `${BASE_PATH}/realtime/hf-install`, hfRealtime, brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', sttProfiles: hfRealtime.sttProfiles || [], defaultSTTProfile: hfRealtime.sttProfile || 'parakeet-live', ttsDefault: tts.defaultVoice, ttsVoices: tts.voices, routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
+        realtime: { model: REALTIME_MODEL, transcriptionModel: REALTIME_TRANSCRIPTION_MODEL, transcriptionDefault: REALTIME_TRANSCRIPTION_DEFAULT, transcriptionDelay: REALTIME_TRANSCRIPTION_DELAY, reasoningEffort: REALTIME_REASONING_EFFORT, reasoningOptions: ['low', 'medium', 'high'], voice: REALTIME_VOICE, bridge: true, sidebandEnabled: REALTIME_SIDEBAND_ENABLED, transcriptLog: REALTIME_TRANSCRIPT_LOG, turnDetectionDefault: REALTIME_TURN_DETECTION_MODE, turnDetectionOptions: ['semantic_vad', 'server_vad'], cloudAudioDefault: true, localPrivatePath: `${BASE_PATH}/index.html` || '/index.html', transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL], conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL], routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'], companionVoice: { path: `${BASE_PATH}/realtime/companion-voice-turn-file`, streamingPath: `${BASE_PATH}/ws`, transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`, asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`, hfRealtimeStatusPath: `${BASE_PATH}/realtime/hf-status`, hfRealtimeInstallPath: `${BASE_PATH}/realtime/hf-install`, powerhouseStatusPath: `${BASE_PATH}/realtime/powerhouse/status`, powerhousePrewarmPath: `${BASE_PATH}/realtime/powerhouse/prewarm`, hfRealtime, powerhouse, powerhouseModes: powerhouseModes(), brainModes: ['qwen3.5-2b', 'gpt55-fast-low', ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)], defaultBrainMode: 'qwen3.5-2b', qwenModel: COMPANION_VOICE_QWEN_MODEL, qwenThinkingDefault: false, cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL, hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(), cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models', sttProfiles: hfRealtime.sttProfiles || [], defaultSTTProfile: hfRealtime.sttProfile || 'parakeet-live', ttsDefault: tts.defaultVoice, ttsVoices: tts.voices, routeModes: ['standalone', 'gpt55-direct', 'openclaw', 'hermes'] }, auth: realtimeAuthPreferences(req), openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })), gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })) },
         tts,
       }));
+      return;
+    }
+
+    if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/powerhouse/status`) {
+      try {
+        const statusURL = new URL(req.url, `http://localhost:${PORT}`);
+        const status = await getPowerhouseStatus({
+          mode: statusURL.searchParams.get('mode') || readPowerhouseModeFromConfig(),
+          force: statusURL.searchParams.get('force') === '1',
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...status, modes: powerhouseModes() }));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, state: 'error', error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/powerhouse/prewarm`) {
+      try {
+        const body = await readRequestBody(req, 100_000).catch(() => '{}');
+        let payload;
+        try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+        const status = await prewarmPowerhouseRuntime({
+          mode: payload.mode || readPowerhouseModeFromConfig(),
+          install: payload.install !== false,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...status, modes: powerhouseModes() }));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, state: 'error', error: error?.message || String(error) }));
+      }
       return;
     }
 
@@ -4832,6 +4901,7 @@ const httpServer = createServer(async (req, res) => {
           localVoice: payload.localVoice || 'kokoro-af-heart',
           prepareSet: payload.prepareSet || 'recommended',
         });
+        persistLastCompanionVoiceRuntimeProfile(payload, 'hf-prewarm').catch(() => {});
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...status }));
       } catch (error) {
@@ -5611,6 +5681,9 @@ wss.on('connection', (ws) => {
         session.companionVoicePayload = session.companionVoiceMode && msg.companionVoicePayload && typeof msg.companionVoicePayload === 'object'
           ? { ...msg.companionVoicePayload, sessionToken: msg.sessionToken || msg.companionVoicePayload.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}` }
           : null;
+        if (session.companionVoicePayload) {
+          persistLastCompanionVoiceRuntimeProfile(session.companionVoicePayload, 'websocket-start-session').catch(() => {});
+        }
         session.serverVad = buildCompanionServerVADState(msg);
         session.ttsSpeed = getTtsSpeedOptions().defaultSpeed;
         if (msg.ttsSpeed) session.ttsSpeed = msg.ttsSpeed;
@@ -5643,6 +5716,7 @@ wss.on('connection', (ws) => {
             ...msg.companionVoicePayload,
             sessionToken: msg.sessionToken || msg.companionVoicePayload.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
           };
+          persistLastCompanionVoiceRuntimeProfile(session.companionVoicePayload, 'websocket-config-update').catch(() => {});
         }
         session.serverVad = buildCompanionServerVADState({
           ...msg,
@@ -5670,6 +5744,7 @@ wss.on('connection', (ws) => {
             localVoice: session.voiceConfig?.id || '',
             serverVad: session.serverVad,
           };
+          persistLastCompanionVoiceRuntimeProfile(session.companionVoicePayload, 'websocket-config-update-normalized').catch(() => {});
           const nextBridgeConfigKey = companionVoiceHFBridgeConfigKey(session.companionVoicePayload, session.serverVad);
           if (!session.hfBridge) {
             await restartHFCompanionBridge('config_update');
@@ -6788,5 +6863,22 @@ httpServer.listen(PORT, BIND_HOST, () => {
   });
   prewarmCompanionVoiceTts().catch((error) => {
     console.warn(`[voice-bridge] Companion voice TTS prewarm failed: ${error?.message || String(error)}`);
+  });
+  if (COMPANION_VOICE_HF_PREWARM) {
+    prewarmHFRealtimeRuntime({
+      prepareSet: 'recommended',
+      brainMode: 'qwen3.5-2b',
+      sttProfile: 'parakeet-live',
+      localVoice: 'kokoro-af-heart',
+    }).then((result) => {
+      console.log(`[voice-bridge] Companion voice HF runtime prewarm complete: ${result?.summary || 'ready'}`);
+    }).catch((error) => {
+      console.warn(`[voice-bridge] Companion voice HF runtime prewarm failed: ${error?.message || String(error)}`);
+    });
+  }
+  maybeStartPowerhouseOnBoot().then((result) => {
+    if (result) console.log(`[voice-bridge] Powerhouse boot prewarm complete: ${result.summary || result.state || 'ready'}`);
+  }).catch((error) => {
+    console.warn(`[voice-bridge] Powerhouse boot prewarm failed: ${error?.message || String(error)}`);
   });
 });

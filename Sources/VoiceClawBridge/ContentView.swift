@@ -15,9 +15,10 @@ struct ContentView: View {
                     Button {
                         Task { await store.refreshStatus() }
                     } label: {
-                        Label("Check Status", systemImage: "arrow.clockwise")
+                        Label(store.isCheckingBridgeRuntime ? "Checking Runtime" : "Verify Runtime", systemImage: "arrow.clockwise")
                     }
-                    .help("Re-check the local bridge and Tailscale Serve status. The app also checks automatically after setup and at launch.")
+                    .disabled(store.isCheckingBridgeRuntime)
+                    .help("Run the full Companion readiness check: bridge runtime identity, local bridge, Tailscale Serve, Realtime endpoints, Companion Realtime Voice dependencies, warm runtime status, and required Mac access.")
 
                 }
             }
@@ -155,6 +156,7 @@ private struct DetailPane: View {
                     HeroPanel(store: store)
                     LaunchAtStartupPanel(store: store)
                     UpdateAvailableBanner(store: store)
+                    RuntimeCheckingBanner(store: store)
                     StatusBanner(store: store)
 
                     switch selection {
@@ -278,6 +280,20 @@ private struct StatusBanner: View {
             BannerContent(symbol: "exclamationmark.triangle.fill", title: message, bodyText: store.lastLog, color: .orange)
         case let .failed(message):
             BannerContent(symbol: "xmark.octagon.fill", title: message, bodyText: store.lastLog.isEmpty ? "The bridge could not be installed or started. Check Diagnostics for details." : store.lastLog, color: .red)
+        }
+    }
+}
+
+private struct RuntimeCheckingBanner: View {
+    @ObservedObject var store: BridgeStore
+
+    var body: some View {
+        if store.isCheckingBridgeRuntime {
+            BannerContent(
+                symbol: "bolt.horizontal.circle.fill",
+                title: "Checking Bridge Runtime",
+                bodyText: store.bridgeRuntimeCheckSummary,
+                color: .orange)
         }
     }
 }
@@ -470,7 +486,7 @@ private struct SetupPanel: View {
                 }
             }
 
-            InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates VoiceClaw's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. The same bridge serves OpenClaw routes, Hermes Agent routes, GPT-Realtime-2 signaling, and Apple Watch relay. Check Again only reads status.")
+            InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates VoiceClaw's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. The same bridge serves OpenClaw routes, Hermes Agent routes, GPT-Realtime-2 signaling, Apple Watch relay, and Companion Realtime Voice. Verify Runtime runs the full readiness check and can refresh VoiceClaw's own stale LaunchAgent runtime when the installed app safely owns it.")
             InfoCallout(symbol: "sparkles", title: "Hermes Agent Routes", bodyText: "Hermes via Tailscale and Hermes HTTPS Tunnel do not need a Hermes path in this app. The bridge starts normally, then calls the hermes CLI from the user's PATH (or HERMES_BIN) with HERMES_HOME. Use Hermes routes in the phone or watch app after installing Hermes Agent and confirming it works in Terminal.")
             InfoCallout(symbol: "arrow.counterclockwise", title: "Testing First-Run Setup", bodyText: "Reset First-Run State removes only VoiceClaw's LaunchAgent and local bridge config. Use Reset App + Tailscale Mapping only when Diagnostics says the selected port is a VoiceClaw mapping; it will refuse to touch other Serve mappings.")
             InfoCallout(symbol: "lightbulb", title: "Recommended Next Step", bodyText: store.setupAdvice)
@@ -487,9 +503,10 @@ private struct SetupPanel: View {
                 Button {
                     Task { await store.refreshStatus() }
                 } label: {
-                    Label("Check Again", systemImage: "arrow.clockwise")
+                    Label(store.isCheckingBridgeRuntime ? "Checking Runtime" : "Verify Runtime", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)
+                .disabled(store.isCheckingBridgeRuntime)
                 .help("Re-check status after changing Tailscale, Node.js, OpenClaw, or the port outside this app.")
 
                 Button(role: .destructive) {
@@ -743,6 +760,90 @@ private struct CompanionVoicePanel: View {
                 bodyText: "Restarting the VoiceClaw voice session should restart audio and realtime transport only. It should not reset an OpenClaw or Hermes conversation unless the user explicitly asks to start a new agent session."
             )
 
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Powerhouse Mode")
+                            .font(.headline)
+                        Text("Choose how aggressively this Mac should use CPU, GPU, memory, models, and network readiness for VoiceClaw.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 16)
+
+                    Picker("Powerhouse Mode", selection: $store.powerhouseMode) {
+                        ForEach(CompanionPowerhouseMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 520)
+                }
+
+                Text(store.powerhouseMode.detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                StatusRow(
+                    title: "\(store.powerhouseMode.label) Runtime",
+                    value: store.isPrewarmingPowerhouseRuntime ? "Running an aggressive Powerhouse warm/install pass..." : store.powerhouseSummary,
+                    symbol: "bolt.horizontal.circle"
+                )
+
+                StatusRow(
+                    title: "Mac Hardware",
+                    value: store.powerhouseHardwareSummary,
+                    symbol: "cpu"
+                )
+
+                StatusRow(
+                    title: "Resource Posture",
+                    value: store.powerhouseResourcePostureSummary,
+                    symbol: "gauge.with.dots.needle.67percent"
+                )
+
+                if !store.powerhouseWorkerItems.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Worker Plan")
+                            .font(.subheadline.weight(.semibold))
+                        ForEach(store.powerhouseWorkerItems) { item in
+                            PowerhouseWorkerRow(item: item)
+                        }
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await store.prewarmPowerhouseRuntime(install: true) }
+                    } label: {
+                        Label(store.isPrewarmingPowerhouseRuntime ? "Powerhouse Is Warming" : "Install and Warm Powerhouse", systemImage: "bolt.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isPrewarmingPowerhouseRuntime || store.status.isWorking)
+
+                    Button {
+                        Task { await store.prewarmPowerhouseRuntime(install: false) }
+                    } label: {
+                        Label("Warm Without Installing", systemImage: "flame")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.isPrewarmingPowerhouseRuntime || store.status.isWorking)
+
+                    Button {
+                        Task { await store.installRealtimePriorityHelper() }
+                    } label: {
+                        Label(store.isInstallingPriorityHelper ? "Installing Priority Helper" : "Install Priority Helper", systemImage: "speedometer")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.isInstallingPriorityHelper || store.isPrewarmingPowerhouseRuntime || store.status.isWorking)
+                }
+            }
+            .padding(14)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+
             VStack(alignment: .leading, spacing: 10) {
                 Text("Install and Verification")
                     .font(.headline)
@@ -869,6 +970,109 @@ private struct DependencyItemRow: View {
             }
 
             Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct PowerhouseWorkerRow: View {
+    let item: PowerhouseWorkerItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .foregroundStyle(color)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(item.label)
+                        .font(.headline)
+                    Text(stateLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(color)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(color.opacity(0.12), in: Capsule())
+                }
+
+                if !item.resource.isEmpty {
+                    Text(item.resource)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !item.mode.isEmpty {
+                    Text("Mode: \(item.mode)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var normalizedState: String {
+        item.state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private var stateLabel: String {
+        switch normalizedState {
+        case "ready":
+            "ready"
+        case "planned-hot":
+            "planned hot"
+        case "planned-warm":
+            "planned warm"
+        case "on-demand":
+            "on demand"
+        case "cold":
+            "cold"
+        case "failed", "error":
+            "failed"
+        case "degraded":
+            "degraded"
+        case "resource_pressure":
+            "resource pressure"
+        default:
+            normalizedState.isEmpty ? "unknown" : normalizedState.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    private var symbol: String {
+        switch normalizedState {
+        case "ready":
+            "checkmark.circle.fill"
+        case "planned-hot":
+            "flame.fill"
+        case "planned-warm":
+            "flame"
+        case "on-demand", "cold":
+            "clock"
+        case "failed", "error":
+            "xmark.octagon.fill"
+        case "degraded", "resource_pressure":
+            "exclamationmark.triangle.fill"
+        default:
+            "circle.dotted"
+        }
+    }
+
+    private var color: Color {
+        switch normalizedState {
+        case "ready", "planned-hot":
+            .green
+        case "planned-warm":
+            .cyan
+        case "on-demand", "cold":
+            .secondary
+        case "failed", "error":
+            .red
+        case "degraded", "resource_pressure":
+            .orange
+        default:
+            .secondary
         }
     }
 }
@@ -1163,7 +1367,7 @@ private struct TailscalePanel: View {
 
             InfoCallout(symbol: "network.badge.shield.half.filled", title: "What Tailscale Serve Is", bodyText: "Tailscale Serve is a private HTTPS reverse proxy: it takes a Tailscale URL on this Mac and forwards it to the local VoiceClaw bridge running on 127.0.0.1. It is private to devices in your tailnet, not a public internet link.")
             InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the VoiceClaw bridge service on this Mac. With the default, the paired phone connects to a URL ending in :12321. If you choose another free port, run Install and Start again and pair the phone with the new QR code.")
-            InfoCallout(symbol: "lock", title: "What Must Be Allowed", bodyText: "Tailscale must be installed and signed in, and HTTPS certificates must be enabled for your tailnet. If you are not the tailnet owner or admin, ask that person to enable HTTPS certificates. VoiceClaw configures Serve only when you click Install and Start; Check Again is read-only.")
+            InfoCallout(symbol: "lock", title: "What Must Be Allowed", bodyText: "Tailscale must be installed and signed in, and HTTPS certificates must be enabled for your tailnet. If you are not the tailnet owner or admin, ask that person to enable HTTPS certificates. VoiceClaw configures Serve only when you click Install and Start. Verify Runtime checks the bridge and may refresh VoiceClaw's own stale LaunchAgent runtime, but it does not reset Tailscale mappings.")
             InfoCallout(symbol: "trash.slash", title: "Why VoiceClaw Does Not Use Serve Reset", bodyText: "Tailscale's full Serve reset clears every Serve mapping on this Mac. VoiceClaw only offers a guarded cleanup for the selected port, and only when the mapping looks exactly like VoiceClaw's own bridge.")
 
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
@@ -1193,9 +1397,10 @@ private struct TailscalePanel: View {
                 Button {
                     Task { await store.refreshStatus() }
                 } label: {
-                    Label("Check Again", systemImage: "arrow.clockwise")
+                    Label(store.isCheckingBridgeRuntime ? "Checking Runtime" : "Verify Runtime", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)
+                .disabled(store.isCheckingBridgeRuntime)
             }
         }
         .panelStyle()
@@ -1207,7 +1412,9 @@ private struct StatusPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Diagnostics", subtitle: "Use this when setup fails, pairing fails, or the phone cannot reach the Mac. Status checks also run automatically at launch and after setup.", symbol: "checklist")
+            PanelHeader(title: "Diagnostics", subtitle: "Use this when setup fails, pairing fails, the phone cannot reach the Mac, or Companion Realtime Voice is warming slowly. Verify Runtime runs the full readiness check and updates Last Checked when the cycle completes.", symbol: "checklist")
+
+            DiagnosticSummaryCard(store: store)
 
             StatusRow(title: "Local Bridge", value: store.localBridgeSummary, symbol: "server.rack")
             StatusRow(title: "Bridge Runtime", value: store.runtimeIntegritySummary, symbol: "checkmark.seal")
@@ -1216,9 +1423,22 @@ private struct StatusPanel: View {
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
             StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
             StatusRow(title: "Companion Voice Warm Runtime", value: store.companionVoiceWarmSummary, symbol: "flame")
+            StatusRow(title: "\(store.powerhouseMode.label) Powerhouse Runtime", value: store.powerhouseSummary, symbol: "bolt.horizontal.circle")
+            StatusRow(title: "Mac Hardware Profile", value: store.powerhouseHardwareSummary, symbol: "cpu")
             StatusRow(title: "Access and Permissions", value: store.accessSummary, symbol: "checkmark.shield")
             if !store.companionVoiceDependencyInstallSummary.isEmpty {
                 StatusRow(title: "Voice Dependency Install", value: store.companionVoiceDependencyInstallSummary, symbol: "square.and.arrow.down")
+            }
+            if !store.powerhouseWorkerItems.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Powerhouse Worker Plan")
+                        .font(.headline)
+                    ForEach(store.powerhouseWorkerItems) { item in
+                        PowerhouseWorkerRow(item: item)
+                            .padding(12)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
             }
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
@@ -1236,18 +1456,32 @@ private struct StatusPanel: View {
                 StatusRow(title: "Updates Checked", value: lastUpdateCheckDate.formatted(date: .abbreviated, time: .standard), symbol: "calendar.badge.clock")
             }
 
-            if let lastRefreshDate = store.lastRefreshDate {
-                StatusRow(title: "Last Checked", value: lastRefreshDate.formatted(date: .abbreviated, time: .standard), symbol: "clock")
+            StatusRow(title: "Last Checked", value: lastCheckedText, symbol: "clock")
+
+            if !store.accessItems.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Detailed Readiness Checks")
+                        .font(.headline)
+                    ForEach(store.accessItems) { item in
+                        AccessItemRow(item: item)
+                            .padding(12)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
             }
 
             if !store.lastLog.isEmpty {
-                Text(store.lastLog)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Latest Action Log")
+                        .font(.headline)
+                    Text(store.lastLog)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(12)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -1255,9 +1489,10 @@ private struct StatusPanel: View {
                     Button {
                         Task { await store.refreshStatus() }
                     } label: {
-                        Label("Check Again", systemImage: "arrow.clockwise")
+                        Label(store.isCheckingBridgeRuntime ? "Checking Runtime" : "Verify Runtime", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.bordered)
+                    .disabled(store.isCheckingBridgeRuntime)
 
                     Button {
                         store.openNodeInstallPage()
@@ -1329,6 +1564,11 @@ private struct StatusPanel: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                Text("Verify Runtime checks the installed bridge runtime identity, local bridge process, Tailscale Serve mapping, Realtime endpoints, Companion Realtime Voice dependencies, warm HF runtime, and Mac access. It updates Last Checked when the cycle completes and may refresh VoiceClaw's own stale LaunchAgent runtime when safe.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 Toggle("Allow Sparkle to automatically download signed updates", isOn: $store.automaticUpdateInstallsEnabled)
                     .toggleStyle(.checkbox)
                     .font(.caption)
@@ -1339,6 +1579,82 @@ private struct StatusPanel: View {
             DiagnosticsVersionFooter()
         }
         .panelStyle()
+    }
+
+    private var lastCheckedText: String {
+        if store.isCheckingBridgeRuntime {
+            return "Checking now. This timestamp updates when Verify Runtime finishes."
+        }
+        if let lastRefreshDate = store.lastRefreshDate {
+            return lastRefreshDate.formatted(date: .abbreviated, time: .standard)
+        }
+        return "Not checked yet. Click Verify Runtime to run the full Companion readiness check."
+    }
+}
+
+private struct DiagnosticSummaryCard: View {
+    @ObservedObject var store: BridgeStore
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            if store.isCheckingBridgeRuntime {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 28)
+            } else {
+                Image(systemName: symbol)
+                    .font(.title2)
+                    .foregroundStyle(color)
+                    .frame(width: 28)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(store.isCheckingBridgeRuntime ? "Checking Bridge Runtime" : store.status.title)
+                    .font(.title3.weight(.semibold))
+                Text(store.bridgeRuntimeCheckSummary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.35), lineWidth: 1))
+    }
+
+    private var symbol: String {
+        switch store.status {
+        case .idle:
+            "circle"
+        case .working:
+            "hourglass"
+        case .ready:
+            "checkmark.circle.fill"
+        case .warning:
+            "exclamationmark.triangle.fill"
+        case .failed:
+            "xmark.octagon.fill"
+        }
+    }
+
+    private var color: Color {
+        if store.isCheckingBridgeRuntime { return .orange }
+        switch store.status {
+        case .idle:
+            return .gray
+        case .working:
+            return .yellow
+        case .ready:
+            return .green
+        case .warning:
+            return .orange
+        case .failed:
+            return .red
+        }
     }
 }
 

@@ -1,5 +1,5 @@
 import { spawn, execFile as execFileCb } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { access, appendFile, mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
@@ -12,19 +12,32 @@ const execFile = promisify(execFileCb);
 normalizeProcessPath();
 
 const HF_ROOT = process.env.VOICECLAW_HF_ROOT || join(os.homedir(), '.voiceclaw', 'hf-runtime');
+const HF_HOME = process.env.HF_HOME || process.env.HUGGINGFACE_HUB_CACHE?.replace(/\/hub$/g, '') || join(os.homedir(), '.cache', 'huggingface');
 const HF_VENV = process.env.VOICECLAW_HF_VENV || HF_ROOT;
 const HF_PYTHON = process.env.VOICECLAW_HF_PYTHON || join(HF_VENV, 'bin', 'python');
 const HF_CLI = process.env.VOICECLAW_HF_CLI || join(HF_VENV, 'bin', 'speech-to-speech');
 const HF_LOG_DIR = process.env.VOICECLAW_HF_LOG_DIR || join(os.homedir(), 'Library', 'Application Support', 'VoiceClaw Companion', 'logs');
 const HF_STDOUT_LOG = join(HF_LOG_DIR, 'hf-speech-to-speech.out.log');
 const HF_STDERR_LOG = join(HF_LOG_DIR, 'hf-speech-to-speech.err.log');
+const PRIORITY_HELPER_PLIST = '/Library/LaunchDaemons/ai.voiceclaw.priority-helper.plist';
 const HF_HOST = process.env.VOICECLAW_HF_HOST || '127.0.0.1';
 const HF_PORT = Number.parseInt(process.env.VOICECLAW_HF_PORT || '18765', 10);
-const HF_WS_URL = `ws://${HF_HOST}:${HF_PORT}/v1/realtime`;
-const HF_HTTP_BASE = `http://${HF_HOST}:${HF_PORT}`;
+const HF_POOL_SIZE = Math.max(1, Number.parseInt(process.env.VOICECLAW_HF_POOL_SIZE || '8', 10));
+const VOICECLAW_LOGICAL_CORES = Math.max(1, os.cpus().length || 1);
+const VOICECLAW_AGGRESSIVE_THREADS = Math.max(4, Number.parseInt(process.env.VOICECLAW_AGGRESSIVE_THREADS || String(VOICECLAW_LOGICAL_CORES), 10));
+// HF speech-to-speech currently disables live transcription on Apple Silicon
+// when --num_pipelines > 1 because progressive STT contends on the global MLX
+// lock. VoiceClaw gets parallelism from multiple hot sidecars instead.
+const VOICECLAW_HF_NUM_PIPELINES = Math.max(1, Number.parseInt(process.env.VOICECLAW_HF_NUM_PIPELINES || '1', 10));
+const VOICECLAW_HF_LATENCY_TIER = process.env.VOICECLAW_HF_LATENCY_TIER || '0';
+const VOICECLAW_HF_THROUGHPUT_TIER = process.env.VOICECLAW_HF_THROUGHPUT_TIER || '0';
 const HF_PACKAGE_SPEC = process.env.VOICECLAW_HF_PACKAGE_SPEC || 'speech-to-speech';
 const HF_INSTALL_TIMEOUT_MS = Number.parseInt(process.env.VOICECLAW_HF_INSTALL_TIMEOUT_MS || String(90 * 60 * 1000), 10);
 const HF_START_TIMEOUT_MS = Number.parseInt(process.env.VOICECLAW_HF_START_TIMEOUT_MS || String(15 * 60 * 1000), 10);
+const HF_START_ATTEMPTS = Math.max(1, Number.parseInt(process.env.VOICECLAW_HF_START_ATTEMPTS || '3', 10));
+const HF_CACHE_CHECK_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.VOICECLAW_HF_CACHE_CHECK_TIMEOUT_MS || '2000', 10));
+const HF_CACHE_CHECK_TTL_MS = Math.max(1000, Number.parseInt(process.env.VOICECLAW_HF_CACHE_CHECK_TTL_MS || '60000', 10));
+const HF_IMPORT_CHECK_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.VOICECLAW_HF_IMPORT_CHECK_TIMEOUT_MS || '30000', 10));
 const HF_DEFAULT_LOCAL_MODEL = process.env.VOICECLAW_HF_LOCAL_MODEL || 'mlx-community/Qwen3.5-2B-4bit';
 const HF_DEFAULT_CEREBRAS_MODEL = process.env.VOICECLAW_HF_CEREBRAS_MODEL || 'gemma-4-31b';
 const HF_DEFAULT_TTS = process.env.VOICECLAW_HF_TTS || 'auto';
@@ -74,11 +87,24 @@ const HF_STT_PROFILE_OPTIONS = [
 
 let sidecar = null;
 let sidecarKey = '';
+let sidecarPort = HF_PORT;
 let sidecarStarting = null;
+const sidecarPool = new Map();
+const sidecarStartingByKey = new Map();
+const reservedHFPorts = new Set();
+let portAllocationLock = Promise.resolve();
 let installInFlight = null;
 let cerebrasResponsesAdapter = null;
 let cerebrasResponsesAdapterKey = '';
 let cerebrasResponsesAdapterBaseURL = '';
+let shutdownCleanupInstalled = false;
+let shutdownCleanupStarted = false;
+const hfModelCache = new Map();
+const pythonImportCache = new Map();
+const pythonPackageVersionCache = new Map();
+const pythonImportInFlight = new Map();
+const pythonPackageVersionInFlight = new Map();
+const hfModelCacheInFlight = new Map();
 
 async function fileExecutable(path) {
   try {
@@ -117,30 +143,53 @@ async function runCommand(command, args, { timeoutMs = 10 * 60 * 1000, env = {} 
 
 async function pythonCanImport(moduleName) {
   if (!existsSync(HF_PYTHON)) return false;
-  try {
-    await execFile(HF_PYTHON, ['-c', `import ${moduleName}`], { timeout: 30_000 });
-    return true;
-  } catch {
-    return false;
-  }
+  const cached = pythonImportCache.get(moduleName);
+  if (cached && Date.now() - cached.at < HF_CACHE_CHECK_TTL_MS) return cached.value;
+  if (pythonImportInFlight.has(moduleName)) return await pythonImportInFlight.get(moduleName);
+  const promise = (async () => {
+    try {
+      await execFile(HF_PYTHON, ['-c', `import ${moduleName}`], { timeout: HF_IMPORT_CHECK_TIMEOUT_MS });
+      pythonImportCache.set(moduleName, { at: Date.now(), value: true });
+      return true;
+    } catch {
+      pythonImportCache.set(moduleName, { at: Date.now(), value: false });
+      return false;
+    } finally {
+      pythonImportInFlight.delete(moduleName);
+    }
+  })();
+  pythonImportInFlight.set(moduleName, promise);
+  return await promise;
 }
 
 async function pythonPackageVersion(moduleName) {
   if (!existsSync(HF_PYTHON)) return '';
-  try {
-    const { stdout } = await execFile(HF_PYTHON, ['-c', [
-      'import importlib.metadata as md, sys',
-      'names = sys.argv[1:]',
-      'for n in names:',
-      '    try:',
-      '        print(md.version(n)); break',
-      '    except md.PackageNotFoundError:',
-      '        pass',
-    ].join('\n'), moduleName], { timeout: 30_000 });
-    return stdout.trim();
-  } catch {
-    return '';
-  }
+  const cached = pythonPackageVersionCache.get(moduleName);
+  if (cached && Date.now() - cached.at < HF_CACHE_CHECK_TTL_MS) return cached.value;
+  if (pythonPackageVersionInFlight.has(moduleName)) return await pythonPackageVersionInFlight.get(moduleName);
+  const promise = (async () => {
+    try {
+      const { stdout } = await execFile(HF_PYTHON, ['-c', [
+        'import importlib.metadata as md, sys',
+        'names = sys.argv[1:]',
+        'for n in names:',
+        '    try:',
+        '        print(md.version(n)); break',
+        '    except md.PackageNotFoundError:',
+        '        pass',
+      ].join('\n'), moduleName], { timeout: HF_IMPORT_CHECK_TIMEOUT_MS });
+      const version = stdout.trim();
+      pythonPackageVersionCache.set(moduleName, { at: Date.now(), value: version });
+      return version;
+    } catch {
+      pythonPackageVersionCache.set(moduleName, { at: Date.now(), value: '' });
+      return '';
+    } finally {
+      pythonPackageVersionInFlight.delete(moduleName);
+    }
+  })();
+  pythonPackageVersionInFlight.set(moduleName, promise);
+  return await promise;
 }
 
 function hfRuntimeEnv(extra = {}) {
@@ -149,6 +198,16 @@ function hfRuntimeEnv(extra = {}) {
     ...extra,
     PYTHONUNBUFFERED: '1',
     HF_XET_HIGH_PERFORMANCE: process.env.HF_XET_HIGH_PERFORMANCE || '1',
+    HF_HUB_ENABLE_HF_TRANSFER: process.env.HF_HUB_ENABLE_HF_TRANSFER || '1',
+    TOKENIZERS_PARALLELISM: process.env.TOKENIZERS_PARALLELISM || 'true',
+    OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || String(VOICECLAW_AGGRESSIVE_THREADS),
+    OPENBLAS_NUM_THREADS: process.env.OPENBLAS_NUM_THREADS || String(VOICECLAW_AGGRESSIVE_THREADS),
+    VECLIB_MAXIMUM_THREADS: process.env.VECLIB_MAXIMUM_THREADS || String(VOICECLAW_AGGRESSIVE_THREADS),
+    NUMEXPR_NUM_THREADS: process.env.NUMEXPR_NUM_THREADS || String(VOICECLAW_AGGRESSIVE_THREADS),
+    MKL_NUM_THREADS: process.env.MKL_NUM_THREADS || String(VOICECLAW_AGGRESSIVE_THREADS),
+    PYTORCH_ENABLE_MPS_FALLBACK: process.env.PYTORCH_ENABLE_MPS_FALLBACK || '1',
+    PYTORCH_MPS_HIGH_WATERMARK_RATIO: process.env.PYTORCH_MPS_HIGH_WATERMARK_RATIO || '0.0',
+    PYTHONMALLOC: process.env.PYTHONMALLOC || 'malloc',
   };
   const disableXet = process.env.VOICECLAW_HF_DISABLE_XET || process.env.HF_HUB_DISABLE_XET;
   if (disableXet !== undefined && disableXet !== null && String(disableXet) !== '') {
@@ -165,22 +224,607 @@ function hfRuntimeLaunchEnv(extra = {}) {
   return env;
 }
 
-async function hfModelCached(modelID, allowPatterns = null) {
-  if (!existsSync(HF_PYTHON)) return false;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hfWsURL(port = HF_PORT) {
+  return `ws://${HF_HOST}:${port}/v1/realtime`;
+}
+
+function hfHttpBase(port = HF_PORT) {
+  return `http://${HF_HOST}:${port}`;
+}
+
+async function execFileText(command, args = [], options = {}) {
   try {
-    await runCommand(HF_PYTHON, ['-c', [
-      'from huggingface_hub import snapshot_download',
-      'import json, sys',
-      'patterns = json.loads(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None',
-      'snapshot_download(sys.argv[1], local_files_only=True, allow_patterns=patterns)',
-    ].join('; '), modelID, allowPatterns ? JSON.stringify(allowPatterns) : ''], {
-      timeoutMs: 30_000,
-      env: hfRuntimeEnv(),
+    const { stdout } = await execFile(command, args, { timeout: 5000, ...options });
+    return String(stdout || '');
+  } catch {
+    return '';
+  }
+}
+
+async function commandExists(command) {
+  const output = await execFileText('/usr/bin/which', [command], { timeout: 2000 });
+  return output.trim();
+}
+
+async function applyRealtimeProcessPolicy(pid, label = 'hf-sidecar') {
+  if (!Number.isFinite(pid) || pid <= 1) return;
+  if (/^(1|true|yes)$/i.test(String(process.env.VOICECLAW_DISABLE_PROCESS_PRIORITY || ''))) return;
+  let taskpolicy = '';
+  let renice = '';
+  try {
+    taskpolicy = await commandExists('taskpolicy');
+    if (taskpolicy) {
+      await execFile(taskpolicy, ['-B', '-t', VOICECLAW_HF_THROUGHPUT_TIER, '-l', VOICECLAW_HF_LATENCY_TIER, '-p', String(pid)], { timeout: 3000 });
+    }
+  } catch (error) {
+    console.warn(`[hf-sidecar] taskpolicy priority assertion failed for ${label} pid=${pid}: ${error?.message || String(error)}`);
+  }
+  try {
+    renice = await commandExists('renice');
+    if (renice) {
+      await execFile(renice, ['-n', process.env.VOICECLAW_HF_NICE || '-5', '-p', String(pid)], { timeout: 3000 });
+    }
+  } catch (error) {
+    if (existsSync(PRIORITY_HELPER_PLIST)) {
+      console.log(`[hf-sidecar] root priority helper is installed; sidecar ${label} pid=${pid} will be boosted asynchronously.`);
+      return;
+    }
+    if (!/^(0|false|no)$/i.test(String(process.env.VOICECLAW_ENABLE_SUDO_PRIORITY || '1')) && renice) {
+      const sudo = await commandExists('sudo');
+      if (sudo) {
+        try {
+          await execFile(sudo, ['-n', renice, '-n', process.env.VOICECLAW_HF_NICE || '-5', '-p', String(pid)], { timeout: 3000 });
+          console.log(`[hf-sidecar] elevated process priority with sudo renice for ${label} pid=${pid}`);
+          return;
+        } catch (sudoError) {
+          console.warn(`[hf-sidecar] renice priority assertion failed for ${label} pid=${pid}; sudo priority is not currently authorized: ${sudoError?.message || String(sudoError)}`);
+          return;
+        }
+      }
+    }
+    console.warn(`[hf-sidecar] renice priority assertion failed for ${label} pid=${pid}: ${error?.message || String(error)}`);
+  }
+}
+
+async function spawnHFRuntimeProcess(config) {
+  const env = hfRuntimeLaunchEnv(config.env);
+  if (!/^(1|true|yes)$/i.test(String(process.env.VOICECLAW_DISABLE_TASKPOLICY_LAUNCH || ''))) {
+    const taskpolicy = await commandExists('taskpolicy');
+    if (taskpolicy) {
+      return spawn(taskpolicy, ['-t', VOICECLAW_HF_THROUGHPUT_TIER, '-l', VOICECLAW_HF_LATENCY_TIER, HF_CLI, ...config.args], {
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }
+  }
+  return spawn(HF_CLI, config.args, {
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+async function hfPortListenerPids(port = HF_PORT) {
+  const output = await execFileText('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fp']);
+  return Array.from(new Set(output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^p\d+$/.test(line))
+    .map((line) => Number.parseInt(line.slice(1), 10))
+    .filter((pid) => Number.isFinite(pid) && pid > 0)));
+}
+
+function portFromHFCommand(command = '') {
+  const match = String(command || '').match(/--ws_port\s+(\d+)/);
+  const parsed = Number.parseInt(match?.[1] || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+async function processCommand(pid) {
+  return (await execFileText('ps', ['-p', String(pid), '-o', 'command='])).trim();
+}
+
+async function parentPid(pid) {
+  const output = (await execFileText('ps', ['-p', String(pid), '-o', 'ppid='])).trim();
+  const parsed = Number.parseInt(output, 10);
+  return Number.isFinite(parsed) && parsed > 1 ? parsed : 0;
+}
+
+async function childPids(pid) {
+  const output = await execFileText('pgrep', ['-P', String(pid)]);
+  return output
+    .split(/\s+/)
+    .map((part) => Number.parseInt(part, 10))
+    .filter((child) => Number.isFinite(child) && child > 0);
+}
+
+async function processTreePids(rootPid, maxDepth = 4) {
+  const seen = new Set([rootPid]);
+  let frontier = [rootPid];
+  for (let depth = 0; depth < maxDepth && frontier.length; depth += 1) {
+    const next = [];
+    for (const pid of frontier) {
+      for (const child of await childPids(pid)) {
+        if (seen.has(child)) continue;
+        seen.add(child);
+        next.push(child);
+      }
+    }
+    frontier = next;
+  }
+  return seen;
+}
+
+async function processAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 1) return false;
+  const output = await execFileText('ps', ['-p', String(pid), '-o', 'pid=']);
+  return !!output.trim();
+}
+
+function looksLikeVoiceClawHFCommand(command = '') {
+  const text = String(command || '');
+  if (!text) return false;
+  if (!text.includes('speech-to-speech')) return false;
+  if (text.includes(String(HF_ROOT))) return true;
+  if (text.includes(String(HF_CLI))) return true;
+  if (text.includes('--ws_port') && text.includes(String(HF_PORT))) return true;
+  return false;
+}
+
+async function addRuntimeTreeToSet(set, pid) {
+  if (!Number.isFinite(pid) || pid <= 1) return;
+  set.add(pid);
+  for (const child of await processTreePids(pid, 6)) set.add(child);
+  const parent = await parentPid(pid);
+  const parentCommand = parent ? await processCommand(parent) : '';
+  if (parent && looksLikeVoiceClawHFCommand(parentCommand)) {
+    set.add(parent);
+    for (const child of await processTreePids(parent, 6)) set.add(child);
+  }
+}
+
+async function voiceClawHFProcessEntries() {
+  const output = await execFileText('ps', ['-axo', 'pid=,ppid=,command=']);
+  return output
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
+      if (!match) return null;
+      return {
+        pid: Number.parseInt(match[1], 10),
+        ppid: Number.parseInt(match[2], 10),
+        command: match[3],
+      };
+    })
+    .filter((entry) => entry && Number.isFinite(entry.pid) && entry.pid > 1 && looksLikeVoiceClawHFCommand(entry.command));
+}
+
+async function hfRuntimeProcessSnapshot() {
+  const entries = await voiceClawHFProcessEntries();
+  const ports = Array.from(new Set([
+    HF_PORT,
+    ...entries.map((entry) => portFromHFCommand(entry.command)).filter(Boolean),
+    ...Array.from(sidecarPool.values()).map((record) => record.port).filter(Boolean),
+  ])).sort((a, b) => a - b);
+  const listenerDetails = [];
+  for (const port of ports) {
+    for (const pid of await hfPortListenerPids(port)) {
+      listenerDetails.push({
+        pid,
+        port,
+        command: await processCommand(pid),
+      });
+    }
+  }
+  const listeners = Array.from(new Set(listenerDetails.map((listener) => listener.pid)));
+  const listenerSet = new Set(listeners);
+  const trackedPid = sidecar && !sidecar.killed && sidecar.pid ? sidecar.pid : 0;
+  const pool = Array.from(sidecarPool.values()).map((record) => ({
+    key: record.key,
+    port: record.port,
+    pid: record.proc?.pid || 0,
+  }));
+  return {
+    processCount: entries.length,
+    listenerCount: listeners.length,
+    listeners,
+    listenerDetails,
+    trackedPid,
+    trackedPort: sidecarPort,
+    trackedAlive: trackedPid ? await processAlive(trackedPid) : false,
+    pool,
+    entries: entries.map((entry) => ({
+      pid: entry.pid,
+      ppid: entry.ppid,
+      port: portFromHFCommand(entry.command),
+      listener: listenerSet.has(entry.pid),
+      tracked: trackedPid === entry.pid || pool.some((record) => record.pid === entry.pid),
+      command: entry.command,
+    })),
+  };
+}
+
+async function waitForPidExit(pid, timeoutMs = 4000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const output = await execFileText('ps', ['-p', String(pid), '-o', 'pid=']);
+    if (!output.trim()) return true;
+    await sleep(200);
+  }
+  return false;
+}
+
+async function terminateHFProcessMap(killPids, reason = 'restart') {
+  const ordered = Array.from(killPids.entries())
+    .filter(([pid]) => Number.isFinite(pid) && pid > 1)
+    .sort(([a], [b]) => b - a);
+  if (!ordered.length) return;
+  for (const [pid, command] of ordered) {
+    console.warn(`[hf-sidecar] terminating stale HF runtime pid=${pid} reason=${reason} command=${command || 'unknown command'}`);
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+  }
+  for (const [pid, command] of ordered) {
+    if (!await waitForPidExit(pid)) {
+      console.warn(`[hf-sidecar] stale HF runtime pid=${pid} did not exit after SIGTERM; sending SIGKILL command=${command || 'unknown command'}`);
+      try { process.kill(pid, 'SIGKILL'); } catch {}
+      await waitForPidExit(pid, 2500);
+    }
+  }
+}
+
+function poolKeepPids(extra = []) {
+  const pids = [];
+  for (const record of sidecarPool.values()) {
+    if (record?.proc?.pid) pids.push(record.proc.pid);
+  }
+  if (sidecar && !sidecar.killed && sidecar.pid) pids.push(sidecar.pid);
+  for (const pid of extra) pids.push(pid);
+  return Array.from(new Set(pids.filter((pid) => Number.isFinite(pid) && pid > 1)));
+}
+
+async function dropDeadPoolRecords() {
+  for (const [key, record] of sidecarPool.entries()) {
+    if (!record?.proc?.pid || record.proc.killed || !await processAlive(record.proc.pid)) {
+      sidecarPool.delete(key);
+    }
+  }
+}
+
+async function stopSidecarRecord(record, reason = 'restart') {
+  if (!record?.proc || record.proc.killed) return;
+  const pid = record.proc.pid;
+  console.warn(`[hf-sidecar] stopping pooled sidecar key=${record.key} pid=${pid} port=${record.port} reason=${reason}`);
+  const killPids = new Map();
+  if (pid) {
+    killPids.set(pid, await processCommand(pid));
+    for (const child of await processTreePids(pid, 6)) {
+      killPids.set(child, await processCommand(child));
+    }
+  }
+  const listenerPids = record.port ? await hfPortListenerPids(record.port) : [];
+  for (const listenerPid of listenerPids) {
+    const command = await processCommand(listenerPid);
+    if (looksLikeVoiceClawHFCommand(command)) {
+      killPids.set(listenerPid, command);
+      for (const child of await processTreePids(listenerPid, 6)) {
+        killPids.set(child, await processCommand(child));
+      }
+    }
+  }
+  await terminateHFProcessMap(killPids, reason);
+  if (record.port) reservedHFPorts.delete(record.port);
+}
+
+async function terminateHFPortListeners(reason = 'restart', port = HF_PORT) {
+  const pids = await hfPortListenerPids(port);
+  const killPids = new Map();
+  for (const pid of pids) {
+    const command = await processCommand(pid);
+    if (!looksLikeVoiceClawHFCommand(command)) {
+      throw new Error(`HF speech-to-speech port ${port} is already owned by non-VoiceClaw process ${pid}: ${command || 'unknown command'}`);
+    }
+    killPids.set(pid, command);
+    for (const child of await processTreePids(pid, 6)) {
+      killPids.set(child, await processCommand(child));
+    }
+    const parent = await parentPid(pid);
+    const parentCommand = parent ? await processCommand(parent) : '';
+    if (parent && looksLikeVoiceClawHFCommand(parentCommand)) {
+      killPids.set(parent, parentCommand);
+      for (const child of await processTreePids(parent, 6)) {
+        killPids.set(child, await processCommand(child));
+      }
+    }
+  }
+
+  await terminateHFProcessMap(killPids, reason);
+  const remaining = await hfPortListenerPids(port);
+  if (remaining.length) {
+    const details = [];
+    for (const pid of remaining) details.push(`${pid}:${await processCommand(pid)}`);
+    throw new Error(`Could not clear HF speech-to-speech port ${port}; still owned by ${details.join('; ')}`);
+  }
+}
+
+async function cleanupStaleHFProcesses(reason = 'cleanup', { keepPids = [] } = {}) {
+  const keep = new Set();
+  for (const pid of keepPids) {
+    if (!Number.isFinite(pid) || pid <= 1) continue;
+    await addRuntimeTreeToSet(keep, pid);
+  }
+  const killPids = new Map();
+  for (const entry of await voiceClawHFProcessEntries()) {
+    if (keep.has(entry.pid)) continue;
+    killPids.set(entry.pid, entry.command);
+    for (const child of await processTreePids(entry.pid, 6)) {
+      if (!keep.has(child)) killPids.set(child, await processCommand(child));
+    }
+  }
+  await terminateHFProcessMap(killPids, reason);
+}
+
+async function selfHealHFRuntimeProcesses(reason = 'status-self-heal') {
+  await dropDeadPoolRecords();
+  const before = await hfRuntimeProcessSnapshot();
+  if (/^(1|true|yes)$/i.test(String(process.env.VOICECLAW_HF_DISABLE_PROCESS_SELF_HEAL || ''))) {
+    return { before, after: before, changed: false, disabled: true };
+  }
+  const keepPids = poolKeepPids();
+  if (!keepPids.length) {
+    if (before.trackedPid && before.trackedAlive) {
+      keepPids.push(before.trackedPid);
+    } else if (before.listenerCount === 1) {
+      keepPids.push(before.listeners[0]);
+    } else if (before.listenerCount > 1) {
+      for (const listener of before.listenerDetails || []) {
+        await terminateHFPortListeners(`${reason}-multiple-listeners`, listener.port || HF_PORT);
+      }
+    }
+  }
+
+  await cleanupStaleHFProcesses(reason, { keepPids });
+  const after = await hfRuntimeProcessSnapshot();
+  return {
+    before,
+    after,
+    changed: before.processCount !== after.processCount
+      || before.listenerCount !== after.listenerCount
+      || before.entries.map((entry) => entry.pid).join(',') !== after.entries.map((entry) => entry.pid).join(','),
+  };
+}
+
+async function stopCurrentSidecar(reason = 'restart') {
+  if (!sidecar || sidecar.killed) {
+    sidecar = null;
+    sidecarKey = '';
+    return;
+  }
+  const record = Array.from(sidecarPool.values()).find((item) => item.proc === sidecar) || {
+    key: sidecarKey || 'current-sidecar',
+    port: sidecarPort,
+    proc: sidecar,
+  };
+  await stopSidecarRecord(record, reason);
+  sidecar = null;
+  sidecarKey = '';
+}
+
+export async function stopAllHFRealtimeSidecars(reason = 'shutdown') {
+  const records = Array.from(sidecarPool.values());
+  for (const record of records) {
+    await stopSidecarRecord(record, reason).catch((error) => {
+      console.warn(`[hf-sidecar] failed to stop pooled sidecar key=${record?.key || 'unknown'} reason=${reason}: ${error?.message || String(error)}`);
     });
-    return true;
+    if (record?.key) sidecarPool.delete(record.key);
+  }
+  if (sidecar && !sidecar.killed) {
+    await stopCurrentSidecar(reason).catch((error) => {
+      console.warn(`[hf-sidecar] failed to stop current sidecar reason=${reason}: ${error?.message || String(error)}`);
+    });
+  }
+  sidecar = null;
+  sidecarKey = '';
+  sidecarStarting = null;
+  sidecarStartingByKey.clear();
+  reservedHFPorts.clear();
+}
+
+function installShutdownCleanup() {
+  if (shutdownCleanupInstalled) return;
+  shutdownCleanupInstalled = true;
+  const cleanupAndExit = async (signal) => {
+    if (shutdownCleanupStarted) {
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+      return;
+    }
+    shutdownCleanupStarted = true;
+    try {
+      await stopAllHFRealtimeSidecars(`process-${signal}`);
+    } finally {
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    }
+  };
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.once(signal, () => {
+      cleanupAndExit(signal).catch(() => {
+        process.exit(signal === 'SIGINT' ? 130 : 143);
+      });
+    });
+  }
+  process.once('exit', () => {
+    for (const record of sidecarPool.values()) {
+      try { record.proc?.kill?.('SIGTERM'); } catch {}
+    }
+    try { sidecar?.kill?.('SIGTERM'); } catch {}
+  });
+}
+
+installShutdownCleanup();
+
+async function verifyHFPortOwner(expectedRootPid, port = HF_PORT) {
+  const owners = await hfPortListenerPids(port);
+  if (!owners.length) {
+    return { ok: false, owners: [], reason: 'no-listener' };
+  }
+  const tree = await processTreePids(expectedRootPid);
+  const matching = owners.filter((pid) => tree.has(pid));
+  if (matching.length) {
+    return { ok: true, owners, matching };
+  }
+  const details = [];
+  for (const pid of owners) details.push(`${pid}:${await processCommand(pid)}`);
+  return { ok: false, owners, reason: `owned-by-other-process:${details.join('; ')}` };
+}
+
+async function withPortAllocationLock(fn) {
+  const previous = portAllocationLock;
+  let release = () => {};
+  portAllocationLock = new Promise((resolve) => { release = resolve; });
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+async function allocateHFPoolPort(preferredPort = HF_PORT) {
+  return await withPortAllocationLock(async () => {
+  await dropDeadPoolRecords();
+  const used = new Set([
+    ...Array.from(sidecarPool.values()).map((record) => record.port).filter(Boolean),
+    ...Array.from(reservedHFPorts),
+  ]);
+  const candidates = [
+    preferredPort,
+    ...Array.from({ length: HF_POOL_SIZE }, (_, index) => HF_PORT + index),
+  ];
+  for (const port of Array.from(new Set(candidates))) {
+    if (used.has(port)) continue;
+    const listeners = await hfPortListenerPids(port);
+    if (!listeners.length) {
+      reservedHFPorts.add(port);
+      return port;
+    }
+    let voiceClawOwned = true;
+    for (const pid of listeners) {
+      const command = await processCommand(pid);
+      if (!looksLikeVoiceClawHFCommand(command)) voiceClawOwned = false;
+    }
+    if (voiceClawOwned) {
+      await terminateHFPortListeners('pool-port-reclaim', port);
+      reservedHFPorts.add(port);
+      return port;
+    }
+  }
+  const fallback = HF_PORT + HF_POOL_SIZE + Math.floor(Math.random() * 1000);
+  reservedHFPorts.add(fallback);
+  return fallback;
+  });
+}
+
+function safeReadDir(path) {
+  try {
+    return readdirSync(path, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+function safeIsFile(path) {
+  try {
+    return statSync(path).isFile();
   } catch {
     return false;
   }
+}
+
+function safeIsNonEmptyDir(path) {
+  try {
+    const entries = readdirSync(path, { withFileTypes: true });
+    return entries.some((entry) => {
+      const child = join(path, entry.name);
+      return entry.isFile() || (entry.isDirectory() && safeIsNonEmptyDir(child));
+    });
+  } catch {
+    return false;
+  }
+}
+
+function hubCacheRepoPath(modelID = '') {
+  const clean = String(modelID || '').trim();
+  if (!clean) return '';
+  const parts = clean.split('/').filter(Boolean);
+  if (parts.length === 1) return join(HF_HOME, 'hub', `models--${parts[0]}`);
+  return join(HF_HOME, 'hub', `models--${parts.join('--')}`);
+}
+
+function snapshotPatternPresent(snapshotPath, pattern = '') {
+  const clean = String(pattern || '').trim();
+  if (!clean) return safeIsNonEmptyDir(snapshotPath);
+  if (!clean.includes('*')) return safeIsFile(join(snapshotPath, clean));
+  const slashIndex = clean.lastIndexOf('/');
+  const dir = slashIndex >= 0 ? clean.slice(0, slashIndex) : '';
+  const filePattern = slashIndex >= 0 ? clean.slice(slashIndex + 1) : clean;
+  const escaped = filePattern
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+    .replaceAll('*', '.*');
+  const re = new RegExp(`^${escaped}$`);
+  return safeReadDir(join(snapshotPath, dir)).some((entry) => entry.isFile() && re.test(entry.name));
+}
+
+function hfModelSnapshotLooksCached(modelID, allowPatterns = null) {
+  const repoPath = hubCacheRepoPath(modelID);
+  if (!repoPath || !existsSync(repoPath)) return false;
+  const snapshotsPath = join(repoPath, 'snapshots');
+  const snapshots = safeReadDir(snapshotsPath).filter((entry) => entry.isDirectory());
+  if (!snapshots.length) return false;
+  for (const snapshot of snapshots) {
+    const snapshotPath = join(snapshotsPath, snapshot.name);
+    if (Array.isArray(allowPatterns) && allowPatterns.length) {
+      if (allowPatterns.every((pattern) => snapshotPatternPresent(snapshotPath, pattern))) return true;
+    } else if (safeIsNonEmptyDir(snapshotPath)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function hfModelCached(modelID, allowPatterns = null) {
+  if (!existsSync(HF_PYTHON)) return false;
+  const key = `${modelID}\n${JSON.stringify(allowPatterns || [])}`;
+  const cached = hfModelCache.get(key);
+  if (cached && Date.now() - cached.at < HF_CACHE_CHECK_TTL_MS) return cached.value;
+  if (hfModelSnapshotLooksCached(modelID, allowPatterns)) {
+    hfModelCache.set(key, { at: Date.now(), value: true });
+    return true;
+  }
+  if (hfModelCacheInFlight.has(key)) return await hfModelCacheInFlight.get(key);
+  const promise = (async () => {
+    try {
+      await runCommand(HF_PYTHON, ['-c', [
+        'from huggingface_hub import snapshot_download',
+        'import json, sys',
+        'patterns = json.loads(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None',
+        'snapshot_download(sys.argv[1], local_files_only=True, allow_patterns=patterns)',
+      ].join('; '), modelID, allowPatterns ? JSON.stringify(allowPatterns) : ''], {
+        timeoutMs: HF_CACHE_CHECK_TIMEOUT_MS,
+        env: hfRuntimeEnv(),
+      });
+      hfModelCache.set(key, { at: Date.now(), value: true });
+      return true;
+    } catch {
+      hfModelCache.set(key, { at: Date.now(), value: false });
+      return false;
+    } finally {
+      hfModelCacheInFlight.delete(key);
+    }
+  })();
+  hfModelCacheInFlight.set(key, promise);
+  return await promise;
 }
 
 function requiredSTTPythonModules(sttProfile = '') {
@@ -211,7 +855,25 @@ function requiredSTTModels(sttProfile = '') {
         allowPatterns: ['config.json', 'model.bin', 'tokenizer.json', 'vocabulary.txt', 'preprocessor_config.json'],
       }];
     case 'mlx-audio-whisper':
-      return [{ id: 'stt-mlx-audio-whisper', label: `MLX Audio Whisper ${settings.model}`, model: settings.model }];
+      return [
+        { id: 'stt-mlx-audio-whisper', label: `MLX Audio Whisper ${settings.model}`, model: settings.model },
+        {
+          id: 'stt-mlx-audio-whisper-processor',
+          label: 'Whisper large-v3 processor files for MLX Audio',
+          model: 'openai/whisper-large-v3',
+          allowPatterns: [
+            'config.json',
+            'generation_config.json',
+            'preprocessor_config.json',
+            'tokenizer.json',
+            'tokenizer_config.json',
+            'special_tokens_map.json',
+            'vocab.json',
+            'merges.txt',
+            'normalizer.json',
+          ],
+        },
+      ];
     case 'parakeet-tdt':
       return [{ id: 'stt-parakeet-tdt', label: 'Parakeet TDT live speech-to-text', model: settings.model }];
     default:
@@ -445,7 +1107,7 @@ function hfRealtimeProfileKey(options = {}) {
   });
 }
 
-function selectedHFRealtimeProfileOptions(options = {}) {
+function primaryHFRealtimeProfileOptions(options = {}) {
   return {
     brainMode: normalizeBrainMode(options.brainMode || 'qwen3.5-2b'),
     sttProfile: normalizeSTTProfile(options.sttProfile || ''),
@@ -454,29 +1116,36 @@ function selectedHFRealtimeProfileOptions(options = {}) {
 }
 
 function hfRealtimeProfilesForPrepareSet(options = {}) {
-  const selectedOptions = selectedHFRealtimeProfileOptions(options);
-  const selectedKey = hfRealtimeProfileKey(selectedOptions);
+  const primaryOptions = primaryHFRealtimeProfileOptions(options);
+  const primaryKey = hfRealtimeProfileKey(primaryOptions);
   const profiles = hfRealtimePrepareProfiles(options.prepareSet || 'recommended').map((profile) => ({
     ...profile,
-    required: profile.required || hfRealtimeProfileKey(profile.options) === selectedKey,
+    required: profile.required || hfRealtimeProfileKey(profile.options) === primaryKey,
   }));
-  if (!profiles.some((profile) => hfRealtimeProfileKey(profile.options) === selectedKey)) {
+  if (!profiles.some((profile) => hfRealtimeProfileKey(profile.options) === primaryKey)) {
     profiles.unshift({
-      id: 'selected',
-      label: 'Selected Companion Realtime Voice configuration',
+      id: 'primary',
+      label: 'Primary Companion Realtime Voice configuration',
       required: true,
-      options: selectedOptions,
+      options: primaryOptions,
     });
   }
   return profiles;
 }
 
 async function getHFRealtimeProfileSetStatus(options = {}) {
-  const selectedKey = hfRealtimeProfileKey(selectedHFRealtimeProfileOptions(options));
+  const processHeal = await selfHealHFRuntimeProcesses('profile-set-status-check').catch((error) => ({
+    before: null,
+    after: null,
+    changed: false,
+    error: error?.message || String(error),
+  }));
+  const health = await hfPoolHealth();
+  const primaryKey = hfRealtimeProfileKey(primaryHFRealtimeProfileOptions(options));
   const profiles = hfRealtimeProfilesForPrepareSet(options);
   const preparedProfiles = [];
   for (const profile of profiles) {
-    const status = await getHFRealtimeSingleStatus({ ...profile.options, prepareSet: '' });
+    const status = await getHFRealtimeSingleStatus({ ...profile.options, prepareSet: '', skipProcessSelfHeal: true, skipHealth: true });
     preparedProfiles.push({
       id: profile.id,
       label: profile.label,
@@ -496,11 +1165,11 @@ async function getHFRealtimeProfileSetStatus(options = {}) {
     });
   }
 
-  const primaryProfileIndex = Math.max(0, profiles.findIndex((profile) => hfRealtimeProfileKey(profile.options) === selectedKey));
+  const primaryProfileIndex = Math.max(0, profiles.findIndex((profile) => hfRealtimeProfileKey(profile.options) === primaryKey));
   const primaryProfile = profiles[primaryProfileIndex] || profiles[0];
   const primary = primaryProfile
-    ? await getHFRealtimeSingleStatus({ ...primaryProfile.options, prepareSet: '' })
-    : await getHFRealtimeSingleStatus(options);
+    ? await getHFRealtimeSingleStatus({ ...primaryProfile.options, prepareSet: '', skipProcessSelfHeal: true, skipHealth: true })
+    : await getHFRealtimeSingleStatus({ ...options, skipProcessSelfHeal: true, skipHealth: true });
   const requiredMissing = preparedProfiles.filter((profile) => profile.required && profile.state !== 'ready');
   const allItems = dedupeInstallItems(preparedProfiles.flatMap((profile) => {
     const items = Array.isArray(profile.installPlan?.items) ? profile.installPlan.items : [];
@@ -513,10 +1182,10 @@ async function getHFRealtimeProfileSetStatus(options = {}) {
   const installableCount = allItems.filter((item) => item.installable).length;
   const state = requiredMissing.length ? 'needs_setup' : 'ready';
   const summary = requiredMissing.length
-    ? `Companion Realtime Voice needs setup before the selected/default realtime stack can run: ${requiredMissing.map((profile) => profile.label).join(', ')}.`
+    ? `Companion Realtime Voice needs setup before the primary/default realtime stack can run: ${requiredMissing.map((profile) => profile.label).join(', ')}.`
     : allItems.length
-      ? `Companion Realtime Voice selected/default local stack is ready. ${allItems.length} additional recommended voice runtime item${allItems.length === 1 ? '' : 's'} can be installed now so alternate STT profiles are ready before the phone needs them.`
-      : 'Companion Realtime Voice workstation is prepared: selected/default local realtime stack and recommended alternate STT profiles are installed.';
+      ? `Companion Realtime Voice primary/default local stack is ready. ${allItems.length} additional recommended voice runtime item${allItems.length === 1 ? '' : 's'} can be installed now so alternate STT profiles are ready before the phone needs them.`
+      : 'Companion Realtime Voice workstation is prepared: primary/default local realtime stack and recommended alternate STT profiles are installed.';
 
   return {
     ...primary,
@@ -524,6 +1193,14 @@ async function getHFRealtimeProfileSetStatus(options = {}) {
     summary,
     prepareSet: options.prepareSet || 'recommended',
     preparedProfiles,
+    processSelfHeal: {
+      changed: !!processHeal.changed,
+      error: processHeal.error || '',
+      beforeProcessCount: processHeal.before?.processCount ?? null,
+      afterProcessCount: processHeal.after?.processCount ?? null,
+    },
+    processes: processHeal.after || primary.processes || null,
+    health,
     installPlan: {
       needed: allItems.length > 0,
       installable: true,
@@ -548,9 +1225,9 @@ async function fetchJSON(url, { timeoutMs = 2500 } = {}) {
   }
 }
 
-async function hfPoolHealth() {
+async function hfPoolHealth({ timeoutMs = 700, port = HF_PORT } = {}) {
   try {
-    const pool = await fetchJSON(`${HF_HTTP_BASE}/v1/pool`, { timeoutMs: 2500 });
+    const pool = await fetchJSON(`${hfHttpBase(port)}/v1/pool`, { timeoutMs });
     return { reachable: true, pool };
   } catch (error) {
     return { reachable: false, error: error?.message || String(error) };
@@ -567,6 +1244,14 @@ async function getHFRealtimeSingleStatus(options = {}) {
   const sttProfile = normalizeSTTProfile(options.sttProfile || process.env.VOICECLAW_HF_STT_PROFILE || '');
   const sttConfig = sttProfileConfig(sttProfile);
   const ttsConfig = ttsConfigForHF(options);
+  const processHeal = options.skipProcessSelfHeal
+    ? { before: null, after: await hfRuntimeProcessSnapshot(), changed: false, skipped: true }
+    : await selfHealHFRuntimeProcesses('single-status-check').catch((error) => ({
+      before: null,
+      after: null,
+      changed: false,
+      error: error?.message || String(error),
+    }));
   const requireLocalMiddleBrain = localMiddleBrainRequired(brainMode);
   const requireCerebrasKey = cerebrasMiddleBrainRequired(brainMode);
   const pythonReady = await fileExecutable(HF_PYTHON);
@@ -576,19 +1261,25 @@ async function getHFRealtimeSingleStatus(options = {}) {
   const mlxAudioReady = await pythonCanImport('mlx_audio');
   const sttModuleStatuses = [];
   for (const item of requiredSTTPythonModules(sttProfile)) {
+    const version = await pythonPackageVersion(item.versionPackage || item.package);
+    const importReady = version ? true : await pythonCanImport(item.module);
     sttModuleStatuses.push({
       ...item,
-      ready: await pythonCanImport(item.module),
-      version: await pythonPackageVersion(item.versionPackage || item.package),
+      ready: importReady || !!version,
+      importReady,
+      version,
       required: true,
     });
   }
   const ttsModuleStatuses = [];
   for (const item of requiredTTSPythonModules(ttsConfig)) {
+    const version = await pythonPackageVersion(item.versionPackage || item.package);
+    const importReady = version ? true : await pythonCanImport(item.module);
     ttsModuleStatuses.push({
       ...item,
-      ready: await pythonCanImport(item.module),
-      version: await pythonPackageVersion(item.versionPackage || item.package),
+      ready: importReady || !!version,
+      importReady,
+      version,
       required: true,
     });
   }
@@ -609,7 +1300,7 @@ async function getHFRealtimeSingleStatus(options = {}) {
     });
   }
   const localModelCached = pythonReady ? await hfModelCached(HF_DEFAULT_LOCAL_MODEL) : false;
-  const health = await hfPoolHealth();
+  const health = options.skipHealth ? null : await hfPoolHealth();
   const runtimeReady = pythonReady && cliReady && packageReady;
   const requiredModels = [
     ...sttRequiredModels,
@@ -693,10 +1384,28 @@ async function getHFRealtimeSingleStatus(options = {}) {
     missingRequiredModels,
     host: HF_HOST,
     port: HF_PORT,
-    wsURL: HF_WS_URL,
+    wsURL: hfWsURL(HF_PORT),
+    numPipelines: VOICECLAW_HF_NUM_PIPELINES,
+    aggressiveThreads: VOICECLAW_AGGRESSIVE_THREADS,
     sidecarRunning: !!sidecar && !sidecar.killed,
     sidecarKey,
+    sidecarPort,
+    sidecarPool: Array.from(sidecarPool.values()).map((record) => ({
+      key: record.key,
+      port: record.port,
+      wsURL: record.wsURL,
+      pid: record.proc?.pid || 0,
+      startedAt: record.startedAt,
+    })),
     health,
+    processSelfHeal: {
+      changed: !!processHeal.changed,
+      skipped: !!processHeal.skipped,
+      error: processHeal.error || '',
+      beforeProcessCount: processHeal.before?.processCount ?? null,
+      afterProcessCount: processHeal.after?.processCount ?? null,
+    },
+    processes: processHeal.after,
     installPlan: {
       needed: !ready,
       installable: true,
@@ -1291,7 +2000,7 @@ function ttsArgsForHF(payload = {}, config = ttsConfigForHF(payload)) {
   ];
 }
 
-async function sidecarConfigFromPayload(payload = {}) {
+async function sidecarConfigFromPayload(payload = {}, { port = HF_PORT } = {}) {
   const sttArgs = sttArgsForHF(payload);
   const ttsConfig = ttsConfigForHF(payload);
   const ttsArgs = ttsArgsForHF(payload, ttsConfig);
@@ -1312,7 +2021,7 @@ async function sidecarConfigFromPayload(payload = {}) {
       args: [
         '--mode', 'realtime',
         '--ws_host', HF_HOST,
-        '--ws_port', String(HF_PORT),
+        '--ws_port', String(port),
         '--sample_rate', String(DEFAULT_HF_SAMPLE_RATE),
         ...sttArgs,
         '--llm_backend', 'responses-api',
@@ -1329,9 +2038,10 @@ async function sidecarConfigFromPayload(payload = {}) {
         '--min_silence_ms', '360',
         '--min_speech_ms', '384',
         '--speech_pad_ms', '240',
-        '--num_pipelines', '1',
+        '--num_pipelines', String(VOICECLAW_HF_NUM_PIPELINES),
         '--log_level', process.env.VOICECLAW_HF_LOG_LEVEL || 'info',
       ],
+      port,
     };
   }
 
@@ -1341,7 +2051,7 @@ async function sidecarConfigFromPayload(payload = {}) {
     args: [
       '--mode', 'realtime',
       '--ws_host', HF_HOST,
-      '--ws_port', String(HF_PORT),
+      '--ws_port', String(port),
       '--sample_rate', String(DEFAULT_HF_SAMPLE_RATE),
       '--device', 'mps',
       ...sttArgs,
@@ -1357,9 +2067,10 @@ async function sidecarConfigFromPayload(payload = {}) {
       '--min_silence_ms', '360',
       '--min_speech_ms', '384',
       '--speech_pad_ms', '240',
-      '--num_pipelines', '1',
+      '--num_pipelines', String(VOICECLAW_HF_NUM_PIPELINES),
       '--log_level', process.env.VOICECLAW_HF_LOG_LEVEL || 'info',
     ],
+    port,
   };
 }
 
@@ -1368,6 +2079,74 @@ async function appendLog(path, chunk) {
     await mkdir(HF_LOG_DIR, { recursive: true });
     await appendFile(path, chunk);
   } catch {}
+}
+
+async function launchHFRealtimeSidecarOnce(config, attempt) {
+  const port = config.port || HF_PORT;
+  const existing = sidecarPool.get(config.key);
+  if (existing) {
+    await stopSidecarRecord(existing, `runtime-config-change-attempt-${attempt}`);
+    sidecarPool.delete(config.key);
+  }
+  await terminateHFPortListeners(`runtime-config-change-attempt-${attempt}`, port);
+
+  await mkdir(HF_LOG_DIR, { recursive: true });
+  sidecarKey = config.key;
+  sidecarPort = port;
+  console.log(`[hf-sidecar] launching key=${config.key} port=${port} attempt=${attempt}/${HF_START_ATTEMPTS} cli=${HF_CLI}`);
+  const proc = await spawnHFRuntimeProcess(config);
+  applyRealtimeProcessPolicy(proc.pid, config.key).catch(() => {});
+  sidecar = proc;
+  const record = {
+    key: config.key,
+    port,
+    wsURL: hfWsURL(port),
+    proc,
+    startedAt: Date.now(),
+  };
+  sidecarPool.set(config.key, record);
+  let earlyExit = null;
+
+  proc.stdout.on('data', (chunk) => appendLog(HF_STDOUT_LOG, chunk));
+  proc.stderr.on('data', (chunk) => appendLog(HF_STDERR_LOG, chunk));
+  proc.on('exit', (code, signal) => {
+    earlyExit = { code, signal };
+    reservedHFPorts.delete(port);
+    appendLog(HF_STDERR_LOG, `\n[hf-sidecar] exited code=${code} signal=${signal} attempt=${attempt}\n`);
+    if (sidecar === proc || sidecarKey === config.key) {
+      sidecar = null;
+      sidecarKey = '';
+    }
+    if (sidecarPool.get(config.key)?.proc === proc) {
+      sidecarPool.delete(config.key);
+    }
+  });
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < HF_START_TIMEOUT_MS) {
+    const nextHealth = await hfPoolHealth({ port });
+    if (nextHealth.reachable) {
+      const owner = await verifyHFPortOwner(proc.pid, port);
+      if (owner.ok) {
+        console.log(`[hf-sidecar] ready key=${config.key} pid=${proc.pid} attempt=${attempt} port=${port} portOwners=${owner.owners.join(',')}`);
+        for (const ownerPid of owner.owners || []) {
+          applyRealtimeProcessPolicy(ownerPid, `${config.key}:listener`).catch(() => {});
+        }
+        await cleanupStaleHFProcesses(`post-launch-attempt-${attempt}`, { keepPids: poolKeepPids([proc.pid]) });
+        return { wsURL: hfWsURL(port), key: config.key, port, health: nextHealth };
+      }
+      throw new Error(`HF speech-to-speech sidecar became reachable on ${port}, but the listener is stale or wrong (${owner.reason}).`);
+    }
+    if (earlyExit) {
+      throw new Error(`HF speech-to-speech sidecar exited early with code ${earlyExit.code ?? 'unknown'} signal ${earlyExit.signal ?? 'none'}. Check ${HF_STDERR_LOG}.`);
+    }
+    await sleep(1000);
+  }
+
+  await stopSidecarRecord(record, `startup-timeout-attempt-${attempt}`);
+  sidecarPool.delete(config.key);
+  reservedHFPorts.delete(port);
+  throw new Error(`HF speech-to-speech sidecar did not become ready on ${port} within ${Math.round(HF_START_TIMEOUT_MS / 1000)} seconds. Check ${HF_STDERR_LOG}.`);
 }
 
 export async function ensureHFRealtimeSidecar(payload = {}) {
@@ -1379,63 +2158,71 @@ export async function ensureHFRealtimeSidecar(payload = {}) {
     throw new Error('HF speech-to-speech runtime is not installed. Use Companion setup to install the HF runtime first.');
   }
 
-  if (sidecarStarting) await sidecarStarting;
-  const config = await sidecarConfigFromPayload(payload);
+  await dropDeadPoolRecords();
+  const identityConfig = await sidecarConfigFromPayload(payload, { port: HF_PORT });
+  const key = identityConfig.key;
+  if (sidecarStartingByKey.has(key)) return await sidecarStartingByKey.get(key);
+  const existingRecord = sidecarPool.get(key);
+  const port = existingRecord?.port || await allocateHFPoolPort(key === sidecarKey ? sidecarPort : HF_PORT);
+  const config = await sidecarConfigFromPayload(payload, { port });
   if (config.key.startsWith('cerebras:') && !cerebrasKeyFromPayload(payload)) {
     throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
   }
 
-  sidecarStarting = (async () => {
-    const health = await hfPoolHealth();
-    if (sidecar && !sidecar.killed && sidecarKey === config.key && health.reachable) {
-      return { wsURL: HF_WS_URL, key: sidecarKey, health };
+  const startPromise = (async () => {
+    const record = sidecarPool.get(config.key);
+    const health = record ? await hfPoolHealth({ port: record.port }) : { reachable: false };
+    if (record?.proc && !record.proc.killed && health.reachable) {
+      const owner = await verifyHFPortOwner(record.proc.pid, record.port);
+      if (owner.ok) {
+        sidecar = record.proc;
+        sidecarKey = record.key;
+        sidecarPort = record.port;
+        await cleanupStaleHFProcesses('tracked-sidecar-cleanup', { keepPids: poolKeepPids() });
+        return { wsURL: record.wsURL, key: record.key, port: record.port, health };
+      }
+      console.warn(`[hf-sidecar] tracked sidecar is not the active HF listener; restarting (${owner.reason})`);
     }
 
-    if (sidecar && !sidecar.killed) {
-      sidecar.kill('SIGTERM');
+    let lastError = null;
+    for (let attempt = 1; attempt <= HF_START_ATTEMPTS; attempt += 1) {
+      try {
+        return await launchHFRealtimeSidecarOnce(config, attempt);
+      } catch (error) {
+        lastError = error;
+        console.warn(`[hf-sidecar] launch attempt ${attempt}/${HF_START_ATTEMPTS} failed: ${error?.message || String(error)}`);
+        const failedRecord = sidecarPool.get(config.key);
+        if (failedRecord) {
+          await stopSidecarRecord(failedRecord, `failed-attempt-${attempt}`);
+          sidecarPool.delete(config.key);
+          reservedHFPorts.delete(failedRecord.port);
+        } else if (sidecarKey === config.key) {
+          await stopCurrentSidecar(`failed-attempt-${attempt}`);
+        }
+        try {
+          await terminateHFPortListeners(`failed-attempt-${attempt}`, config.port || HF_PORT);
+        } catch (cleanupError) {
+          console.warn(`[hf-sidecar] cleanup after failed attempt ${attempt} failed: ${cleanupError?.message || String(cleanupError)}`);
+          if (attempt === HF_START_ATTEMPTS) throw cleanupError;
+        }
+        if (attempt < HF_START_ATTEMPTS) await sleep(Math.min(5000, 1000 * attempt));
+      }
+    }
+
+    if (sidecarPool.get(config.key)?.proc === sidecar) {
       sidecar = null;
+      sidecarKey = '';
     }
-
-    await mkdir(HF_LOG_DIR, { recursive: true });
-    sidecarKey = config.key;
-    const proc = spawn(HF_CLI, config.args, {
-      env: hfRuntimeLaunchEnv(config.env),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    sidecar = proc;
-    let earlyExit = null;
-
-    proc.stdout.on('data', (chunk) => appendLog(HF_STDOUT_LOG, chunk));
-    proc.stderr.on('data', (chunk) => appendLog(HF_STDERR_LOG, chunk));
-    proc.on('exit', (code, signal) => {
-      earlyExit = { code, signal };
-      appendLog(HF_STDERR_LOG, `\n[hf-sidecar] exited code=${code} signal=${signal}\n`);
-      if (sidecarKey === config.key) {
-        sidecar = null;
-        sidecarKey = '';
-      }
-    });
-
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < HF_START_TIMEOUT_MS) {
-      const nextHealth = await hfPoolHealth();
-      if (nextHealth.reachable) return { wsURL: HF_WS_URL, key: config.key, health: nextHealth };
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      if (earlyExit) {
-        throw new Error(`HF speech-to-speech sidecar exited early with code ${earlyExit.code ?? 'unknown'} signal ${earlyExit.signal ?? 'none'}. Check ${HF_STDERR_LOG}.`);
-      }
-    }
-    if (sidecar && !sidecar.killed) {
-      sidecar.kill('SIGTERM');
-    }
-    sidecar = null;
-    sidecarKey = '';
-    throw new Error(`HF speech-to-speech sidecar did not become ready within ${Math.round(HF_START_TIMEOUT_MS / 1000)} seconds. Check ${HF_STDERR_LOG}.`);
+    reservedHFPorts.delete(config.port || HF_PORT);
+    throw new Error(`HF speech-to-speech sidecar failed after ${HF_START_ATTEMPTS} launch attempts: ${lastError?.message || String(lastError)}.`);
   })();
+  sidecarStartingByKey.set(config.key, startPromise);
+  sidecarStarting = startPromise;
   try {
-    return await sidecarStarting;
+    return await startPromise;
   } finally {
-    sidecarStarting = null;
+    if (sidecarStarting === startPromise) sidecarStarting = null;
+    sidecarStartingByKey.delete(config.key);
   }
 }
 

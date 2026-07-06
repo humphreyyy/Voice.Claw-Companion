@@ -75,6 +75,41 @@ enum CompanionUpdateCheckInterval: String, CaseIterable, Identifiable {
     }
 }
 
+enum CompanionPowerhouseMode: String, CaseIterable, Identifiable {
+    case light
+    case balanced
+    case maximum
+    case presentation
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .light:
+            "Light"
+        case .balanced:
+            "Balanced"
+        case .maximum:
+            "Maximum"
+        case .presentation:
+            "Presentation"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .light:
+            "Bridge stays available, but voice workers and models warm only on demand."
+        case .balanced:
+            "Keeps the primary/default realtime voice stack warm and prepares recommended fallback profiles."
+        case .maximum:
+            "Aggressively prepares local STT, local LLM, streaming TTS, route prewarm, and network probes."
+        case .presentation:
+            "Most aggressive mode. Uses the Mac like a realtime appliance for lowest latency during demos or heavy use."
+        }
+    }
+}
+
 @MainActor
 final class BridgeStore: ObservableObject {
     private enum DefaultsKeys {
@@ -84,6 +119,7 @@ final class BridgeStore: ObservableObject {
         static let openClawAgentName = "voiceclaw.openClawAgentName"
         static let realtimeAuthMode = "voiceclaw.realtimeAuthMode"
         static let realtimeAuthFallbackToAPIKey = "voiceclaw.realtimeAuthFallbackToAPIKey"
+        static let powerhouseMode = "voiceclaw.powerhouseMode"
         static let automaticUpdateChecksEnabled = "voiceclaw.automaticUpdateChecksEnabled"
         static let automaticUpdateInstallsEnabled = "voiceclaw.automaticUpdateInstallsEnabled"
         static let automaticUpdateCheckInterval = "voiceclaw.automaticUpdateCheckInterval"
@@ -147,6 +183,14 @@ final class BridgeStore: ObservableObject {
             Task { await persistBridgeAuthDefaults() }
         }
     }
+    @Published var powerhouseMode: CompanionPowerhouseMode = .maximum {
+        didSet {
+            lastAutomaticPowerhousePrewarmDate = nil
+            UserDefaults.standard.set(powerhouseMode.rawValue, forKey: DefaultsKeys.powerhouseMode)
+            refreshPairingPayloadSecrets()
+            Task { await persistBridgeAuthDefaults() }
+        }
+    }
     @Published var status: BridgeStatus = .idle
     @Published var bridgeURL: String = ""
     @Published var tailscaleSummary: String = "Not checked"
@@ -157,13 +201,22 @@ final class BridgeStore: ObservableObject {
     @Published var companionVoiceSummary: String = "Companion Realtime Voice dependencies not checked."
     @Published var companionVoiceState: String = "not_checked"
     @Published var companionVoiceWarmSummary: String = "Companion Realtime Voice warm runtime has not been checked."
+    @Published var powerhouseState: String = "not_checked"
+    @Published var powerhouseSummary: String = "Powerhouse runtime has not been checked."
+    @Published var powerhouseHardwareSummary: String = "Mac hardware profile has not been checked."
+    @Published var powerhouseResourcePostureSummary: String = "Powerhouse resource posture has not been checked."
+    @Published var powerhouseWorkerItems: [PowerhouseWorkerItem] = []
     @Published var companionVoiceDependencyInstallSummary: String = ""
     @Published var companionVoiceDependencyInstallAvailable: Bool = false
     @Published var companionVoiceDependencyItems: [CompanionVoiceDependencyItem] = []
     @Published var accessSummary: String = "Access and permissions have not been checked."
     @Published var accessItems: [CompanionAccessItem] = []
+    @Published var isCheckingBridgeRuntime: Bool = false
+    @Published var bridgeRuntimeCheckSummary: String = "Bridge runtime has not been checked yet."
     @Published var isInstallingCompanionVoiceDependencies: Bool = false
     @Published var isPrewarmingCompanionVoiceRuntime: Bool = false
+    @Published var isPrewarmingPowerhouseRuntime: Bool = false
+    @Published var isInstallingPriorityHelper: Bool = false
     @Published var pairingJSON: String = ""
     @Published var pairingPreview: String = ""
     @Published var pairingURL: String = ""
@@ -212,6 +265,7 @@ final class BridgeStore: ObservableObject {
     private var isSyncingSparkleUpdatePreferences = false
     private var suppressTransientSetupWarningUntil: Date?
     private var runtimeSelfHealAttempted = false
+    private var lastAutomaticPowerhousePrewarmDate: Date?
 
     enum BridgeStatus: Equatable {
         case idle
@@ -259,6 +313,10 @@ final class BridgeStore: ObservableObject {
         if UserDefaults.standard.object(forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey) != nil {
             realtimeAuthFallbackToAPIKey = UserDefaults.standard.bool(forKey: DefaultsKeys.realtimeAuthFallbackToAPIKey)
         }
+        if let savedPowerhouseMode = UserDefaults.standard.string(forKey: DefaultsKeys.powerhouseMode),
+           let mode = CompanionPowerhouseMode(rawValue: savedPowerhouseMode) {
+            powerhouseMode = mode
+        }
         if let savedAgentName = UserDefaults.standard.string(forKey: DefaultsKeys.openClawAgentName),
            !savedAgentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             openClawAgentName = savedAgentName
@@ -295,10 +353,19 @@ final class BridgeStore: ObservableObject {
 
     func refreshStatus() async {
         refreshLaunchAtStartupStatus()
+        isCheckingBridgeRuntime = true
+        bridgeRuntimeCheckSummary = "Checking Bridge Runtime: LaunchAgent identity, local bridge, Tailscale Serve mapping, Realtime endpoints, Companion Realtime Voice dependencies, warm runtime status, and required Mac access."
+        defer {
+            isCheckingBridgeRuntime = false
+            lastRefreshDate = Date()
+        }
         await refreshBridgeDiagnostics()
-        lastRefreshDate = Date()
         if companionVoiceState == "ready", !companionVoiceDependencyInstallAvailable {
             Task { await prewarmCompanionVoiceRuntimeIfReady() }
+            if shouldAutomaticallyPrewarmPowerhouse {
+                lastAutomaticPowerhousePrewarmDate = Date()
+                Task { await prewarmPowerhouseRuntime(install: false, refreshAfterCompletion: false) }
+            }
         }
     }
 
@@ -369,6 +436,8 @@ final class BridgeStore: ObservableObject {
                     "--realtime-auth-mode",
                     realtimeAuthMode.rawValue,
                     realtimeAuthFallbackToAPIKey ? "--realtime-auth-fallback-to-api-key" : "--no-realtime-auth-fallback-to-api-key",
+                    "--powerhouse-mode",
+                    powerhouseMode.rawValue,
                 ]
             )
 
@@ -822,6 +891,102 @@ final class BridgeStore: ObservableObject {
         }
     }
 
+    private var shouldAutomaticallyPrewarmPowerhouse: Bool {
+        guard !isPrewarmingPowerhouseRuntime else { return false }
+        guard companionVoiceState == "ready", !companionVoiceDependencyInstallAvailable else { return false }
+        guard powerhouseMode != .light else { return false }
+        guard powerhouseState != "ready" else { return false }
+        if let lastAutomaticPowerhousePrewarmDate,
+           Date().timeIntervalSince(lastAutomaticPowerhousePrewarmDate) < 10 * 60 {
+            return false
+        }
+        return true
+    }
+
+    func prewarmPowerhouseRuntime(install: Bool = true, refreshAfterCompletion: Bool = true) async {
+        guard !isPrewarmingPowerhouseRuntime else { return }
+        guard let portValue = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let url = URL(string: "http://127.0.0.1:\(portValue)/realtime/powerhouse/prewarm")
+        else {
+            powerhouseSummary = "Choose a valid bridge port before warming Powerhouse mode."
+            return
+        }
+
+        isPrewarmingPowerhouseRuntime = true
+        powerhouseSummary = "Starting \(powerhouseMode.label) Powerhouse warm pass..."
+        defer { isPrewarmingPowerhouseRuntime = false }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 45 * 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "mode": powerhouseMode.rawValue,
+            "install": install,
+        ])
+        applyBridgeAuthHeaders(to: &request)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                powerhouseSummary = "Powerhouse warm pass did not return a readable status."
+                return
+            }
+
+            powerhouseState = object["state"] as? String ?? powerhouseState
+            powerhouseSummary = object["summary"] as? String ?? "Powerhouse warm pass completed."
+            if let posture = object["resourcePosture"] as? [String: Any] {
+                powerhouseResourcePostureSummary = Self.powerhousePostureSummary(posture)
+            }
+            if let hardware = object["hardware"] as? [String: Any],
+               let summary = hardware["summary"] as? String {
+                powerhouseHardwareSummary = summary
+            }
+            if let workers = object["workers"] as? [[String: Any]] {
+                powerhouseWorkerItems = workers.map {
+                    PowerhouseWorkerItem(
+                        id: ($0["id"] as? String) ?? UUID().uuidString,
+                        label: ($0["label"] as? String) ?? "Worker",
+                        state: ($0["state"] as? String) ?? "unknown",
+                        resource: ($0["resource"] as? String) ?? "",
+                        mode: ($0["mode"] as? String) ?? powerhouseMode.rawValue
+                    )
+                }
+            }
+            if refreshAfterCompletion {
+                await refreshStatus()
+            }
+        } catch {
+            powerhouseState = "failed"
+            powerhouseSummary = "Powerhouse warm pass failed: \(Self.userFacingSetupError(error))"
+        }
+    }
+
+    func installRealtimePriorityHelper() async {
+        guard !isInstallingPriorityHelper else { return }
+        isInstallingPriorityHelper = true
+        powerhouseSummary = "Requesting admin approval to install the realtime priority helper..."
+        defer { isInstallingPriorityHelper = false }
+
+        do {
+            let output = try await runSetupScript(arguments: ["--install-priority-helper", "--json"])
+            if let data = output.data(using: .utf8),
+               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let helper = object["helper"] as? [String: Any],
+               let summary = helper["summary"] as? String {
+                powerhouseSummary = summary
+            } else {
+                powerhouseSummary = "Realtime priority helper install completed."
+            }
+            await refreshStatus()
+        } catch {
+            powerhouseSummary = "Realtime priority helper install failed: \(Self.userFacingSetupError(error))"
+        }
+    }
+
     private func runSetupScript(arguments: [String]) async throws -> String {
         try await runner.run(
             executable: try await resolveNodeExecutable(),
@@ -868,6 +1033,13 @@ final class BridgeStore: ObservableObject {
         if let fallback = object["realtimeAuthFallbackToAPIKey"] as? Bool {
             realtimeAuthFallbackToAPIKey = fallback
         }
+        if let savedPowerhouseMode = object["powerhouseMode"] as? String,
+           let mode = CompanionPowerhouseMode(rawValue: savedPowerhouseMode) {
+            powerhouseMode = mode
+        } else if let savedPowerhouseMode = object["PowerhouseMode"] as? String,
+                  let mode = CompanionPowerhouseMode(rawValue: savedPowerhouseMode) {
+            powerhouseMode = mode
+        }
 
         let payload = Self.pairingPayload(from: object)
         updatePairingPayload(payload)
@@ -903,6 +1075,7 @@ final class BridgeStore: ObservableObject {
         updated["RealtimeAuthMode"] = realtimeAuthMode.rawValue
         updated["RealtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
         updated["OpenClawAgent"] = normalizedOpenClawAgentName
+        updated["PowerhouseMode"] = powerhouseMode.rawValue
         updated["InstantModel"] = updated["InstantModel"] as? String ?? "gpt-5-chat-latest"
         updated["InstantWebSearch"] = updated["InstantWebSearch"] as? Bool ?? true
         updated["CompanionVersion"] = Self.currentCompanionVersion ?? ""
@@ -942,6 +1115,7 @@ final class BridgeStore: ObservableObject {
                 "openClawAgentName": normalizedOpenClawAgentName,
                 "realtimeAuthMode": realtimeAuthMode.rawValue,
                 "realtimeAuthFallbackToAPIKey": realtimeAuthFallbackToAPIKey,
+                "powerhouseMode": powerhouseMode.rawValue,
             ]
         }
 
@@ -950,6 +1124,7 @@ final class BridgeStore: ObservableObject {
         object["realtimeAuthMode"] = realtimeAuthMode.rawValue
         object["realtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
         object["openClawAgentName"] = normalizedOpenClawAgentName
+        object["powerhouseMode"] = powerhouseMode.rawValue
         let trimmedCerebrasKey = cerebrasAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedCerebrasKey.isEmpty {
             object.removeValue(forKey: "cerebrasAPIKey")
@@ -984,6 +1159,19 @@ final class BridgeStore: ObservableObject {
                     command: $0.command ?? ""
                 )
             }
+            powerhouseState = diagnostics.powerhouse?.state ?? "not_reported"
+            powerhouseSummary = diagnostics.powerhouse?.summary ?? "Powerhouse runtime was not reported by this bridge runtime."
+            powerhouseHardwareSummary = diagnostics.powerhouse?.hardware?.summary ?? "Mac hardware profile was not reported by this bridge runtime."
+            powerhouseResourcePostureSummary = diagnostics.powerhouse?.resourcePosture?.summary ?? "Powerhouse resource posture was not reported by this bridge runtime."
+            powerhouseWorkerItems = (diagnostics.powerhouse?.workerPlan ?? []).map {
+                PowerhouseWorkerItem(
+                    id: $0.id ?? UUID().uuidString,
+                    label: ($0.label?.isEmpty == false ? $0.label : $0.id) ?? "Worker",
+                    state: $0.state ?? "unknown",
+                    resource: $0.resource ?? "",
+                    mode: $0.mode ?? ""
+                )
+            }
             setupAdvice = diagnostics.suggestedAction
             canResetTailscaleMapping = diagnostics.tailscale.canClearSafely ?? false
             accessSummary = diagnostics.access?.summary ?? "Access and permissions were not reported by this bridge runtime."
@@ -1006,22 +1194,7 @@ final class BridgeStore: ObservableObject {
             }
 
             guard !status.isWorking else { return }
-            if diagnostics.runtimeIntegrity?.state == "stale" || diagnostics.runtimeIntegrity?.state == "needs_restart" {
-                status = .warning("Runtime Needs Refresh")
-            } else if diagnostics.local.state == "running", diagnostics.tailscale.state == "voiceclaw_mapping" {
-                status = .ready
-                suppressTransientSetupWarningUntil = nil
-            } else if diagnostics.tailscale.state == "stale_voiceclaw_mapping" || diagnostics.tailscale.state == "occupied_by_other_mapping" || (diagnostics.savedConfigExists && diagnostics.tailscale.state == "not_available") {
-                if let suppressUntil = suppressTransientSetupWarningUntil, Date() < suppressUntil {
-                    status = .ready
-                } else {
-                    status = .warning("Companion Needs Attention")
-                }
-            } else if case .ready = status {
-                status = .idle
-            } else if case .warning = status {
-                status = .idle
-            }
+            applyReadinessStatus(from: diagnostics)
         } catch {
             localBridgeSummary = "Diagnostics could not run."
             tailscaleSummary = Self.userFacingSetupError(error)
@@ -1030,16 +1203,82 @@ final class BridgeStore: ObservableObject {
             realtimeAuthStatusSummary = "OpenAI auth status could not be read because bridge diagnostics failed."
             companionVoiceSummary = "Companion Realtime Voice dependencies could not be checked because bridge diagnostics failed."
             companionVoiceState = "failed"
+            companionVoiceWarmSummary = "Companion Realtime Voice warm runtime could not be checked because bridge diagnostics failed."
             companionVoiceDependencyInstallSummary = ""
             companionVoiceDependencyInstallAvailable = false
             companionVoiceDependencyItems = []
+            powerhouseState = "failed"
+            powerhouseSummary = "Powerhouse runtime could not be checked because bridge diagnostics failed."
+            powerhouseHardwareSummary = "Mac hardware profile could not be checked because bridge diagnostics failed."
+            powerhouseWorkerItems = []
             accessSummary = "Access and permissions could not be checked because bridge diagnostics failed."
             accessItems = []
+            bridgeRuntimeCheckSummary = "Bridge Runtime check failed: \(Self.userFacingSetupError(error))"
             setupAdvice = "Install Node.js and Tailscale if needed, then click Install and Start."
             canResetTailscaleMapping = false
             if !status.isWorking {
                 status = .warning("Diagnostics Need Attention")
             }
+        }
+    }
+
+    private func applyReadinessStatus(from diagnostics: BridgeDiagnostics) {
+        let runtimeState = diagnostics.runtimeIntegrity?.state ?? "not_reported"
+        let localReady = diagnostics.local.state == "running"
+        let tailscaleReady = diagnostics.tailscale.state == "voiceclaw_mapping"
+        let runtimeReady = runtimeState == "ready"
+        let companionVoiceReady = companionVoiceState == "ready"
+        let powerhouseReady = powerhouseState == "ready"
+        let accessState = diagnostics.access?.state ?? "not_reported"
+        let accessReady = accessState == "ready"
+
+        var missing: [String] = []
+        if !runtimeReady {
+            missing.append("Bridge runtime identity is \(runtimeState).")
+        }
+        if !localReady {
+            missing.append("Local bridge is \(diagnostics.local.state).")
+        }
+        if !tailscaleReady {
+            missing.append("Tailscale Serve mapping is \(diagnostics.tailscale.state).")
+        }
+        if !companionVoiceReady {
+            missing.append("Companion Realtime Voice dependencies are \(companionVoiceState).")
+        }
+        if !powerhouseReady {
+            missing.append("Powerhouse runtime is \(powerhouseState).")
+        }
+        if !accessReady {
+            missing.append("Access checks are \(accessState).")
+        }
+
+        if missing.isEmpty {
+            status = .ready
+            suppressTransientSetupWarningUntil = nil
+            bridgeRuntimeCheckSummary = "Companion Ready means the packaged bridge runtime is current, the local bridge is running, Tailscale Serve is mapped to VoiceClaw, access checks are clear, Companion Realtime Voice dependencies are ready, and the active Powerhouse mode is not reporting setup or resource-pressure issues. Warm runtime details are shown separately."
+            return
+        }
+
+        let summary = "Companion is not fully ready: \(missing.joined(separator: " ")) \(setupAdvice)"
+        bridgeRuntimeCheckSummary = summary
+        lastLog = summary
+
+        if runtimeState == "stale" || runtimeState == "needs_restart" {
+            status = .warning("Runtime Needs Refresh")
+        } else if !runtimeReady {
+            status = .warning("Bridge Runtime Needs Attention")
+        } else if !localReady || !tailscaleReady {
+            if let suppressUntil = suppressTransientSetupWarningUntil,
+               Date() < suppressUntil,
+               diagnostics.tailscale.state == "stale_voiceclaw_mapping" || diagnostics.tailscale.state == "occupied_by_other_mapping" || (diagnostics.savedConfigExists && diagnostics.tailscale.state == "not_available") {
+                status = .ready
+            } else {
+                status = .warning("Companion Needs Attention")
+            }
+        } else if !companionVoiceReady {
+            status = .warning("Voice Runtime Needs Attention")
+        } else if !accessReady {
+            status = .warning("Companion Access Needs Attention")
         }
     }
 
@@ -1053,6 +1292,7 @@ final class BridgeStore: ObservableObject {
         runtimeSelfHealAttempted = true
         status = .working("Refreshing Bridge Runtime")
         runtimeIntegritySummary = "Refreshing the LaunchAgent so the bridge uses this Companion app's packaged runtime."
+        bridgeRuntimeCheckSummary = "Checking Bridge Runtime found a stale or mismatched LaunchAgent runtime. VoiceClaw is refreshing the bridge runtime now, then it will run diagnostics again."
         lastLog = runtimeIntegritySummary
 
         do {
@@ -1199,7 +1439,7 @@ final class BridgeStore: ObservableObject {
 
         if lower.contains("tailscale") {
             let detail = raw.isEmpty ? "" : "\n\nTailscale detail: \(raw)"
-            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local VoiceClaw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the phone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoiceClaw looks for the Tailscale command in the standard macOS install locations and only changes Tailscale Serve when you click Install and Start; Check Again is read-only.\(detail)"
+            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local VoiceClaw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the phone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoiceClaw looks for the Tailscale command in the standard macOS install locations and only changes Tailscale Serve when you click Install and Start. Verify Runtime checks status and can refresh VoiceClaw's own stale LaunchAgent runtime when safe, but it does not reset Tailscale Serve mappings.\(detail)"
         }
 
         if lower.contains("openclaw config was not found") || lower.contains("openclaw.json") {
@@ -1215,6 +1455,29 @@ final class BridgeStore: ObservableObject {
         }
 
         return "\(raw)\n\nCheck that Node.js and Tailscale are installed, that the OpenClaw path contains openclaw.json, and that the selected port is free. Then try Install and Start again."
+    }
+
+    private static func powerhousePostureSummary(_ posture: [String: Any]) -> String {
+        let priority = (posture["priority"] as? String)?.replacingOccurrences(of: "-", with: " ") ?? "aggressive"
+        let workers = posture["parallelWorkers"] as? Int ?? 0
+        let physical = posture["physicalCores"] as? Int ?? 0
+        let logical = posture["logicalCores"] as? Int ?? 0
+        let tts = posture["ttsProbeRepeats"] as? Int ?? 0
+        let route = posture["routePrewarmRepeats"] as? Int ?? 0
+        let network = posture["networkProbeRepeats"] as? Int ?? 0
+        let threads = posture["aggressiveThreads"] as? Int ?? 0
+        let pipelines = posture["hfNumPipelines"] as? Int ?? 0
+        let activity = (posture["activityAssertion"] as? Bool) == true ? "activity assertion on" : "activity assertion on demand"
+        let policy = posture["hfSidecarPolicy"] as? String ?? "Primary/default realtime sidecar is restored after fallback warmups."
+        let cores = physical > 0 || logical > 0 ? "\(physical) physical / \(logical) logical cores" : "Mac cores detected"
+        let threadText = threads > 0 ? "; \(threads) aggressive runtime threads" : ""
+        let pipelineText = pipelines > 0 ? "; \(pipelines) HF pipelines per sidecar" : ""
+        let primary = posture["primaryRuntimeProfile"] as? [String: Any]
+        let primaryBrain = primary?["brainMode"] as? String ?? ""
+        let primarySTT = primary?["sttProfile"] as? String ?? ""
+        let primaryDescriptor = [primaryBrain, primarySTT].filter { !$0.isEmpty }.joined(separator: " / ")
+        let primaryText = primaryDescriptor.isEmpty ? "" : " Primary profile: \(primaryDescriptor)."
+        return "Priority: \(priority). Parallel workers: \(workers). Hardware: \(cores)\(threadText)\(pipelineText); \(activity). Probes: \(tts) TTS, \(route) route, \(network) network.\(primaryText) \(policy)"
     }
 
     private static func resolveProjectRoot() -> URL {
@@ -1497,12 +1760,21 @@ struct CompanionAccessItem: Identifiable, Equatable {
     let installable: Bool
 }
 
+struct PowerhouseWorkerItem: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let state: String
+    let resource: String
+    let mode: String
+}
+
 private struct BridgeDiagnostics: Decodable {
     let savedConfigExists: Bool
     let local: Component
     let tailscale: Component
     let runtimeIntegrity: Component?
     let companionVoice: Component?
+    let powerhouse: PowerhouseDiagnostics?
     let access: AccessDiagnostics?
     let suggestedAction: String
 
@@ -1534,6 +1806,79 @@ private struct BridgeDiagnostics: Decodable {
         let state: String?
         let summary: String?
         let items: [AccessItem]?
+    }
+
+    struct PowerhouseDiagnostics: Decodable {
+        let state: String?
+        let mode: String?
+        let label: String?
+        let summary: String?
+        let hardware: Hardware?
+        let resourcePosture: ResourcePosture?
+        let workerPlan: [Worker]?
+    }
+
+    struct Hardware: Decodable {
+        let summary: String?
+        let memoryPressure: String?
+    }
+
+    struct Worker: Decodable {
+        let id: String?
+        let label: String?
+        let state: String?
+        let resource: String?
+        let mode: String?
+    }
+
+    struct ResourcePosture: Decodable {
+        let priority: String?
+        let parallelWorkers: Int?
+        let physicalCores: Int?
+        let logicalCores: Int?
+        let strategy: String?
+        let hfSidecarPolicy: String?
+        let activityAssertion: Bool?
+        let aggressiveThreads: Int?
+        let hfNumPipelines: Int?
+        let ttsProbeRepeats: Int?
+        let routePrewarmRepeats: Int?
+        let networkProbeRepeats: Int?
+        let primaryRuntimeProfile: PrimaryRuntimeProfile?
+
+        var summary: String {
+            let priorityText = (priority ?? "aggressive").replacingOccurrences(of: "-", with: " ")
+            let workerText = parallelWorkers.map(String.init) ?? "auto"
+            let coreText: String
+            if let physicalCores, let logicalCores {
+                coreText = "\(physicalCores) physical / \(logicalCores) logical cores"
+            } else {
+                coreText = "Mac cores detected"
+            }
+            let tts = ttsProbeRepeats ?? 0
+            let route = routePrewarmRepeats ?? 0
+            let network = networkProbeRepeats ?? 0
+            let threadText = aggressiveThreads.map { "; \($0) aggressive runtime threads" } ?? ""
+            let pipelineText = hfNumPipelines.map { "; \($0) HF pipelines per sidecar" } ?? ""
+            let activity = activityAssertion == true ? "activity assertion on" : "activity assertion on demand"
+            let policy = hfSidecarPolicy ?? "Primary/default realtime sidecar is restored after fallback warmups."
+            let primaryText = primaryRuntimeProfile?.summary.map { " Primary profile: \($0)." } ?? ""
+            return "Priority: \(priorityText). Parallel workers: \(workerText). Hardware: \(coreText)\(threadText)\(pipelineText); \(activity). Probes: \(tts) TTS, \(route) route, \(network) network.\(primaryText) \(policy)"
+        }
+    }
+
+    struct PrimaryRuntimeProfile: Decodable {
+        let brainMode: String?
+        let sttProfile: String?
+        let localVoice: String?
+
+        var summary: String? {
+            let brain = brainMode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let stt = sttProfile?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let voice = localVoice?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let joined = [brain, stt, voice].filter { !$0.isEmpty }.joined(separator: " / ")
+            return joined.isEmpty ? nil : joined
+        }
     }
 
     struct AccessItem: Decodable {
