@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.115</title>
+            <pubDate>Mon, 06 Jul 2026 18:47:09 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607061845</sparkle:version>
+            <sparkle:shortVersionString>0.1.115</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.115</h2><ul><li>Improves OpenAI OAuth handoff between the iPhone app, Companion QR sync, and Companion Realtime Voice.</li><li>Keeps OpenAI STT and OpenAI Companion Realtime Voice LLMs OAuth-first, using API-key fallback only when the paired iPhone explicitly enables it.</li><li>Refreshes and persists Companion-side ChatGPT OAuth into the bridge configuration so the runtime can recover from stale imported credentials.</li><li>Preserves OpenAI TTS and GPT-Realtime-2 API-key behavior where those paths currently require it.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.115/VoiceClawCompanion-0.1.115-202607061845.dmg" length="3569981" type="application/octet-stream" sparkle:edSignature="0NNFpwkcFV2MK1sFZl4JlgZIbd9m2EsBELqKxRIrsNtEjTu2QPdCJ5rY5pSB2qu3AY9dcgJBaT0nrtp7riyLCA=="/>
+        </item>
+        <item>
             <title>0.1.114</title>
             <pubDate>Mon, 06 Jul 2026 17:08:33 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.113</h2><ul><li>Adds GPT-5.4-mini and GPT-5.4-nano as Companion Realtime Voice LLM choices alongside GPT-5.5, Cerebras, and Local Qwen.</li><li>Aligns Companion Realtime Voice planning with the selected OpenAI LLM instead of hard-coding GPT-5.5.</li><li>Keeps the HF speech-to-speech runtime readiness and 16 kHz runtime contract intact.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.113/VoiceClawCompanion-0.1.113-202607061523.dmg" length="3564219" type="application/octet-stream" sparkle:edSignature="Ii/EDDtxWPHE1hQ/AgQe5BpsfVHTQyTgaLYooT4n4eQxtQcR00evC9STR5yjbVmqRW2F1ErQyfoV2kckcdkNBA=="/>
-        </item>
-        <item>
-            <title>0.1.112</title>
-            <pubDate>Mon, 06 Jul 2026 14:02:17 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607061401</sparkle:version>
-            <sparkle:shortVersionString>0.1.112</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.112</h2><ul><li>Corrects Sparkle update ordering with a build number newer than 0.1.110.</li><li>Stops Companion voice, HF, Qwen, TTS, keep-hot, and Powerhouse prewarming from running automatically at bridge startup.</li><li>Keeps Powerhouse warming and dependency preparation as explicit user actions.</li><li>Removes the realtime priority-helper installer path while preserving legacy helper diagnostics.</li><li>Keeps the default Powerhouse mode at Light.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.112/VoiceClawCompanion-0.1.112-202607061401.dmg" length="3566017" type="application/octet-stream" sparkle:edSignature="+jbxRWWkMHTtAKNbkE3Be0fdTDeAcgQtTrx8H+qeGXSRa4/7BxI1GG+pjYW/rKuCiVdzTuoNqnPkwFKHUURwAg=="/>
         </item>
     </channel>
 </rss>
