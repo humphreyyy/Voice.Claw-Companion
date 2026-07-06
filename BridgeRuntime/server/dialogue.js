@@ -31,16 +31,34 @@ const DIRECT_OPENAI_MODEL_ROUTES = [
     aliases: ['gpt55-direct', 'gpt55direct', 'gpt-5.5-direct', 'gpt-5.5-without-openclaw', 'without-openclaw'],
   },
   {
+    id: 'gpt54-direct',
+    label: 'GPT-5.4 Direct (raw/no OpenClaw)',
+    model: 'openai/gpt-5.4',
+    aliases: ['gpt54-direct', 'gpt54direct', 'gpt-5.4-direct', 'gpt-5.4', 'gpt54'],
+  },
+  {
     id: 'gpt54-mini-direct',
     label: 'GPT-5.4-mini Direct (raw/no OpenClaw)',
     model: 'openai/gpt-5.4-mini',
-    aliases: ['gpt54-mini-direct', 'gpt54mini-direct', 'gpt-5.4-mini-direct', 'gpt-5.4-mini', 'gpt54mini'],
+    aliases: ['gpt54-mini-direct', 'gpt54mini-direct', 'gpt-5.4-mini-direct', 'gpt-5.4-mini', 'gpt54mini', 'gpt54-nano-direct', 'gpt54nano-direct', 'gpt-5.4-nano-direct', 'gpt-5.4-nano', 'gpt54nano'],
   },
   {
-    id: 'gpt54-nano-direct',
-    label: 'GPT-5.4-nano Direct (raw/no OpenClaw)',
-    model: 'openai/gpt-5.4-nano',
-    aliases: ['gpt54-nano-direct', 'gpt54nano-direct', 'gpt-5.4-nano-direct', 'gpt-5.4-nano', 'gpt54nano'],
+    id: 'gpt56-sol-direct',
+    label: 'GPT-5.6 Sol Direct (raw/no OpenClaw)',
+    model: 'openai/gpt-5.6-sol',
+    aliases: ['gpt56-sol-direct', 'gpt56soldirect', 'gpt-5.6-sol-direct', 'gpt-5.6-sol', 'gpt56sol'],
+  },
+  {
+    id: 'gpt56-terra-direct',
+    label: 'GPT-5.6 Terra Direct (raw/no OpenClaw)',
+    model: 'openai/gpt-5.6-terra',
+    aliases: ['gpt56-terra-direct', 'gpt56terradirect', 'gpt-5.6-terra-direct', 'gpt-5.6-terra', 'gpt56terra'],
+  },
+  {
+    id: 'gpt56-luna-direct',
+    label: 'GPT-5.6 Luna Direct (raw/no OpenClaw)',
+    model: 'openai/gpt-5.6-luna',
+    aliases: ['gpt56-luna-direct', 'gpt56lunadirect', 'gpt-5.6-luna-direct', 'gpt-5.6-luna', 'gpt56luna'],
   },
 ];
 const THINKING_OPTIONS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];

@@ -111,19 +111,25 @@ const COMPANION_VOICE_OPENAI_BRAIN_MODES = {
     model: 'gpt-5.5',
     route: 'gpt55-direct',
   },
+  'gpt-5.4': {
+    label: 'GPT-5.4',
+    model: 'gpt-5.4',
+    route: 'gpt54-direct',
+  },
   'gpt-5.4-mini': {
     label: 'GPT-5.4-mini',
     model: 'gpt-5.4-mini',
     route: 'gpt54-mini-direct',
   },
-  'gpt-5.4-nano': {
-    label: 'GPT-5.4-nano',
-    model: 'gpt-5.4-nano',
-    route: 'gpt54-nano-direct',
-  },
 };
 const COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL = process.env.COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL || 'gemma-4-31b';
 const COMPANION_VOICE_CEREBRAS_MODELS = ['gemma-4-31b', 'gpt-oss-120b', 'zai-glm-4.7'];
+const DIRECT_CODEX_ROUTE_MODELS = {
+  'gpt55-direct': { label: 'GPT-5.5', model: 'openai/gpt-5.5' },
+  'gpt56-sol-direct': { label: 'GPT-5.6 Sol', model: 'openai/gpt-5.6-sol' },
+  'gpt56-terra-direct': { label: 'GPT-5.6 Terra', model: 'openai/gpt-5.6-terra' },
+  'gpt56-luna-direct': { label: 'GPT-5.6 Luna', model: 'openai/gpt-5.6-luna' },
+};
 const CEREBRAS_BASE_URL = (process.env.CEREBRAS_BASE_URL || 'https://api.cerebras.ai/v1').replace(/\/+$/g, '');
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/+$/g, '');
 const COMPANION_VOICE_QWEN_KEEP_ALIVE = process.env.COMPANION_VOICE_QWEN_KEEP_ALIVE || '30m';
@@ -311,7 +317,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_prepare_voice_route_switch is legacy compatibility only for route switches; prefer iphone_confirm_voice_route_switch for new calls.
 - iphone_confirm_voice_route_switch changes VoiceClaw's selected route after an explicit user request to switch VoiceClaw mode or route. Do not ask a confirmation question. Say briefly that VoiceClaw is switching, then use the tool immediately. There is no stop-to-cancel window.
 - iphone_confirm_voice_engine_switch changes VoiceClaw's selected voice engine after an explicit user request to switch voice engine to GPT-Realtime-2, STT + GPT + TTS, or Companion Realtime Voice. Do not ask a confirmation question when the target is clear. Say briefly that VoiceClaw is switching engines, then use the tool immediately.
-- iphone_set_companion_middle_brain changes the Companion Realtime Voice LLM when the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, GPT-5.4-mini, GPT-5.4-nano, or Cerebras.
+- iphone_set_companion_middle_brain changes the Companion Realtime Voice LLM when the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, GPT-5.4, GPT-5.4-mini, or Cerebras.
 - iphone_set_cerebras_model changes the Cerebras model used by the Companion Realtime Voice LLM when the user explicitly asks for Gemma 4 31B, GPT OSS 120B, or Z.ai GLM 4.7.
 - iphone_cancel_voice_route_switch is legacy compatibility only. Route switches and restarts normally happen immediately, so there should not be a pending switch or restart to cancel.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
@@ -806,7 +812,7 @@ const IPHONE_REALTIME_TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'gpt55-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'], description: 'Exact target route: realtime-only for Direct GPT-Realtime-2, gpt55-instant for GPT-5.5 Instant, gpt55-direct for GPT-5.5 without OpenClaw, openclaw-bridge for OpenClaw Bridge, openclaw-public-tunnel for OpenClaw HTTPS Tunnel, hermes-bridge for Hermes via Tailscale, or hermes-public-tunnel for Hermes HTTPS Tunnel.' },
+        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'], description: 'Exact target route: realtime-only for Direct GPT-Realtime-2, gpt55-instant for GPT-5.5 Instant, gpt55-direct for GPT-5.5 without OpenClaw, gpt56-sol-direct / gpt56-terra-direct / gpt56-luna-direct for GPT-5.6 without OpenClaw preview routes, openclaw-bridge for OpenClaw Bridge, openclaw-public-tunnel for OpenClaw HTTPS Tunnel, hermes-bridge for Hermes via Tailscale, or hermes-public-tunnel for Hermes HTTPS Tunnel.' },
         reason: { type: 'string', description: 'Brief reason the user requested this route switch.' }
       },
       required: ['route']
@@ -820,7 +826,7 @@ const IPHONE_REALTIME_TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'gpt55-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'], description: 'Optional target route if restating the pending switch.' },
+        route: { type: 'string', enum: ['realtime-only', 'gpt55-instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'], description: 'Optional target route if restating the pending switch, including GPT-5.6 Sol/Terra/Luna without OpenClaw preview routes.' },
         reason: { type: 'string', description: 'Brief reason the user confirmed this switch.' }
       },
       required: []
@@ -843,12 +849,12 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_set_companion_middle_brain',
-    description: 'Set the Companion Realtime Voice LLM after the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, GPT-5.4-mini, GPT-5.4-nano, or Cerebras for the Companion Realtime Voice voice engine. Do not use this for ordinary route switches or model-answer questions.',
+    description: 'Set the Companion Realtime Voice LLM after the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, GPT-5.4, GPT-5.4-mini, or Cerebras for the Companion Realtime Voice voice engine. Do not use this for ordinary route switches or model-answer questions.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        brain_mode: { type: 'string', enum: ['qwen3.5-2b', 'gpt55-fast-low', 'gpt-5.4-mini', 'gpt-5.4-nano', 'cerebras'], description: 'Target Companion Realtime Voice LLM.' },
+        brain_mode: { type: 'string', enum: ['qwen3.5-2b', 'gpt55-fast-low', 'gpt-5.4', 'gpt-5.4-mini', 'cerebras'], description: 'Target Companion Realtime Voice LLM.' },
         reason: { type: 'string', description: 'Brief reason the user requested this Companion Realtime Voice LLM change.' }
       },
       required: ['brain_mode']
@@ -2170,8 +2176,15 @@ function realtimeRoutingMode(req) {
   const value = String(url.searchParams.get('route') || req.headers['x-openclaw-route'] || '').toLowerCase();
   if (['instant', 'gpt55', 'gpt-5.5', 'gpt55-instant', 'chat-latest'].includes(value)) return 'instant';
   if (['gpt55-direct', 'gpt-5.5-direct', 'gpt55-without-openclaw', 'without-openclaw'].includes(value)) return 'gpt55-direct';
+  if (['gpt56-sol-direct', 'gpt56soldirect', 'gpt-5.6-sol-direct', 'gpt-5.6-sol', 'gpt56sol'].includes(value)) return 'gpt56-sol-direct';
+  if (['gpt56-terra-direct', 'gpt56terradirect', 'gpt-5.6-terra-direct', 'gpt-5.6-terra', 'gpt56terra'].includes(value)) return 'gpt56-terra-direct';
+  if (['gpt56-luna-direct', 'gpt56lunadirect', 'gpt-5.6-luna-direct', 'gpt-5.6-luna', 'gpt56luna'].includes(value)) return 'gpt56-luna-direct';
   if (['hermes', 'hermes-bridge', 'hermes-tailscale', 'hermes-public-tunnel', 'hermes-tunnel', 'hermes-https-tunnel'].includes(value)) return 'hermes';
   return value === 'direct' || value === 'pure' || value === 'realtime-only' ? 'direct' : 'openclaw';
+}
+
+function isDirectCodexRoute(routeMode = '') {
+  return Object.prototype.hasOwnProperty.call(DIRECT_CODEX_ROUTE_MODELS, routeMode);
 }
 
 function isOpenClawRealtimeRoute(routeMode = '') {
@@ -2187,7 +2200,7 @@ function isAgentRealtimeRoute(routeMode = '') {
 }
 
 function hasServerOwnedRealtimeTools(routeMode = '') {
-  return isAgentRealtimeRoute(routeMode) || routeMode === 'gpt55-direct';
+  return isAgentRealtimeRoute(routeMode) || isDirectCodexRoute(routeMode);
 }
 
 function realtimeCurrentContext() {
@@ -2204,29 +2217,32 @@ function realtimeCurrentContext() {
 function realtimeInstructionsForRoute(routeMode = '') {
   const base = isAgentRealtimeRoute(routeMode)
     ? REALTIME_INSTRUCTIONS
-    : (routeMode === 'gpt55-direct' ? REALTIME_GPT55_DIRECT_INSTRUCTIONS : (routeMode === 'instant' ? REALTIME_INSTANT_INSTRUCTIONS : REALTIME_DIRECT_INSTRUCTIONS));
+    : (isDirectCodexRoute(routeMode) ? REALTIME_GPT55_DIRECT_INSTRUCTIONS : (routeMode === 'instant' ? REALTIME_INSTANT_INSTRUCTIONS : REALTIME_DIRECT_INSTRUCTIONS));
+  const directModelNote = isDirectCodexRoute(routeMode)
+    ? `\n# Selected direct model\n- This route targets ${DIRECT_CODEX_ROUTE_MODELS[routeMode].label} without OpenClaw. If the model is not yet admitted for this account, report the backend failure plainly.\n`
+    : '';
   const runtimeNote = isHermesRealtimeRoute(routeMode)
     ? '\n# Selected agent runtime\n- This route uses Hermes Agent as the selected core resource instead of OpenClaw. The OpenClaw-named tool schemas are compatibility shims; when you call openclaw_turn, steer_openclaw, stop_openclaw, or bridge_status in this route, VoiceClaw routes that work to Hermes Agent through the Companion.\n- Say "Hermes" to the user, not "OpenClaw", when describing the selected route or background work.\n'
     : '';
-  return `${base.trim()}${runtimeNote}\n${realtimeCurrentContext()}`.trim();
+  return `${base.trim()}${directModelNote}${runtimeNote}\n${realtimeCurrentContext()}`.trim();
 }
 
 function realtimeToolsForRoute(routeMode = '') {
   if (routeMode === 'instant') return [...INSTANT_REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS];
-  if (routeMode === 'gpt55-direct') return [...GPT55_DIRECT_REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS];
+  if (isDirectCodexRoute(routeMode)) return [...GPT55_DIRECT_REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS];
   return isAgentRealtimeRoute(routeMode) ? [...REALTIME_TOOLS, ...IPHONE_REALTIME_TOOLS] : IPHONE_REALTIME_TOOLS;
 }
 
 function watchRealtimeToolsForRoute(routeMode = '') {
   if (routeMode === 'instant') return INSTANT_REALTIME_TOOLS;
-  if (routeMode === 'gpt55-direct') return GPT55_DIRECT_REALTIME_TOOLS;
+  if (isDirectCodexRoute(routeMode)) return GPT55_DIRECT_REALTIME_TOOLS;
   return isAgentRealtimeRoute(routeMode) ? REALTIME_TOOLS : [];
 }
 
 function realtimeRouteForCompanionPayload(payload = {}) {
   const route = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
   if (route === 'standalone') return 'direct';
-  return ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'].includes(route) ? route : 'gpt55-direct';
+  return ['direct', 'instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw', 'hermes'].includes(route) ? route : 'gpt55-direct';
 }
 
 function hfRealtimeToolsForCompanionPayload(payload = {}) {
@@ -3279,6 +3295,9 @@ function normalizeCompanionVoiceRoute(raw = '') {
   const value = String(raw || '').trim().toLowerCase();
   if (['standalone', 'realtime-only', 'realtime', 'direct-realtime', 'voice-engine-standalone'].includes(value)) return 'standalone';
   if (['gpt55-direct', 'gpt-55-direct', 'gpt55', 'gpt-5.5', 'direct'].includes(value)) return 'gpt55-direct';
+  if (['gpt56-sol-direct', 'gpt56soldirect', 'gpt-5.6-sol-direct', 'gpt-5.6-sol', 'gpt56sol'].includes(value)) return 'gpt56-sol-direct';
+  if (['gpt56-terra-direct', 'gpt56terradirect', 'gpt-5.6-terra-direct', 'gpt-5.6-terra', 'gpt56terra'].includes(value)) return 'gpt56-terra-direct';
+  if (['gpt56-luna-direct', 'gpt56lunadirect', 'gpt-5.6-luna-direct', 'gpt-5.6-luna', 'gpt56luna'].includes(value)) return 'gpt56-luna-direct';
   if (['hermes', 'hermes-bridge', 'hermes-public-tunnel', 'hermes-tunnel', 'hermes-https'].includes(value)) return 'hermes';
   if (['openclaw', 'openclaw-bridge', 'openclaw-public-tunnel', 'openclaw-tunnel', 'bridge', 'tunnel'].includes(value)) return 'openclaw';
   return 'gpt55-direct';
@@ -3286,9 +3305,9 @@ function normalizeCompanionVoiceRoute(raw = '') {
 
 function companionVoiceProcessingForRoute(routeMode, payload = {}, sessionToken = '') {
   const route = normalizeCompanionVoiceRoute(routeMode);
-  if (route === 'gpt55-direct') {
+  if (isDirectCodexRoute(route)) {
     return {
-      agent: 'gpt55-direct',
+      agent: route,
       thinking: String(payload.gpt55DirectReasoning || 'low'),
       fastMode: 'on',
       runtime: 'openclaw',
@@ -3307,8 +3326,9 @@ function companionVoiceProcessingForRoute(routeMode, payload = {}, sessionToken 
 function normalizeCompanionVoiceBrainMode(raw = '') {
   const value = String(raw || '').trim().toLowerCase();
   if (['gpt55-fast-low', 'gpt-5.5', 'gpt55', 'gpt-55', 'gpt-5-5'].includes(value)) return 'gpt55-fast-low';
+  if (['gpt-5.4', 'gpt54', 'gpt-54', 'gpt-5-4', 'openai/gpt-5.4'].includes(value)) return 'gpt-5.4';
   if (['gpt-5.4-mini', 'gpt54-mini', 'gpt54mini', 'gpt-54-mini', 'openai/gpt-5.4-mini'].includes(value)) return 'gpt-5.4-mini';
-  if (['gpt-5.4-nano', 'gpt54-nano', 'gpt54nano', 'gpt-54-nano', 'openai/gpt-5.4-nano'].includes(value)) return 'gpt-5.4-nano';
+  if (['gpt-5.4-nano', 'gpt54-nano', 'gpt54nano', 'gpt-54-nano', 'openai/gpt-5.4-nano'].includes(value)) return 'gpt-5.4-mini';
   if (value === 'cerebras') return `cerebras:${COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL}`;
   if (value.startsWith('cerebras:') || value.startsWith('cerebras-')) return `cerebras:${normalizeCerebrasModelID(value)}`;
   if (['local', 'local-router', 'deterministic'].includes(value)) return 'local';
@@ -3402,7 +3422,9 @@ function companionVoiceFallbackIPhoneTool(text = '') {
     } else if (/\b(gpt[-\s]*5\.?4|gpt54)\b/i.test(normalized) && /\bmini|min\b/i.test(normalized)) {
       brainMode = 'gpt-5.4-mini';
     } else if (/\b(gpt[-\s]*5\.?4|gpt54)\b/i.test(normalized) && /\bnano\b/i.test(normalized)) {
-      brainMode = 'gpt-5.4-nano';
+      brainMode = 'gpt-5.4-mini';
+    } else if (/\b(gpt[-\s]*5\.?4|gpt54)\b/i.test(normalized)) {
+      brainMode = 'gpt-5.4';
     } else if (/\bcerebras\b/i.test(normalized)) {
       brainMode = 'cerebras';
     }
@@ -3751,7 +3773,7 @@ function companionVoiceRequiresBottomRoute(text = '', routeMode = '') {
   if (route === 'standalone') return false;
   if (/\b(openclaw|open claw|hermes|agent|selected route|bottom route)\b/i.test(normalized)) return true;
   if (companionVoiceLooksLikeIPhoneAction(trimmed)) return false;
-  if (/\b(status|progress|still working|continue|resume)\b/i.test(normalized) && route !== 'gpt55-direct') return true;
+  if (/\b(status|progress|still working|continue|resume)\b/i.test(normalized) && !isDirectCodexRoute(route)) return true;
   if (/\b(my|this|current|latest|recent|today'?s|now)\b/i.test(normalized)
     && /\b(files?|folders?|desktop|downloads?|documents?|calendar|messages?|email|mail|browser|tabs?|safari|maps?|location|photos?|attachments?|screen|computer|mac|phone|iphone|watch)\b/i.test(normalized)) {
     return true;
@@ -3791,7 +3813,7 @@ function companionVoiceLocalPlan(text = '', routeMode = '') {
       iphoneToolArguments: fallbackIPhoneTool.arguments || {},
     };
   }
-  if (/\b(status|progress|still working|what are you doing|what is openclaw doing|what is hermes doing)\b/i.test(normalized) && route !== 'gpt55-direct') {
+  if (/\b(status|progress|still working|what are you doing|what is openclaw doing|what is hermes doing)\b/i.test(normalized) && !isDirectCodexRoute(route)) {
     return {
       callRoute: true,
       routeMessage: `VoiceClaw user asked for the current status of the active ${route === 'hermes' ? 'Hermes' : 'OpenClaw'} work. Report status concisely and include any latest result if available.`,
@@ -4029,8 +4051,8 @@ Decision policy:
 - For explicit iPhone/app actions, set iphone_tool_name and iphone_tool_arguments instead of saying you cannot do it. Use a tool only when the user clearly asked for a phone/app/system action; do not use phone tools for spoken-only requests such as counting aloud, repeating text, explaining, translating, brainstorming, or ordinary conversation.
 - Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_current_location for current location; iphone_list_calendar_events and iphone_create_calendar_event for Calendar; iphone_list_reminders and iphone_create_reminder for Reminders; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, iphone_set_companion_middle_brain, iphone_set_cerebras_model, and iphone_end_voice_session for VoiceClaw session/route/engine/LLM controls.
 - For text/message drafts, only set iphone_tool_name when the recipient is clear. If the user asks to draft or send a text but does not say who it is for, leave iphone_tool_name empty and ask: "Who should I send the text to?"
-- If the user asks what voice engines are available, answer concisely: GPT-Realtime-2, STT + GPT + TTS, and Companion Realtime Voice. If the user asks what voice routes are available, answer concisely: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, and Hermes HTTPS Tunnel.
-- If the user asks what Companion Realtime Voice LLMs are available, answer concisely: Local Qwen 3.5 2B, GPT-5.5, GPT-5.4-mini, GPT-5.4-nano, and Cerebras. If the user asks what Cerebras models are available, answer concisely: Gemma 4 31B, GPT OSS 120B, and Z.ai GLM 4.7.
+- If the user asks what voice engines are available, answer concisely: GPT-Realtime-2, STT + GPT + TTS, and Companion Realtime Voice. If the user asks what voice routes are available, answer concisely: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, GPT-5.6 Sol/Terra/Luna without OpenClaw preview routes, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, and Hermes HTTPS Tunnel.
+- If the user asks what Companion Realtime Voice LLMs are available, answer concisely: Local Qwen 3.5 2B, GPT-5.5, GPT-5.4, GPT-5.4-mini, and Cerebras. If the user asks what Cerebras models are available, answer concisely: Gemma 4 31B, GPT OSS 120B, and Z.ai GLM 4.7.
 - Location, nearby, Maps, route, and directions requests are iPhone-side actions. Do not send them to OpenClaw/Hermes unless the user explicitly asks the Mac agent to handle them.
 - For directions from "here", "my current location", or "where I am", use iphone_external_action or iphone_open_maps with mode "directions", destination set to the actual destination only, and origin omitted so Apple Maps uses the iPhone's current location.
 - Use call_route=true for explicit OpenClaw/Hermes/computer work, private/current/user-specific state, files/attachments, Mac/computer control, long research/analysis, or when the user explicitly asks to use the selected route.
@@ -4056,6 +4078,7 @@ iPhone action examples:
 - "Mute me" -> {"call_route":false,"route_message":"","final_answer":"Mic Muted","iphone_tool_name":"iphone_set_microphone_muted","iphone_tool_arguments":{"muted":true,"reason":"The user asked to mute the VoiceClaw microphone."}}
 - "Switch the voice engine to Companion Realtime Voice" -> {"call_route":false,"route_message":"","final_answer":"Switching voice engines.","iphone_tool_name":"iphone_confirm_voice_engine_switch","iphone_tool_arguments":{"engine":"companion-realtime-voice"}}
 - "Switch the Companion Realtime Voice LLM to Cerebras" -> {"call_route":false,"route_message":"","final_answer":"Switching the Companion Realtime Voice LLM.","iphone_tool_name":"iphone_set_companion_middle_brain","iphone_tool_arguments":{"brain_mode":"cerebras"}}
+- "Switch the Companion Realtime Voice LLM to GPT-5.4" -> {"call_route":false,"route_message":"","final_answer":"Switching the Companion Realtime Voice LLM.","iphone_tool_name":"iphone_set_companion_middle_brain","iphone_tool_arguments":{"brain_mode":"gpt-5.4"}}
 - "Switch the Companion Realtime Voice LLM to GPT-5.4 mini" -> {"call_route":false,"route_message":"","final_answer":"Switching the Companion Realtime Voice LLM.","iphone_tool_name":"iphone_set_companion_middle_brain","iphone_tool_arguments":{"brain_mode":"gpt-5.4-mini"}}
 - "Use GPT OSS 120B for Cerebras" -> {"call_route":false,"route_message":"","final_answer":"Switching the Cerebras model.","iphone_tool_name":"iphone_set_cerebras_model","iphone_tool_arguments":{"model":"gpt-oss-120b"}}
 - "What files are on my Mac desktop?" in an OpenClaw or Hermes route -> {"call_route":true,"route_message":"What files are on my Mac desktop?","final_answer":"Checking that now.","iphone_tool_name":"","iphone_tool_arguments":{}}`;
@@ -4080,8 +4103,8 @@ Rules:
 - If routing: call_route=true, route_message=complete task, final_answer=brief acknowledgement.
 - If using an iPhone tool: call_route=false, route_message="", final_answer=brief acknowledgement.
 - Engine options: GPT-Realtime-2, STT + GPT + TTS, Companion Realtime Voice.
-- Route options: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, Hermes HTTPS Tunnel.
-- Companion Realtime Voice LLM options: Local Qwen 3.5 2B, GPT-5.5, GPT-5.4-mini, GPT-5.4-nano, and Cerebras.`;
+- Route options: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, GPT-5.6 Sol/Terra/Luna without OpenClaw preview routes, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, Hermes HTTPS Tunnel.
+- Companion Realtime Voice LLM options: Local Qwen 3.5 2B, GPT-5.5, GPT-5.4, GPT-5.4-mini, and Cerebras.`;
 }
 
 async function runQwen35Planner(prompt, { signal, timeoutMs = 12000, qwenThinking = false } = {}) {
@@ -4408,7 +4431,7 @@ function companionVoiceRouteAck(routeMode = '', plan = {}) {
   const route = normalizeCompanionVoiceRoute(routeMode);
   if (route === 'hermes') return "I'm sending that to Hermes now.";
   if (route === 'openclaw') return "I'm sending that to OpenClaw now.";
-  if (route === 'gpt55-direct') return "I'm asking GPT-5.5 now.";
+  if (isDirectCodexRoute(route)) return `I'm asking ${DIRECT_CODEX_ROUTE_MODELS[route].label} now.`;
   return "I'm working on that now.";
 }
 
@@ -4875,7 +4898,7 @@ const httpServer = createServer(async (req, res) => {
         defaultSTTProfile: primaryProfile.sttProfile || hfRealtime.sttProfile || 'parakeet-live',
         ttsDefault: primaryProfile.localVoice || tts.defaultVoice,
         ttsVoices: tts.voices,
-        routeModes: ['realtime-only', 'gpt55-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'],
+        routeModes: ['realtime-only', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'],
         routeAliases: { standalone: 'realtime-only', openclaw: 'openclaw-bridge', hermes: 'hermes-bridge' },
       };
       const realtimeConfig = {
@@ -4894,8 +4917,8 @@ const httpServer = createServer(async (req, res) => {
         cloudAudioDefault: true,
         localPrivatePath: `${BASE_PATH}/index.html` || '/index.html',
         transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL],
-        conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', REALTIME_MODEL],
-        routeModes: ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'],
+        conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', REALTIME_MODEL],
+        routeModes: ['direct', 'instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw', 'hermes'],
         companionVoice: companionVoiceConfig,
         auth: realtimeAuthPreferences(req),
         openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })),
@@ -5268,7 +5291,7 @@ const httpServer = createServer(async (req, res) => {
       const body = await readRequestBody(req).catch(() => '{}');
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
-      const routeMode = ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'].includes(String(payload.routeMode || '').toLowerCase())
+      const routeMode = ['direct', 'instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw', 'hermes'].includes(String(payload.routeMode || '').toLowerCase())
         ? String(payload.routeMode || '').toLowerCase()
         : 'direct';
       const { session } = watchRealtimeSessionConfig({

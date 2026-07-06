@@ -55,8 +55,8 @@ const HF_KOKORO_VOICE_MODEL = process.env.VOICECLAW_HF_KOKORO_VOICE_MODEL || 'pr
 const HF_DEFAULT_TTS_MODEL = process.env.VOICECLAW_HF_TTS_MODEL || 'mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit';
 const HF_OPENAI_BRAIN_MODELS = {
   'gpt55-fast-low': { model: process.env.VOICECLAW_HF_OPENAI_MODEL || 'gpt-5.5', label: 'GPT-5.5' },
+  'gpt-5.4': { model: 'gpt-5.4', label: 'GPT-5.4' },
   'gpt-5.4-mini': { model: 'gpt-5.4-mini', label: 'GPT-5.4-mini' },
-  'gpt-5.4-nano': { model: 'gpt-5.4-nano', label: 'GPT-5.4-nano' },
 };
 const CEREBRAS_BASE_URL = (process.env.CEREBRAS_BASE_URL || 'https://api.cerebras.ai/v1').replace(/\/+$/g, '');
 const CEREBRAS_RESPONSES_ADAPTER_HOST = process.env.VOICECLAW_CEREBRAS_RESPONSES_ADAPTER_HOST || '127.0.0.1';
@@ -961,8 +961,9 @@ function normalizeBrainMode(value = '') {
   const clean = String(value || '').trim();
   if (!clean || clean === 'local' || clean === 'qwen' || clean === 'qwen35' || clean === 'qwen3.5') return 'qwen3.5-2b';
   if (clean === 'cerebras') return `cerebras:${HF_DEFAULT_CEREBRAS_MODEL}`;
+  if (['gpt-5.4', 'gpt54', 'gpt-54', 'gpt-5-4', 'openai/gpt-5.4'].includes(clean.toLowerCase())) return 'gpt-5.4';
   if (['gpt-5.4-mini', 'gpt54-mini', 'gpt54mini', 'gpt-54-mini', 'openai/gpt-5.4-mini'].includes(clean.toLowerCase())) return 'gpt-5.4-mini';
-  if (['gpt-5.4-nano', 'gpt54-nano', 'gpt54nano', 'gpt-54-nano', 'openai/gpt-5.4-nano'].includes(clean.toLowerCase())) return 'gpt-5.4-nano';
+  if (['gpt-5.4-nano', 'gpt54-nano', 'gpt54nano', 'gpt-54-nano', 'openai/gpt-5.4-nano'].includes(clean.toLowerCase())) return 'gpt-5.4-mini';
   return clean;
 }
 
