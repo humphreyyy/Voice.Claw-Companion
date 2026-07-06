@@ -16,7 +16,7 @@ import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
 import { getHFRealtimeStatus, installHFRealtimeRuntime, prewarmHFRealtimeRuntime, HFRealtimeBridge } from './hf-realtime-sidecar.js';
-import { getPowerhouseQuickStatus, getPowerhouseStatus, maybeStartPowerhouseOnBoot, powerhouseModes, prewarmPowerhouseRuntime, readPowerhouseModeFromConfig } from './powerhouse-manager.js';
+import { getPowerhouseQuickStatus, getPowerhouseStatus, maybeStartPowerhouseOnBoot, powerhouseModes, prewarmPowerhouseRuntime, readPowerhouseModeFromConfig, readPrimaryCompanionVoiceRuntimeProfileFromConfig } from './powerhouse-manager.js';
 import {
   REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
   buildRealtimeAuthStatus,
@@ -4862,6 +4862,7 @@ const httpServer = createServer(async (req, res) => {
         const status = await prewarmPowerhouseRuntime({
           mode: payload.mode || readPowerhouseModeFromConfig(),
           install: payload.install !== false,
+          selectedOnly: payload.selectedOnly !== false,
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...status, modes: powerhouseModes() }));
@@ -4899,6 +4900,8 @@ const httpServer = createServer(async (req, res) => {
           brainMode: payload.brainMode || 'qwen3.5-2b',
           sttProfile: payload.sttProfile || 'parakeet-live',
           localVoice: payload.localVoice || 'kokoro-af-heart',
+          cerebrasAPIKey: payload.cerebrasAPIKey || '',
+          cerebrasModel: payload.cerebrasModel || payload.cerebrasModelID || '',
           prepareSet: payload.prepareSet || 'recommended',
         });
         persistLastCompanionVoiceRuntimeProfile(payload, 'hf-prewarm').catch(() => {});
@@ -6865,11 +6868,13 @@ httpServer.listen(PORT, BIND_HOST, () => {
     console.warn(`[voice-bridge] Companion voice TTS prewarm failed: ${error?.message || String(error)}`);
   });
   if (COMPANION_VOICE_HF_PREWARM) {
+    const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
     prewarmHFRealtimeRuntime({
       prepareSet: 'recommended',
-      brainMode: 'qwen3.5-2b',
-      sttProfile: 'parakeet-live',
-      localVoice: 'kokoro-af-heart',
+      brainMode: primaryProfile.brainMode || 'qwen3.5-2b',
+      sttProfile: primaryProfile.sttProfile || 'parakeet-live',
+      localVoice: primaryProfile.localVoice || 'kokoro-af-heart',
+      cerebrasModel: primaryProfile.cerebrasModel || '',
     }).then((result) => {
       console.log(`[voice-bridge] Companion voice HF runtime prewarm complete: ${result?.summary || 'ready'}`);
     }).catch((error) => {

@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.101</title>
+            <pubDate>Mon, 06 Jul 2026 07:00:24 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607060659</sparkle:version>
+            <sparkle:shortVersionString>0.1.101</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.101</h2><ul><li>Stabilizes Companion Realtime Voice HF sidecar lifecycle and selected-runtime readiness.</li><li>Protects the active selected voice runtime during Powerhouse warmup and status checks.</li><li>Improves Cerebras/runtime identity handling and iOS readiness diagnostics.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.101/VoiceClawCompanion-0.1.101-202607060659.dmg" length="3563580" type="application/octet-stream" sparkle:edSignature="fpo/98xDeG2M44OEWC3K8KN37fM/LBLPTKzRz2xcfMazvyK3kybiWievBs/3F6+c45V+T6OUI6w0/w2hPweNBw=="/>
+        </item>
+        <item>
             <title>0.1.100</title>
             <pubDate>Mon, 06 Jul 2026 06:12:39 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.99</h2><ul><li>Supersedes the local 0.1.98 test package with the public GitHub/Appcast release line.</li><li>Adds the Powerhouse runtime manager for aggressive Companion Realtime Voice prewarming, runtime health checks, and priority-helper diagnostics.</li><li>Improves packaged HF runtime verification, Sparkle updater helper validation, and Companion readiness reporting.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.99/VoiceClawCompanion-0.1.99-202607060252.dmg" length="3560894" type="application/octet-stream" sparkle:edSignature="sbz+GQ0bwiH6DIms0LdjKfLnzgYMVoyFmr/D4mdGwO9kAMkPg7K+fTf0dGjajBPAsehbpocvSPAoU2fCVTTsAg=="/>
-        </item>
-        <item>
-            <title>0.1.97</title>
-            <pubDate>Mon, 06 Jul 2026 05:43:20 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607060241</sparkle:version>
-            <sparkle:shortVersionString>0.1.97</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.97</h2><ul><li>Adds Powerhouse preparation modes so the Companion can proactively warm local STT, local LLM, streaming TTS, route, and network paths.</li><li>Adds pooled HF speech-to-speech sidecars: the primary/default profile comes online first, then fallback STT profiles are warmed in parallel.</li><li>Adds an optional realtime priority helper so hot VoiceClaw sidecars and bridge runtime processes can receive elevated scheduling priority.</li><li>Improves Companion Realtime Voice diagnostics, runtime manifest verification, packaged-app validation, and interrupt-safe TTS streaming behavior.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.97/VoiceClawCompanion-0.1.97-202607060241.dmg" length="3560924" type="application/octet-stream" sparkle:edSignature="9OXegSqttRiXeV4QCpjPy97zUvWOH4v/F9/2DbvSZwi+jzfw0Ak0r8C3CzDQSo025hu416hwszgEB27WxtcGBw=="/>
         </item>
     </channel>
 </rss>

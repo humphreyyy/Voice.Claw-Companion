@@ -466,10 +466,14 @@ async function probeNetworkEndpoint(id, label, url, timeoutMs = 2500) {
 export async function getPowerhouseStatus({ mode = readPowerhouseModeFromConfig(), force = false } = {}) {
   if (!force && cachedStatus && Date.now() - cachedStatusAt < STATUS_TTL_MS) return cachedStatus;
   const spec = modeSpec(mode);
+  const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
   const [hardware, tts, hf] = await Promise.all([
     getHardwareSnapshot(),
     getVoiceOptions().catch((error) => ({ status: { lastError: error?.message || String(error) }, voices: [] })),
-    getHFRealtimeStatus({ prepareSet: spec.installPrepareSet === 'full' ? 'full' : 'recommended' }).catch((error) => ({ state: 'error', summary: error?.message || String(error) })),
+    getHFRealtimeStatus({
+      ...primaryProfile,
+      prepareSet: spec.installPrepareSet === 'full' ? 'full' : 'recommended',
+    }).catch((error) => ({ state: 'error', summary: error?.message || String(error) })),
   ]);
   const pressure = hardware.memoryPressure;
   const ready = hf.state === 'ready' && pressure !== 'critical';
@@ -732,6 +736,7 @@ export async function prewarmPowerhouseRuntime(options = {}) {
     const profileCycle = orderedProfileWarmCycle(spec);
     const primaryProfiles = profileCycle.filter((profile) => profile.id === 'primary' || profile.id === 'selected' || profile.required);
     const fallbackProfiles = profileCycle.filter((profile) => !(profile.id === 'primary' || profile.id === 'selected' || profile.required));
+    const selectedOnly = options.selectedOnly !== false || options.install === false;
     const toProfileTask = (profile) => () => timedWorker(
       `hf-prewarm-${profile.id}`,
       `Warm ${profile.label}${profile.id === 'primary' || profile.id === 'selected' ? ' as primary active sidecar' : ''}`,
@@ -740,7 +745,18 @@ export async function prewarmPowerhouseRuntime(options = {}) {
     );
     const independentPromise = runLimited(independentTasks, posture.parallelWorkers);
     const primaryResults = await runLimited(primaryProfiles.map(toProfileTask), Math.max(1, Math.min(2, posture.parallelWorkers)));
-    const fallbackResults = await runLimited(fallbackProfiles.map(toProfileTask), posture.parallelWorkers);
+    const fallbackResults = selectedOnly
+      ? fallbackProfiles.map((profile) => ({
+        id: `hf-prewarm-${profile.id}`,
+        label: `Warm ${profile.label}`,
+        resource: 'pooled HF sidecar; deferred fallback profile',
+        mode: spec.mode,
+        state: 'deferred',
+        ok: true,
+        elapsedMs: 0,
+        summary: 'Deferred so the selected live Companion Realtime Voice sidecar stays protected and hot.',
+      }))
+      : await runLimited(fallbackProfiles.map(toProfileTask), Math.max(1, Math.min(2, posture.parallelWorkers)));
     const independentResults = await independentPromise;
     const profileResults = [...primaryResults, ...fallbackResults];
     workers.push(...profileResults, ...independentResults);

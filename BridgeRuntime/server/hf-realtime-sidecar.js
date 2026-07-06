@@ -726,6 +726,17 @@ async function allocateHFPoolPort(preferredPort = HF_PORT) {
   });
 }
 
+function preferredHFPoolPortForKey(key = '') {
+  const text = String(key || '');
+  if (!text || HF_POOL_SIZE <= 1) return HF_PORT;
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return HF_PORT + (hash % HF_POOL_SIZE);
+}
+
 function safeReadDir(path) {
   try {
     return readdirSync(path, { withFileTypes: true });
@@ -1107,6 +1118,16 @@ function hfRealtimeProfileKey(options = {}) {
   });
 }
 
+function hfSidecarIdentityKey(options = {}) {
+  const brainMode = normalizeBrainMode(options.brainMode || 'qwen3.5-2b');
+  const sttConfig = sttProfileConfig(options.sttProfile || options.sttQualityProfile || '');
+  const ttsConfig = ttsConfigForHF(options);
+  const prefix = brainMode.startsWith('cerebras:')
+    ? `cerebras:${normalizeCerebrasModel(String(options.cerebrasModel || brainMode.slice('cerebras:'.length) || HF_DEFAULT_CEREBRAS_MODEL))}`
+    : `local:${HF_DEFAULT_LOCAL_MODEL}`;
+  return `${prefix}:stt:${sttConfig.id}:tts:${ttsConfig.engine}:${ttsConfig.device || 'default'}:${ttsConfig.voice}`;
+}
+
 function primaryHFRealtimeProfileOptions(options = {}) {
   return {
     brainMode: normalizeBrainMode(options.brainMode || 'qwen3.5-2b'),
@@ -1134,14 +1155,24 @@ function hfRealtimeProfilesForPrepareSet(options = {}) {
 }
 
 async function getHFRealtimeProfileSetStatus(options = {}) {
-  const processHeal = await selfHealHFRuntimeProcesses('profile-set-status-check').catch((error) => ({
-    before: null,
-    after: null,
-    changed: false,
-    error: error?.message || String(error),
-  }));
-  const health = await hfPoolHealth();
-  const primaryKey = hfRealtimeProfileKey(primaryHFRealtimeProfileOptions(options));
+  const primaryOptions = primaryHFRealtimeProfileOptions(options);
+  const primaryIdentityKey = hfSidecarIdentityKey(primaryOptions);
+  const processHeal = options.allowProcessSelfHeal === true
+    ? await selfHealHFRuntimeProcesses('explicit-profile-set-status-check').catch((error) => ({
+      before: null,
+      after: null,
+      changed: false,
+      error: error?.message || String(error),
+    }))
+    : { before: null, after: await hfRuntimeProcessSnapshot(), changed: false, skipped: true };
+  const primaryRecord = sidecarPool.get(primaryIdentityKey);
+  const healthPort = primaryRecord?.proc && !primaryRecord.proc.killed
+    ? primaryRecord.port
+    : sidecarKey === primaryIdentityKey && sidecar && !sidecar.killed
+      ? sidecarPort
+      : preferredHFPoolPortForKey(primaryIdentityKey);
+  const health = await hfPoolHealth({ port: healthPort });
+  const primaryKey = hfRealtimeProfileKey(primaryOptions);
   const profiles = hfRealtimeProfilesForPrepareSet(options);
   const preparedProfiles = [];
   for (const profile of profiles) {
@@ -1244,14 +1275,15 @@ async function getHFRealtimeSingleStatus(options = {}) {
   const sttProfile = normalizeSTTProfile(options.sttProfile || process.env.VOICECLAW_HF_STT_PROFILE || '');
   const sttConfig = sttProfileConfig(sttProfile);
   const ttsConfig = ttsConfigForHF(options);
-  const processHeal = options.skipProcessSelfHeal
-    ? { before: null, after: await hfRuntimeProcessSnapshot(), changed: false, skipped: true }
-    : await selfHealHFRuntimeProcesses('single-status-check').catch((error) => ({
+  const shouldSelfHeal = options.allowProcessSelfHeal === true && options.skipProcessSelfHeal !== true;
+  const processHeal = shouldSelfHeal
+    ? await selfHealHFRuntimeProcesses('explicit-single-status-check').catch((error) => ({
       before: null,
       after: null,
       changed: false,
       error: error?.message || String(error),
-    }));
+    }))
+    : { before: null, after: await hfRuntimeProcessSnapshot(), changed: false, skipped: true };
   const requireLocalMiddleBrain = localMiddleBrainRequired(brainMode);
   const requireCerebrasKey = cerebrasMiddleBrainRequired(brainMode);
   const pythonReady = await fileExecutable(HF_PYTHON);
@@ -1300,7 +1332,20 @@ async function getHFRealtimeSingleStatus(options = {}) {
     });
   }
   const localModelCached = pythonReady ? await hfModelCached(HF_DEFAULT_LOCAL_MODEL) : false;
-  const health = options.skipHealth ? null : await hfPoolHealth();
+  const requestedKey = hfSidecarIdentityKey({
+    ...options,
+    brainMode,
+    sttProfile,
+    localVoice: options.localVoice || options.voice || ttsConfig.voice,
+  });
+  const requestedRecord = sidecarPool.get(requestedKey);
+  const requestedSidecarRunning = !!requestedRecord?.proc && !requestedRecord.proc.killed;
+  const healthPort = requestedSidecarRunning
+    ? requestedRecord.port
+    : sidecarKey === requestedKey && sidecar && !sidecar.killed
+      ? sidecarPort
+      : preferredHFPoolPortForKey(requestedKey);
+  const health = options.skipHealth ? null : await hfPoolHealth({ port: healthPort });
   const runtimeReady = pythonReady && cliReady && packageReady;
   const requiredModels = [
     ...sttRequiredModels,
@@ -1383,13 +1428,13 @@ async function getHFRealtimeSingleStatus(options = {}) {
     missingTTSModules,
     missingRequiredModels,
     host: HF_HOST,
-    port: HF_PORT,
-    wsURL: hfWsURL(HF_PORT),
+    port: healthPort,
+    wsURL: hfWsURL(healthPort),
     numPipelines: VOICECLAW_HF_NUM_PIPELINES,
     aggressiveThreads: VOICECLAW_AGGRESSIVE_THREADS,
-    sidecarRunning: !!sidecar && !sidecar.killed,
-    sidecarKey,
-    sidecarPort,
+    sidecarRunning: requestedSidecarRunning || (sidecarKey === requestedKey && !!sidecar && !sidecar.killed),
+    sidecarKey: requestedSidecarRunning ? requestedKey : sidecarKey === requestedKey ? sidecarKey : '',
+    sidecarPort: requestedSidecarRunning ? requestedRecord.port : sidecarKey === requestedKey ? sidecarPort : 0,
     sidecarPool: Array.from(sidecarPool.values()).map((record) => ({
       key: record.key,
       port: record.port,
@@ -1936,8 +1981,7 @@ function sttArgsForHF(payload = {}) {
 function kokoroDeviceForHF(payload = {}) {
   const explicit = String(process.env.VOICECLAW_HF_KOKORO_DEVICE || '').trim().toLowerCase();
   if (['cpu', 'mps', 'cuda', 'auto'].includes(explicit)) return explicit;
-  const brainMode = normalizeBrainMode(payload.brainMode || process.env.VOICECLAW_HF_BRAIN_MODE || 'qwen3.5-2b');
-  return localMiddleBrainRequired(brainMode) ? 'cpu' : 'mps';
+  return 'cpu';
 }
 
 function ttsConfigForHF(payload = {}) {
@@ -2008,7 +2052,7 @@ async function sidecarConfigFromPayload(payload = {}, { port = HF_PORT } = {}) {
   const liveTranscriptionArgs = sttConfig.liveTranscription
     ? ['--enable_live_transcription', '--live_transcription_min_silence_ms', process.env.VOICECLAW_HF_LIVE_TRANSCRIPTION_MIN_SILENCE_MS || '180']
     : ['--enable_live_transcription'];
-  const brainMode = String(payload.brainMode || '').trim();
+  const brainMode = normalizeBrainMode(payload.brainMode || '');
   if (brainMode.startsWith('cerebras:')) {
     const model = normalizeCerebrasModel(String(payload.cerebrasModel || brainMode.slice('cerebras:'.length) || HF_DEFAULT_CEREBRAS_MODEL));
     const key = cerebrasKeyFromPayload(payload);
@@ -2085,7 +2129,17 @@ async function launchHFRealtimeSidecarOnce(config, attempt) {
   const port = config.port || HF_PORT;
   const existing = sidecarPool.get(config.key);
   if (existing) {
-    await stopSidecarRecord(existing, `runtime-config-change-attempt-${attempt}`);
+    const existingHealth = await hfPoolHealth({ port: existing.port });
+    if (existing.proc && !existing.proc.killed && existingHealth.reachable) {
+      const owner = await verifyHFPortOwner(existing.proc.pid, existing.port);
+      if (owner.ok) {
+        sidecar = existing.proc;
+        sidecarKey = existing.key;
+        sidecarPort = existing.port;
+        return { wsURL: existing.wsURL, key: existing.key, port: existing.port, health: existingHealth };
+      }
+    }
+    await stopSidecarRecord(existing, `tracked-sidecar-restart-attempt-${attempt}`);
     sidecarPool.delete(config.key);
   }
   await terminateHFPortListeners(`runtime-config-change-attempt-${attempt}`, port);
@@ -2163,7 +2217,8 @@ export async function ensureHFRealtimeSidecar(payload = {}) {
   const key = identityConfig.key;
   if (sidecarStartingByKey.has(key)) return await sidecarStartingByKey.get(key);
   const existingRecord = sidecarPool.get(key);
-  const port = existingRecord?.port || await allocateHFPoolPort(key === sidecarKey ? sidecarPort : HF_PORT);
+  const preferredPort = key === sidecarKey ? sidecarPort : preferredHFPoolPortForKey(key);
+  const port = existingRecord?.port || await allocateHFPoolPort(preferredPort);
   const config = await sidecarConfigFromPayload(payload, { port });
   if (config.key.startsWith('cerebras:') && !cerebrasKeyFromPayload(payload)) {
     throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
@@ -2231,11 +2286,15 @@ export async function prewarmHFRealtimeRuntime(options = {}) {
   const sidecarInfo = await ensureHFRealtimeSidecar(payload);
   const status = await getHFRealtimeStatus(payload);
   return {
+    ...status,
     ok: true,
     state: 'ready',
     summary: `Companion Realtime Voice warm runtime is online for ${status.sttProfileLabel || status.sttProfile}, ${status.brainMode}, ${status.ttsEngine}${status.ttsDevice ? ` on ${status.ttsDevice}` : ''}.`,
+    sidecarRunning: true,
     sidecarKey: sidecarInfo.key,
+    sidecarPort: sidecarInfo.port,
     wsURL: sidecarInfo.wsURL,
+    health: sidecarInfo.health || status.health || null,
     status,
   };
 }
