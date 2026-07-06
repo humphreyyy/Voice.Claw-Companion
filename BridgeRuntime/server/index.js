@@ -3125,14 +3125,14 @@ function extractRealtimeText(event = {}) {
   return parts.join('\n').trim();
 }
 
-async function readRequestBody(req, limitBytes = 2_000_000) {
+async function readRequestBody(req, limitBytes = 200_000_000) {
   return (await readRequestBuffer(req, limitBytes)).toString('utf8');
 }
 
 async function readRealtimeSessionRequest(req) {
   const contentType = String(req.headers['content-type'] || '');
   if (/multipart\/form-data/i.test(contentType)) {
-    const body = await readRequestBuffer(req, Number(process.env.REALTIME_SESSION_MAX_MULTIPART_BYTES || 8_000_000));
+    const body = await readRequestBuffer(req, Number(process.env.REALTIME_SESSION_MAX_MULTIPART_BYTES || 200_000_000));
     const { fields } = parseMultipartFormData(body, contentType);
     const sdpOffer = String(fields.sdp || '');
     if (!sdpOffer.trim()) throw new Error('realtime session multipart request missing sdp');
@@ -3165,7 +3165,7 @@ async function readRealtimeSessionRequest(req) {
   };
 }
 
-async function readRequestBuffer(req, limitBytes = 2_000_000) {
+async function readRequestBuffer(req, limitBytes = 200_000_000) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -4227,7 +4227,10 @@ async function prewarmCompanionVoiceTts() {
 
 async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken, context, payload, signal } = {}) {
   const localPlan = companionVoiceLocalPlan(text, routeMode);
-  if (localPlan.callRoute === false && String(localPlan.finalAnswer || '').trim()) {
+  const localPreflightAllowed = brainMode === 'qwen3.5-2b'
+    || brainMode === 'local'
+    || !!String(localPlan.iphoneToolName || '').trim();
+  if (localPreflightAllowed && localPlan.callRoute === false && String(localPlan.finalAnswer || '').trim()) {
     return { ...localPlan, planner: 'local-direct' };
   }
   if (brainMode === 'local') {
@@ -4290,7 +4293,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
       });
       const plan = extractCompanionVoicePlan(raw);
       if (plan.callRoute !== false && !plan.routeMessage) {
-        return finalizeCompanionVoicePlan(localPlan, text, routeMode, `local-after-empty-cerebras-${cerebrasModel}-planner`);
+        throw new Error(`Cerebras ${cerebrasModel} returned an incomplete Companion Realtime Voice plan.`);
       }
       return finalizeCompanionVoicePlan(plan, text, routeMode, `cerebras:${cerebrasModel}`);
     } catch (error) {
@@ -4893,13 +4896,13 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/powerhouse/prewarm`) {
       try {
-        const body = await readRequestBody(req, 100_000).catch(() => '{}');
+        const body = await readRequestBody(req).catch(() => '{}');
         let payload;
         try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
         const status = await prewarmPowerhouseRuntime({
           mode: payload.mode || readPowerhouseModeFromConfig(),
           install: payload.install !== false,
-          selectedOnly: payload.selectedOnly !== false,
+          selectedOnly: payload.selectedOnly === true,
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...status, modes: powerhouseModes() }));
@@ -4932,7 +4935,7 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/hf-prewarm`) {
       try {
-        const body = await readRequestBody(req, 100_000).catch(() => '{}');
+        const body = await readRequestBody(req).catch(() => '{}');
         let payload;
         try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
         const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
@@ -4957,7 +4960,7 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/hf-install`) {
       try {
-        const body = await readRequestBody(req, 100_000).catch(() => '{}');
+        const body = await readRequestBody(req).catch(() => '{}');
         let payload;
         try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
         const status = await installHFRealtimeRuntime({
@@ -4976,7 +4979,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/prewarm`) {
-      const body = await readRequestBody(req, 100_000).catch(() => '{}');
+      const body = await readRequestBody(req).catch(() => '{}');
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       try {
@@ -4993,7 +4996,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/companion-voice-turn`) {
-      const body = await readRequestBody(req, Number(process.env.COMPANION_VOICE_MAX_BODY_BYTES || 48_000_000));
+      const body = await readRequestBody(req, Number(process.env.COMPANION_VOICE_MAX_BODY_BYTES || 200_000_000));
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       try {
@@ -5010,7 +5013,7 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/companion-voice-turn-file`) {
       try {
-        const body = await readRequestBuffer(req, Number(process.env.COMPANION_VOICE_MAX_MULTIPART_BYTES || 96_000_000));
+        const body = await readRequestBuffer(req, Number(process.env.COMPANION_VOICE_MAX_MULTIPART_BYTES || 200_000_000));
         const payload = companionVoicePayloadFromMultipart(body, req.headers['content-type'] || '');
         const result = await runCompanionVoiceTurn({ req, payload });
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -5025,7 +5028,7 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/companion-voice-transcribe-file`) {
       try {
-        const body = await readRequestBuffer(req, Number(process.env.COMPANION_VOICE_MAX_MULTIPART_BYTES || 96_000_000));
+        const body = await readRequestBuffer(req, Number(process.env.COMPANION_VOICE_MAX_MULTIPART_BYTES || 200_000_000));
         const payload = companionVoicePayloadFromMultipart(body, req.headers['content-type'] || '');
         const result = await runCompanionVoiceTranscription({ req, payload });
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -5056,7 +5059,7 @@ const httpServer = createServer(async (req, res) => {
 
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/steer`) {
-      const body = await readRequestBody(req, 200_000).catch(() => '{}');
+      const body = await readRequestBody(req).catch(() => '{}');
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       const gate = actionability(payload.text || '', { allowWake: false, allowShortCommand: true, context: 'realtime-steer' });
@@ -5072,7 +5075,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/openclaw-turn/start`) {
-      const body = await readRequestBody(req, 200_000);
+      const body = await readRequestBody(req);
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       const gate = actionability(payload.text || '', { allowWake: false, allowShortCommand: true, context: 'realtime-http-job' });
@@ -5118,7 +5121,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/openclaw-turn`) {
-      const body = await readRequestBody(req, 200_000);
+      const body = await readRequestBody(req);
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       const gate = actionability(payload.text || '', { allowWake: false, allowShortCommand: true, context: 'realtime-http' });
@@ -5144,7 +5147,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/analyze-attachment`) {
-      const body = await readRequestBody(req, Number(process.env.VOICECLAW_ATTACHMENT_MAX_BODY_BYTES || 30_000_000));
+      const body = await readRequestBody(req, Number(process.env.VOICECLAW_ATTACHMENT_MAX_BODY_BYTES || 200_000_000));
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       const sessionToken = payload.sessionToken || req.headers['x-voice-session-token'] || `attachment-${Date.now().toString(36)}`;
@@ -5167,7 +5170,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/cancel`) {
-      const body = await readRequestBody(req, 50_000).catch(() => '{}');
+      const body = await readRequestBody(req).catch(() => '{}');
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       rememberRealtimeCancel(payload.sessionToken, payload.turnId || '');
@@ -5179,7 +5182,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/disconnect`) {
-      const body = await readRequestBody(req, 50_000).catch(() => '{}');
+      const body = await readRequestBody(req).catch(() => '{}');
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       const key = sanitizeRealtimeSessionToken(payload.sessionToken || '');
@@ -5223,7 +5226,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-client-secret`) {
-      const body = await readRequestBody(req, 200_000).catch(() => '{}');
+      const body = await readRequestBody(req).catch(() => '{}');
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       const routeMode = ['direct', 'instant', 'gpt55-direct', 'openclaw', 'hermes'].includes(String(payload.routeMode || '').toLowerCase())
@@ -5259,7 +5262,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn/start`) {
-      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 48_000_000));
+      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 200_000_000));
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       try {
@@ -5276,7 +5279,7 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn/start-file`) {
       try {
-        const body = await readRequestBuffer(req, Number(process.env.WATCH_REALTIME_MAX_MULTIPART_BYTES || 96_000_000));
+        const body = await readRequestBuffer(req, Number(process.env.WATCH_REALTIME_MAX_MULTIPART_BYTES || 200_000_000));
         const payload = watchRealtimePayloadFromMultipart(body, req.headers['content-type'] || '');
         const jobID = startWatchRealtimeJob({ req, payload });
         res.writeHead(202, { 'Content-Type': 'application/json' });
@@ -5290,7 +5293,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn/cancel`) {
-      const body = await readRequestBody(req, 128_000);
+      const body = await readRequestBody(req);
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       try {
@@ -5341,7 +5344,7 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn`) {
-      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 48_000_000));
+      const body = await readRequestBody(req, Number(process.env.WATCH_REALTIME_MAX_BODY_BYTES || 200_000_000));
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       try {
@@ -5358,7 +5361,7 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn-file`) {
       try {
-        const body = await readRequestBuffer(req, Number(process.env.WATCH_REALTIME_MAX_MULTIPART_BYTES || 96_000_000));
+        const body = await readRequestBuffer(req, Number(process.env.WATCH_REALTIME_MAX_MULTIPART_BYTES || 200_000_000));
         const payload = watchRealtimePayloadFromMultipart(body, req.headers['content-type'] || '');
         const result = await runWatchRealtimeTurn({ req, payload });
         res.writeHead(200, { 'Content-Type': 'application/json' });

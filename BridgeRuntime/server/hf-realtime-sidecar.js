@@ -1566,7 +1566,7 @@ function normalizeCerebrasModel(model = '') {
   return clean;
 }
 
-async function readJSONBody(req, limitBytes = 2 * 1024 * 1024) {
+async function readJSONBody(req, limitBytes = 200 * 1024 * 1024) {
   const chunks = [];
   let total = 0;
   for await (const chunk of req) {

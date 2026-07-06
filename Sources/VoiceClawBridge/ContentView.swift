@@ -1033,8 +1033,6 @@ private struct PowerhouseWorkerRow: View {
             "failed"
         case "degraded":
             "degraded"
-        case "resource_pressure":
-            "resource pressure"
         default:
             normalizedState.isEmpty ? "unknown" : normalizedState.replacingOccurrences(of: "_", with: " ")
         }
@@ -1052,7 +1050,7 @@ private struct PowerhouseWorkerRow: View {
             "clock"
         case "failed", "error":
             "xmark.octagon.fill"
-        case "degraded", "resource_pressure":
+        case "degraded":
             "exclamationmark.triangle.fill"
         default:
             "circle.dotted"
@@ -1069,7 +1067,7 @@ private struct PowerhouseWorkerRow: View {
             .secondary
         case "failed", "error":
             .red
-        case "degraded", "resource_pressure":
+        case "degraded":
             .orange
         default:
             .secondary

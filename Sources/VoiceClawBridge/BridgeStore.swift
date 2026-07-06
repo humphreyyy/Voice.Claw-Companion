@@ -893,13 +893,6 @@ final class BridgeStore: ObservableObject {
 
     private var shouldAutomaticallyPrewarmPowerhouse: Bool {
         guard !isPrewarmingPowerhouseRuntime else { return false }
-        guard companionVoiceState == "ready", !companionVoiceDependencyInstallAvailable else { return false }
-        guard powerhouseMode != .light else { return false }
-        guard powerhouseState != "ready" else { return false }
-        if let lastAutomaticPowerhousePrewarmDate,
-           Date().timeIntervalSince(lastAutomaticPowerhousePrewarmDate) < 10 * 60 {
-            return false
-        }
         return true
     }
 
@@ -1228,7 +1221,6 @@ final class BridgeStore: ObservableObject {
         let tailscaleReady = diagnostics.tailscale.state == "voiceclaw_mapping"
         let runtimeReady = runtimeState == "ready"
         let companionVoiceReady = companionVoiceState == "ready"
-        let powerhouseReady = powerhouseState == "ready"
         let accessState = diagnostics.access?.state ?? "not_reported"
         let accessReady = accessState == "ready"
 
@@ -1245,9 +1237,6 @@ final class BridgeStore: ObservableObject {
         if !companionVoiceReady {
             missing.append("Companion Realtime Voice dependencies are \(companionVoiceState).")
         }
-        if !powerhouseReady {
-            missing.append("Powerhouse runtime is \(powerhouseState).")
-        }
         if !accessReady {
             missing.append("Access checks are \(accessState).")
         }
@@ -1255,7 +1244,7 @@ final class BridgeStore: ObservableObject {
         if missing.isEmpty {
             status = .ready
             suppressTransientSetupWarningUntil = nil
-            bridgeRuntimeCheckSummary = "Companion Ready means the packaged bridge runtime is current, the local bridge is running, Tailscale Serve is mapped to VoiceClaw, access checks are clear, Companion Realtime Voice dependencies are ready, and the active Powerhouse mode is not reporting setup or resource-pressure issues. Warm runtime details are shown separately."
+            bridgeRuntimeCheckSummary = "Companion Ready means the packaged bridge runtime is current, the local bridge is running, Tailscale Serve is mapped to VoiceClaw, access checks are clear, and Companion Realtime Voice dependencies are ready. Powerhouse resource posture is diagnostics-only and never blocks readiness."
             return
         }
 

@@ -101,7 +101,7 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Light',
       summary: 'Keeps the bridge online and warms only the primary realtime profile when requested.',
       installPrepareSet: 'selected',
-      maxParallel: 1,
+      maxParallel: 2,
       ttsProbeRepeats: 0,
       routePrewarmRepeats: 0,
       networkProbeRepeats: 0,
@@ -115,7 +115,7 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Balanced',
       summary: 'Keeps the primary/default local realtime stack warm and prepares the recommended fallback STT/TTS profiles.',
       installPrepareSet: 'recommended',
-      maxParallel: 3,
+      maxParallel: Math.max(6, Math.ceil(AGGRESSIVE_THREADS / 2)),
       ttsProbeRepeats: 1,
       routePrewarmRepeats: 1,
       networkProbeRepeats: 1,
@@ -129,7 +129,7 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Maximum',
       summary: 'Aggressively installs, verifies, cycles fallback profiles, restores the primary hot runtime, and warms TTS, route, and network paths.',
       installPrepareSet: 'full',
-      maxParallel: 8,
+      maxParallel: Math.max(12, AGGRESSIVE_THREADS),
       ttsProbeRepeats: 3,
       routePrewarmRepeats: 2,
       networkProbeRepeats: 2,
@@ -163,7 +163,7 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Presentation',
       summary: 'Uses the Mac like a realtime appliance: full local prep, repeated warm probes, fallback cycling, and primary-runtime restoration for lowest-latency live demos.',
       installPrepareSet: 'full',
-      maxParallel: 12,
+      maxParallel: Math.max(18, AGGRESSIVE_THREADS * 2),
       ttsProbeRepeats: 5,
       routePrewarmRepeats: 3,
       networkProbeRepeats: 3,
@@ -205,6 +205,10 @@ function memoryPressure(snapshot = {}) {
   if (usedRatio > 0.95 && swapUsed > 8 * 1024 * 1024 * 1024) return 'high';
   if (swapUsed > 4 * 1024 * 1024 * 1024 || usedRatio > 0.88) return 'elevated';
   return 'normal';
+}
+
+function memoryPressureSummary(pressure = 'unknown') {
+  return `${pressure}; telemetry only, never a Powerhouse readiness gate`;
 }
 
 function workerMeta(id, spec = modeSpec(DEFAULT_MODE)) {
@@ -395,6 +399,7 @@ export async function getHardwareSnapshot({ force = false } = {}) {
 async function runLimited(tasks, limit = 2) {
   const results = new Array(tasks.length);
   let next = 0;
+  const workerCount = Math.max(1, tasks.length);
   async function worker() {
     while (next < tasks.length) {
       const index = next;
@@ -402,7 +407,7 @@ async function runLimited(tasks, limit = 2) {
       results[index] = await tasks[index]();
     }
   }
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, tasks.length)) }, worker));
+  await Promise.all(Array.from({ length: workerCount }, worker));
   return results;
 }
 
@@ -476,15 +481,15 @@ export async function getPowerhouseStatus({ mode = readPowerhouseModeFromConfig(
     }).catch((error) => ({ state: 'error', summary: error?.message || String(error) })),
   ]);
   const pressure = hardware.memoryPressure;
-  const ready = hf.state === 'ready' && pressure !== 'critical';
+  const ready = hf.state === 'ready';
   cachedStatus = {
     ok: ready,
-    state: ready ? 'ready' : pressure === 'critical' ? 'resource_pressure' : 'needs_setup',
+    state: ready ? 'ready' : 'needs_setup',
     mode: spec.mode,
     label: spec.label,
     summary: ready
-      ? `${spec.label} Powerhouse is prepared. ${spec.summary}`
-      : `${spec.label} Powerhouse needs attention. HF state: ${hf.state || 'unknown'}; memory pressure: ${pressure}.`,
+      ? `${spec.label} Powerhouse is prepared. ${spec.summary} Memory pressure is ${memoryPressureSummary(pressure)}.`
+      : `${spec.label} Powerhouse needs attention. HF state: ${hf.state || 'unknown'}; memory pressure is ${memoryPressureSummary(pressure)}.`,
     hardware,
     tts: tts.status || getTtsStatus(),
     voiceCount: Array.isArray(tts.voices) ? tts.voices.length : 0,
@@ -568,7 +573,7 @@ function buildWorkerPlan(spec, hardware) {
 function resourcePosture(spec, hardware) {
   const physicalCores = Math.max(1, Number(hardware.cpuCores?.physical || 4));
   const logicalCores = Math.max(physicalCores, Number(hardware.cpuCores?.logical || physicalCores));
-  const maxWorkers = Math.max(1, Math.min(spec.maxParallel || 1, logicalCores + 2));
+  const maxWorkers = Math.max(1, spec.maxParallel || logicalCores);
   const profileCycle = orderedProfileWarmCycle(spec);
   const primaryProfile = profileCycle.find((profile) => profile.id === 'primary' || profile.id === 'selected' || profile.required) || profileCycle[0] || null;
   return {
@@ -581,7 +586,7 @@ function resourcePosture(spec, hardware) {
     parallelWorkers: maxWorkers,
     physicalCores,
     logicalCores,
-    memoryPressure: hardware.memoryPressure,
+    memoryPressure: memoryPressureSummary(hardware.memoryPressure),
     strategy: spec.mode === 'light'
       ? 'Keep bridge responsive and warm the primary runtime only on demand.'
       : 'Run independent route/TTS/network/cache workers concurrently and keep multiple HF speech-to-speech profile sidecars hot on adjacent localhost ports.',
@@ -736,7 +741,7 @@ export async function prewarmPowerhouseRuntime(options = {}) {
     const profileCycle = orderedProfileWarmCycle(spec);
     const primaryProfiles = profileCycle.filter((profile) => profile.id === 'primary' || profile.id === 'selected' || profile.required);
     const fallbackProfiles = profileCycle.filter((profile) => !(profile.id === 'primary' || profile.id === 'selected' || profile.required));
-    const selectedOnly = options.selectedOnly !== false || options.install === false;
+    const selectedOnly = false;
     const toProfileTask = (profile) => () => timedWorker(
       `hf-prewarm-${profile.id}`,
       `Warm ${profile.label}${profile.id === 'primary' || profile.id === 'selected' ? ' as primary active sidecar' : ''}`,
