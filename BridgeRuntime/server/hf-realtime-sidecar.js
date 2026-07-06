@@ -2483,6 +2483,8 @@ export class HFRealtimeBridge {
     this.awaitingResponseAfterTranscript = false;
     this.responseCreateTimer = null;
     this.turnWatchdogTimer = null;
+    this.hfHeartbeatTimer = null;
+    this.hfLastPongAt = 0;
     this.responseInProgress = false;
     this.pendingToolFollowupResponse = false;
     this.pendingCompanionResultAfterAudio = false;
@@ -2498,11 +2500,16 @@ export class HFRealtimeBridge {
       const timeout = setTimeout(() => reject(new Error('HF realtime websocket did not open')), 45_000);
       ws.on('open', () => {
         this.connected = true;
+        this.startHFHeartbeat(ws);
         clearTimeout(timeout);
         resolve();
       });
+      ws.on('pong', () => {
+        this.hfLastPongAt = Date.now();
+      });
       ws.on('message', (data) => this.handleHFMessage(data));
       ws.on('close', () => {
+        this.stopHFHeartbeat();
         if (this.closed) return;
         this.closed = true;
         if (!this.configured) return;
@@ -2510,10 +2517,34 @@ export class HFRealtimeBridge {
         this.send({ type: 'status', status: 'closed' });
       });
       ws.on('error', (error) => {
+        if (!this.configured) this.stopHFHeartbeat();
         if (!this.configured) reject(error);
         else this.send({ type: 'error', message: `HF realtime websocket error: ${error.message}` });
       });
     });
+  }
+
+  startHFHeartbeat(ws) {
+    this.stopHFHeartbeat();
+    this.hfLastPongAt = Date.now();
+    this.hfHeartbeatTimer = setInterval(() => {
+      if (this.closed || ws.readyState !== WebSocket.OPEN) return;
+      const staleMs = Date.now() - this.hfLastPongAt;
+      if (staleMs > 90_000) {
+        console.warn(`[hf-bridge] realtime sidecar websocket missed heartbeat for ${staleMs} ms; terminating stale socket`);
+        try { ws.terminate(); } catch {}
+        return;
+      }
+      try { ws.ping(); } catch {}
+    }, 15_000);
+    this.hfHeartbeatTimer.unref?.();
+  }
+
+  stopHFHeartbeat() {
+    if (this.hfHeartbeatTimer) {
+      clearInterval(this.hfHeartbeatTimer);
+      this.hfHeartbeatTimer = null;
+    }
   }
 
   sendAudio(buffer) {
@@ -2642,6 +2673,7 @@ export class HFRealtimeBridge {
 
   close() {
     this.closed = true;
+    this.stopHFHeartbeat();
     if (this.configureTimer) clearTimeout(this.configureTimer);
     if (this.responseCreateTimer) clearTimeout(this.responseCreateTimer);
     if (this.turnWatchdogTimer) clearTimeout(this.turnWatchdogTimer);

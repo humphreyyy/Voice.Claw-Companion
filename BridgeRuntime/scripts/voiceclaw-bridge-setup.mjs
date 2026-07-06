@@ -5,6 +5,7 @@ import { constants, existsSync, readFileSync } from 'node:fs';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { createServer } from 'node:net';
+import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -1529,6 +1530,9 @@ async function installLaunchAgent(config) {
   const logDir = join(CONFIG_DIR, 'logs');
   const launchWorkingDir = join(CONFIG_DIR, 'runtime');
   const runtimeEntryPoint = join(PROJECT_ROOT, 'server', 'index.js');
+  const logicalCores = Math.max(4, os.cpus().length || 4);
+  const aggressiveThreads = Math.max(128, logicalCores * 32);
+  const hfPipelines = Math.max(8, logicalCores * 2);
   await mkdir(join(HOME, 'Library', 'LaunchAgents'), { recursive: true });
   await mkdir(logDir, { recursive: true });
   await mkdir(launchWorkingDir, { recursive: true });
@@ -1572,9 +1576,33 @@ async function installLaunchAgent(config) {
     <string>${xmlEscape(config.powerhouseMode || 'maximum')}</string>
     <key>VOICECLAW_POWERHOUSE_BOOT_PREWARM</key>
     <string>true</string>
+    <key>VOICECLAW_AGGRESSIVE_THREADS</key>
+    <string>${xmlEscape(aggressiveThreads)}</string>
+    <key>VOICECLAW_HF_NUM_PIPELINES</key>
+    <string>${xmlEscape(hfPipelines)}</string>
+    <key>OMP_NUM_THREADS</key>
+    <string>${xmlEscape(aggressiveThreads)}</string>
+    <key>MKL_NUM_THREADS</key>
+    <string>${xmlEscape(aggressiveThreads)}</string>
+    <key>VECLIB_MAXIMUM_THREADS</key>
+    <string>${xmlEscape(aggressiveThreads)}</string>
+    <key>NUMEXPR_NUM_THREADS</key>
+    <string>${xmlEscape(aggressiveThreads)}</string>
+    <key>OMP_WAIT_POLICY</key>
+    <string>ACTIVE</string>
+    <key>TOKENIZERS_PARALLELISM</key>
+    <string>true</string>
+    <key>HF_HUB_ENABLE_HF_TRANSFER</key>
+    <string>1</string>
+    <key>PYTORCH_ENABLE_MPS_FALLBACK</key>
+    <string>1</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
     <key>PATH</key>
     <string>${xmlEscape(RUNTIME_PATH)}</string>
   </dict>
+  <key>ProcessType</key>
+  <string>Interactive</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

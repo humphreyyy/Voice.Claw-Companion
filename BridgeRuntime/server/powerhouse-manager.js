@@ -13,7 +13,7 @@ const DEFAULT_MODE = normalizePowerhouseMode(process.env.VOICECLAW_POWERHOUSE_MO
 const CONFIG_PATH = process.env.VOICECLAW_CONFIG_PATH || process.env.VOICECLAW_CONFIG || `${os.homedir()}/.voiceclaw/bridge.json`;
 const HF_ROOT = process.env.VOICECLAW_HF_ROOT || `${os.homedir()}/.voiceclaw/hf-runtime`;
 const HF_PYTHON = process.env.VOICECLAW_HF_PYTHON || `${HF_ROOT}/bin/python`;
-const AGGRESSIVE_THREADS = Math.max(64, Number.parseInt(process.env.VOICECLAW_AGGRESSIVE_THREADS || String((os.cpus().length || 4) * 16), 10));
+const AGGRESSIVE_THREADS = Math.max(128, Number.parseInt(process.env.VOICECLAW_AGGRESSIVE_THREADS || String((os.cpus().length || 4) * 32), 10));
 const HARDWARE_SNAPSHOT_TTL_MS = 10_000;
 const STATUS_TTL_MS = 4_000;
 
@@ -115,11 +115,11 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Balanced',
       summary: 'Keeps the primary/default local realtime stack warm and prepares the recommended fallback STT/TTS profiles.',
       installPrepareSet: 'recommended',
-      maxParallel: Math.max(24, AGGRESSIVE_THREADS * 2),
-      ttsProbeRepeats: 4,
-      routePrewarmRepeats: 3,
-      networkProbeRepeats: 4,
-      profileWarmRepeats: 2,
+      maxParallel: Math.max(48, AGGRESSIVE_THREADS * 4),
+      ttsProbeRepeats: 8,
+      routePrewarmRepeats: 6,
+      networkProbeRepeats: 8,
+      profileWarmRepeats: 4,
       profiles: [basePrimary],
       routePrewarm: true,
       networkPrewarm: true,
@@ -130,11 +130,11 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Maximum',
       summary: 'Aggressively installs, verifies, cycles fallback profiles, restores the primary hot runtime, and warms TTS, route, and network paths.',
       installPrepareSet: 'full',
-      maxParallel: Math.max(72, AGGRESSIVE_THREADS * 4),
-      ttsProbeRepeats: 12,
-      routePrewarmRepeats: 8,
-      networkProbeRepeats: 8,
-      profileWarmRepeats: 3,
+      maxParallel: Math.max(144, AGGRESSIVE_THREADS * 8),
+      ttsProbeRepeats: 24,
+      routePrewarmRepeats: 16,
+      networkProbeRepeats: 16,
+      profileWarmRepeats: 6,
       profiles: [
         basePrimary,
         {
@@ -165,11 +165,11 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Presentation',
       summary: 'Uses the Mac like a realtime appliance: full local prep, repeated warm probes, fallback cycling, and primary-runtime restoration for lowest-latency live demos.',
       installPrepareSet: 'full',
-      maxParallel: Math.max(96, AGGRESSIVE_THREADS * 6),
-      ttsProbeRepeats: 18,
-      routePrewarmRepeats: 12,
-      networkProbeRepeats: 12,
-      profileWarmRepeats: 4,
+      maxParallel: Math.max(256, AGGRESSIVE_THREADS * 12),
+      ttsProbeRepeats: 36,
+      routePrewarmRepeats: 24,
+      networkProbeRepeats: 24,
+      profileWarmRepeats: 8,
       profiles: [
         basePrimary,
         {
@@ -639,18 +639,20 @@ export async function prewarmPowerhouseRuntime(options = {}) {
     const workers = [];
     const posture = resourcePosture(spec, hardware);
 
-    workers.push(await timedWorker('activity-assertion', 'Hold macOS Powerhouse activity assertion', spec, async () => {
-      const result = ensurePowerhouseActivity(spec);
-      return {
-        ok: result.state === 'ready' || result.state === 'skipped',
-        state: result.state,
-        summary: result.summary,
-        pid: result.pid,
-      };
-    }));
+    const initialTasks = [
+      () => timedWorker('activity-assertion', 'Hold macOS Powerhouse activity assertion', spec, async () => {
+        const result = ensurePowerhouseActivity(spec);
+        return {
+          ok: result.state === 'ready' || result.state === 'skipped',
+          state: result.state,
+          summary: result.summary,
+          pid: result.pid,
+        };
+      }),
+    ];
 
     if (options.install !== false) {
-      workers.push(await timedWorker('hf-install', `Install/verify ${spec.installPrepareSet} HF profiles`, spec, () => installHFRealtimeRuntime({
+      initialTasks.push(() => timedWorker('hf-install', `Install/verify ${spec.installPrepareSet} HF profiles`, spec, () => installHFRealtimeRuntime({
         prepareSet: spec.installPrepareSet,
         brainMode: 'qwen3.5-2b',
         sttProfile: 'parakeet-live',
@@ -659,7 +661,7 @@ export async function prewarmPowerhouseRuntime(options = {}) {
     }
 
     if (spec.mode !== 'light') {
-      workers.push(await timedWorker('python-runtime-prime', 'Prime Python, MLX, Torch, NLTK, and Silero caches', spec, async () => {
+      initialTasks.push(() => timedWorker('python-runtime-prime', 'Prime Python, MLX, Torch, NLTK, and Silero caches', spec, async () => {
         const script = [
           'import importlib, os',
           'mods = ["speech_to_speech", "mlx", "mlx_audio", "torch", "kokoro", "soundfile", "faster_whisper"]',
@@ -698,6 +700,8 @@ export async function prewarmPowerhouseRuntime(options = {}) {
         };
       }));
     }
+
+    workers.push(...await runLimited(initialTasks, posture.parallelWorkers));
 
     const independentTasks = [];
 

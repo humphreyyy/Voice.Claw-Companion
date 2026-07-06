@@ -265,6 +265,7 @@ final class BridgeStore: ObservableObject {
     private var isSyncingSparkleUpdatePreferences = false
     private var suppressTransientSetupWarningUntil: Date?
     private var runtimeSelfHealAttempted = false
+    private var lastLocalBridgeRestartAttemptDate: Date?
     private var lastAutomaticPowerhousePrewarmDate: Date?
 
     enum BridgeStatus: Equatable {
@@ -1186,6 +1187,10 @@ final class BridgeStore: ObservableObject {
                 return
             }
 
+            if await restartLaunchAgentIfLocalBridgeDown(diagnostics) {
+                return
+            }
+
             guard !status.isWorking else { return }
             applyReadinessStatus(from: diagnostics)
         } catch {
@@ -1294,6 +1299,41 @@ final class BridgeStore: ObservableObject {
             runtimeIntegritySummary = Self.userFacingSetupError(error)
             lastLog = runtimeIntegritySummary
             status = .warning("Runtime Refresh Failed")
+        }
+
+        return true
+    }
+
+    private func restartLaunchAgentIfLocalBridgeDown(_ diagnostics: BridgeDiagnostics) async -> Bool {
+        guard diagnostics.savedConfigExists,
+              diagnostics.local.state != "running",
+              diagnostics.runtimeIntegrity?.state == "needs_restart" || diagnostics.runtimeIntegrity?.selfHealRecommended == true,
+              !status.isWorking
+        else { return false }
+
+        if let lastLocalBridgeRestartAttemptDate,
+           Date().timeIntervalSince(lastLocalBridgeRestartAttemptDate) < 8 {
+            return false
+        }
+
+        lastLocalBridgeRestartAttemptDate = Date()
+        status = .working("Restarting Local Bridge")
+        localBridgeSummary = "Local bridge is not answering on this port. VoiceClaw Companion is restarting the current LaunchAgent now."
+        bridgeRuntimeCheckSummary = "Checking Bridge Runtime found the local bridge down. VoiceClaw Companion is restarting the bridge runtime, then it will check again."
+        lastLog = bridgeRuntimeCheckSummary
+
+        do {
+            let output = try await runSetupScript(arguments: ["--refresh-launch-agent", "--json", "--port", port])
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            lastLog = trimmed.isEmpty ? "Restarted VoiceClaw bridge LaunchAgent from the current app runtime." : trimmed
+            status = .idle
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            await refreshBridgeDiagnostics()
+        } catch {
+            localBridgeSummary = Self.userFacingSetupError(error)
+            bridgeRuntimeCheckSummary = "Local bridge restart failed: \(localBridgeSummary)"
+            lastLog = bridgeRuntimeCheckSummary
+            status = .warning("Local Bridge Restart Failed")
         }
 
         return true

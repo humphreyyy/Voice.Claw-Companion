@@ -113,6 +113,10 @@ const COMPANION_VOICE_QWEN_KEEP_ALIVE = process.env.COMPANION_VOICE_QWEN_KEEP_AL
 const COMPANION_VOICE_QWEN_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_QWEN_PREWARM || '1').toLowerCase());
 const COMPANION_VOICE_TTS_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_TTS_PREWARM || '1').toLowerCase());
 const COMPANION_VOICE_HF_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_HF_PREWARM || '1').toLowerCase());
+const COMPANION_VOICE_HF_KEEPHOT = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_HF_KEEPHOT || '1').toLowerCase());
+const COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS = Math.max(15_000, Number.parseInt(process.env.COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS || '45000', 10));
+const COMPANION_VOICE_HF_BOOT_BURSTS = Math.max(1, Number.parseInt(process.env.COMPANION_VOICE_HF_BOOT_BURSTS || '4', 10));
+const COMPANION_VOICE_WS_HEARTBEAT_MS = Math.max(5_000, Number.parseInt(process.env.COMPANION_VOICE_WS_HEARTBEAT_MS || '15000', 10));
 const COMPANION_VOICE_PLANNER_SCHEMA = {
   type: 'object',
   properties: {
@@ -5564,13 +5568,24 @@ const httpServer = createServer(async (req, res) => {
   }
 });
 
+httpServer.keepAliveTimeout = 120_000;
+httpServer.headersTimeout = 125_000;
+httpServer.requestTimeout = 0;
+httpServer.timeout = 0;
+
 // ── WebSocket server ────────────────────────────────────────────────
 
 const WS_PATH = `${BASE_PATH}/ws` || '/ws';
 const wss = new WebSocketServer({ server: httpServer, path: WS_PATH });
 
+function markWebSocketAlive() {
+  this.isAlive = true;
+}
+
 wss.on('connection', (ws) => {
   console.log('[ws] client connected');
+  ws.isAlive = true;
+  ws.on('pong', markWebSocketAlive);
 
   // Per-session state
   const sessionId = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -5939,6 +5954,20 @@ wss.on('connection', (ws) => {
     cancelPipeline();
   });
 });
+
+const wsHeartbeatTimer = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      console.warn('[ws] client heartbeat missed; terminating stale socket');
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+  }
+}, COMPANION_VOICE_WS_HEARTBEAT_MS);
+wsHeartbeatTimer.unref?.();
+wss.on('close', () => clearInterval(wsHeartbeatTimer));
 
 // ── Pipeline: audio → ASR → dialogue → TTS → stream back ───────────
 
@@ -6903,6 +6932,86 @@ async function processWakeProbe(session, ws, send) {
 
 // ── Start ───────────────────────────────────────────────────────────
 
+function companionVoiceWarmProfiles() {
+  const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
+  const primary = {
+    label: 'primary',
+    options: {
+      prepareSet: 'recommended',
+      brainMode: primaryProfile.brainMode || 'qwen3.5-2b',
+      sttProfile: primaryProfile.sttProfile || 'parakeet-live',
+      localVoice: primaryProfile.localVoice || 'kokoro-af-heart',
+      cerebrasModel: primaryProfile.cerebrasModel || '',
+    },
+  };
+  return [
+    primary,
+    {
+      label: 'fast-whisper',
+      options: {
+        prepareSet: '',
+        brainMode: 'qwen3.5-2b',
+        sttProfile: 'faster-whisper-fast',
+        localVoice: 'kokoro-af-heart',
+      },
+    },
+    {
+      label: 'balanced-whisper',
+      options: {
+        prepareSet: '',
+        brainMode: 'qwen3.5-2b',
+        sttProfile: 'faster-whisper-balanced',
+        localVoice: 'kokoro-af-heart',
+      },
+    },
+    {
+      label: 'mlx-accurate',
+      options: {
+        prepareSet: '',
+        brainMode: 'qwen3.5-2b',
+        sttProfile: 'mlx-whisper-accurate',
+        localVoice: 'kokoro-af-heart',
+      },
+    },
+  ];
+}
+
+let companionVoiceKeepHotRunning = false;
+
+async function runCompanionVoiceKeepHot(reason = 'keep-hot') {
+  if (!COMPANION_VOICE_HF_PREWARM || !COMPANION_VOICE_HF_KEEPHOT || companionVoiceKeepHotRunning) return;
+  companionVoiceKeepHotRunning = true;
+  const profiles = companionVoiceWarmProfiles();
+  try {
+    const results = await Promise.allSettled(profiles.map((profile) => prewarmHFRealtimeRuntime(profile.options)));
+    const ready = results.filter((result) => result.status === 'fulfilled').length;
+    const failed = results
+      .map((result, index) => ({ result, profile: profiles[index] }))
+      .filter(({ result }) => result.status === 'rejected')
+      .map(({ result, profile }) => `${profile.label}: ${result.reason?.message || String(result.reason)}`);
+    console.log(`[voice-bridge] Companion voice keep-hot ${reason}: ${ready}/${profiles.length} profiles warm${failed.length ? `; misses: ${failed.join('; ')}` : ''}`);
+  } finally {
+    companionVoiceKeepHotRunning = false;
+  }
+}
+
+function startCompanionVoiceKeepHot() {
+  if (!COMPANION_VOICE_HF_PREWARM || !COMPANION_VOICE_HF_KEEPHOT) return;
+  for (let index = 0; index < COMPANION_VOICE_HF_BOOT_BURSTS; index += 1) {
+    setTimeout(() => {
+      runCompanionVoiceKeepHot(`boot-burst-${index + 1}`).catch((error) => {
+        console.warn(`[voice-bridge] Companion voice keep-hot boot burst failed: ${error?.message || String(error)}`);
+      });
+    }, index * 1_500).unref?.();
+  }
+  const timer = setInterval(() => {
+    runCompanionVoiceKeepHot('interval').catch((error) => {
+      console.warn(`[voice-bridge] Companion voice keep-hot interval failed: ${error?.message || String(error)}`);
+    });
+  }, COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS);
+  timer.unref?.();
+}
+
 httpServer.listen(PORT, BIND_HOST, () => {
   console.log(`[voice-bridge] listening on http://${BIND_HOST}:${PORT}${BASE_PATH || '/'}`);
   console.log(`[voice-bridge] client dir: ${CLIENT_DIR}`);
@@ -6929,6 +7038,7 @@ httpServer.listen(PORT, BIND_HOST, () => {
       console.warn(`[voice-bridge] Companion voice HF runtime prewarm failed: ${error?.message || String(error)}`);
     });
   }
+  startCompanionVoiceKeepHot();
   maybeStartPowerhouseOnBoot().then((result) => {
     if (result) console.log(`[voice-bridge] Powerhouse boot prewarm complete: ${result.summary || result.state || 'ready'}`);
   }).catch((error) => {
