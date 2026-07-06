@@ -200,7 +200,21 @@ if [[ -f "$ICON_SOURCE" ]]; then
   sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
   sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET/icon_512x512.png" >/dev/null
   cp "$ICON_SOURCE" "$ICONSET/icon_512x512@2x.png"
-  iconutil -c icns "$ICONSET" -o "$RESOURCES_DIR/AppIcon.icns"
+  if ! iconutil -c icns "$ICONSET" -o "$RESOURCES_DIR/AppIcon.icns"; then
+    FALLBACK_ICON_SOURCE=""
+    if [[ -f "$ROOT_DIR/Assets/AppIcon.icns" ]]; then
+      FALLBACK_ICON_SOURCE="$ROOT_DIR/Assets/AppIcon.icns"
+    elif [[ -f "/Applications/$APP_NAME.app/Contents/Resources/AppIcon.icns" ]]; then
+      FALLBACK_ICON_SOURCE="/Applications/$APP_NAME.app/Contents/Resources/AppIcon.icns"
+    fi
+    if [[ -n "$FALLBACK_ICON_SOURCE" ]]; then
+      echo "iconutil rejected the generated iconset; using fallback icon $FALLBACK_ICON_SOURCE." >&2
+      cp "$FALLBACK_ICON_SOURCE" "$RESOURCES_DIR/AppIcon.icns"
+    else
+      echo "iconutil rejected the generated iconset and no fallback AppIcon.icns was available." >&2
+      exit 1
+    fi
+  fi
   rm -rf "$ICONSET"
 fi
 
