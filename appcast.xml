@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.100</title>
+            <pubDate>Mon, 06 Jul 2026 06:12:39 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607060610</sparkle:version>
+            <sparkle:shortVersionString>0.1.100</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.100</h2><ul><li>Fixes Companion readiness checks so the bridge liveness endpoint stays responsive while Powerhouse voice-runtime warmup is running.</li><li>Keeps full Powerhouse/HF diagnostics on their dedicated status endpoints instead of making the basic bridge health check block on heavy runtime inspection.</li><li>Improves accuracy of status banners that previously could report local bridge timeout, stale Tailscale mapping, or old runtime while the current bridge was actually installed and warming.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.100/VoiceClawCompanion-0.1.100-202607060610.dmg" length="3561394" type="application/octet-stream" sparkle:edSignature="sx/zHUbgZ1c0oeZRZmVT6eVU3VxGXCxByUB+E6ELAL2sX/pBd6padWZKdBM0L6/oHoGyM1PNrK/BQgHgZVO6Cw=="/>
+        </item>
+        <item>
             <title>0.1.99</title>
             <pubDate>Mon, 06 Jul 2026 05:53:09 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.97</h2><ul><li>Adds Powerhouse preparation modes so the Companion can proactively warm local STT, local LLM, streaming TTS, route, and network paths.</li><li>Adds pooled HF speech-to-speech sidecars: the primary/default profile comes online first, then fallback STT profiles are warmed in parallel.</li><li>Adds an optional realtime priority helper so hot VoiceClaw sidecars and bridge runtime processes can receive elevated scheduling priority.</li><li>Improves Companion Realtime Voice diagnostics, runtime manifest verification, packaged-app validation, and interrupt-safe TTS streaming behavior.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.97/VoiceClawCompanion-0.1.97-202607060241.dmg" length="3560924" type="application/octet-stream" sparkle:edSignature="9OXegSqttRiXeV4QCpjPy97zUvWOH4v/F9/2DbvSZwi+jzfw0Ak0r8C3CzDQSo025hu416hwszgEB27WxtcGBw=="/>
-        </item>
-        <item>
-            <title>0.1.96</title>
-            <pubDate>Mon, 06 Jul 2026 02:10:31 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607060020</sparkle:version>
-            <sparkle:shortVersionString>0.1.96</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.96</h2><ul><li>Prepares the Mac as a ready Companion Realtime Voice workstation with recommended local voice dependencies.</li><li>Adds HF runtime prewarming, broader readiness checks, and selected-profile dependency installation.</li><li>Standardizes Companion Realtime Voice audio transport on 16 kHz and uses Kokoro CPU TTS with local Qwen to avoid MPS contention.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.96/VoiceClawCompanion-0.1.96-202607060020.dmg" length="3450584" type="application/octet-stream" sparkle:edSignature="aqdatNqydCmJz+oTRNUxJ8cdt+dzCQGZ/uWsxhcy3UtCsqnLbDXeOpKoXiTY7DJygWtn+QLPAgRZNMM0vxyICA=="/>
         </item>
     </channel>
 </rss>
