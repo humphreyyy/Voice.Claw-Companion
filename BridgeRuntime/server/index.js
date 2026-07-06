@@ -16,7 +16,7 @@ import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
 import { getHFRealtimeStatus, installHFRealtimeRuntime, prewarmHFRealtimeRuntime, HFRealtimeBridge } from './hf-realtime-sidecar.js';
-import { getPowerhouseStatus, maybeStartPowerhouseOnBoot, powerhouseModes, prewarmPowerhouseRuntime, readPowerhouseModeFromConfig } from './powerhouse-manager.js';
+import { getPowerhouseQuickStatus, getPowerhouseStatus, maybeStartPowerhouseOnBoot, powerhouseModes, prewarmPowerhouseRuntime, readPowerhouseModeFromConfig } from './powerhouse-manager.js';
 import {
   REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
   buildRealtimeAuthStatus,
@@ -4800,7 +4800,7 @@ const httpServer = createServer(async (req, res) => {
     let urlPath = new URL(req.url, `http://localhost:${PORT}`).pathname;
 
     if (urlPath === '/healthz') {
-      const powerhouse = await getPowerhouseStatus({ mode: readPowerhouseModeFromConfig() }).catch((error) => ({ state: 'error', summary: error?.message || String(error) }));
+      const powerhouse = getPowerhouseQuickStatus({ mode: readPowerhouseModeFromConfig() });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, port: PORT, bindHost: BIND_HOST, basePath: BASE_PATH || '/', wakePhrase: WAKE_PHRASE, realtimeBridge: true, runtime: RUNTIME_MANIFEST, auth: bridgeAuthSummary(), tts: getTtsStatus(), powerhouse }));
       return;

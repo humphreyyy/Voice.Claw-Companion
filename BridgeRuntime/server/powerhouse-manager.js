@@ -493,6 +493,60 @@ export async function getPowerhouseStatus({ mode = readPowerhouseModeFromConfig(
   return cachedStatus;
 }
 
+export function getPowerhouseQuickStatus({ mode = readPowerhouseModeFromConfig() } = {}) {
+  const spec = modeSpec(mode);
+  if (cachedStatus) {
+    return {
+      ok: cachedStatus.ok,
+      state: cachedStatus.state,
+      mode: cachedStatus.mode || spec.mode,
+      label: cachedStatus.label || spec.label,
+      summary: cachedStatus.summary || `${spec.label} Powerhouse status is cached.`,
+      cached: true,
+      stale: Date.now() - cachedStatusAt >= STATUS_TTL_MS,
+      lastCheckedAt: cachedStatusAt ? new Date(cachedStatusAt).toISOString() : '',
+      lastPrewarm,
+    };
+  }
+
+  if (prewarmInFlight) {
+    return {
+      ok: false,
+      state: 'warming',
+      mode: spec.mode,
+      label: spec.label,
+      summary: `${spec.label} Powerhouse warmup is running. Bridge liveness is separate from full voice-runtime readiness.`,
+      cached: false,
+      lastCheckedAt: '',
+      lastPrewarm,
+    };
+  }
+
+  if (lastPrewarm) {
+    return {
+      ok: lastPrewarm.ok !== false,
+      state: lastPrewarm.state || (lastPrewarm.ok === false ? 'degraded' : 'ready'),
+      mode: lastPrewarm.mode || spec.mode,
+      label: lastPrewarm.label || spec.label,
+      summary: lastPrewarm.summary || `${spec.label} Powerhouse last warm pass is available.`,
+      cached: false,
+      lastCheckedAt: '',
+      lastPrewarm,
+    };
+  }
+
+  return {
+    ok: false,
+    state: 'not_checked',
+    mode: spec.mode,
+    label: spec.label,
+    summary: `${spec.label} Powerhouse readiness has not completed yet. Bridge liveness is available; use the Powerhouse status endpoint for full runtime checks.`,
+    cached: false,
+    lastCheckedAt: '',
+    lastPrewarm: null,
+  };
+}
+
 function buildWorkerPlan(spec, hardware) {
   return [
     { id: 'activity-assertion', label: 'macOS Powerhouse activity assertion', state: spec.mode === 'light' ? 'on-demand' : 'planned-hot', resource: 'macOS power management', mode: spec.mode },
