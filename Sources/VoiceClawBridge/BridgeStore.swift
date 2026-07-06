@@ -353,9 +353,11 @@ final class BridgeStore: ObservableObject {
 
     func refreshStatus() async {
         refreshLaunchAtStartupStatus()
+        refreshPairingPayloadFromBridgeConfig()
         isCheckingBridgeRuntime = true
         bridgeRuntimeCheckSummary = "Checking Bridge Runtime: LaunchAgent identity, local bridge, Tailscale Serve mapping, Realtime endpoints, Companion Realtime Voice dependencies, warm runtime status, and required Mac access."
         defer {
+            refreshPairingPayloadFromBridgeConfig()
             isCheckingBridgeRuntime = false
             lastRefreshDate = Date()
         }
@@ -902,11 +904,12 @@ final class BridgeStore: ObservableObject {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 45 * 60
+        request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: [
             "mode": powerhouseMode.rawValue,
             "install": install,
+            "async": true,
         ])
         applyBridgeAuthHeaders(to: &request)
 
@@ -920,24 +923,21 @@ final class BridgeStore: ObservableObject {
                 return
             }
 
-            powerhouseState = object["state"] as? String ?? powerhouseState
-            powerhouseSummary = object["summary"] as? String ?? "Powerhouse warm pass completed."
-            if let posture = object["resourcePosture"] as? [String: Any] {
-                powerhouseResourcePostureSummary = Self.powerhousePostureSummary(posture)
-            }
-            if let hardware = object["hardware"] as? [String: Any],
-               let summary = hardware["summary"] as? String {
-                powerhouseHardwareSummary = summary
-            }
-            if let workers = object["workers"] as? [[String: Any]] {
-                powerhouseWorkerItems = workers.map {
-                    PowerhouseWorkerItem(
-                        id: ($0["id"] as? String) ?? UUID().uuidString,
-                        label: ($0["label"] as? String) ?? "Worker",
-                        state: ($0["state"] as? String) ?? "unknown",
-                        resource: ($0["resource"] as? String) ?? "",
-                        mode: ($0["mode"] as? String) ?? powerhouseMode.rawValue
-                    )
+            applyPowerhouseStatusObject(object)
+
+            let startedAt = Date()
+            var completed = Self.isTerminalPowerhouseState(powerhouseState)
+            while !completed && Date().timeIntervalSince(startedAt) < 45 * 60 {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let status = try await fetchPowerhouseStatus(portValue: portValue, force: true) else {
+                    continue
+                }
+                applyPowerhouseStatusObject(status)
+                completed = Self.isTerminalPowerhouseState(powerhouseState)
+                if !completed {
+                    let elapsed = Int(Date().timeIntervalSince(startedAt).rounded())
+                    let summary = status["summary"] as? String ?? powerhouseSummary
+                    powerhouseSummary = "\(summary) Elapsed \(elapsed)s."
                 }
             }
             if refreshAfterCompletion {
@@ -946,6 +946,63 @@ final class BridgeStore: ObservableObject {
         } catch {
             powerhouseState = "failed"
             powerhouseSummary = "Powerhouse warm pass failed: \(Self.userFacingSetupError(error))"
+        }
+    }
+
+    private func fetchPowerhouseStatus(portValue: Int, force: Bool) async throws -> [String: Any]? {
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "127.0.0.1"
+        components.port = portValue
+        components.path = "/realtime/powerhouse/status"
+        components.queryItems = [
+            URLQueryItem(name: "mode", value: powerhouseMode.rawValue),
+            URLQueryItem(name: "force", value: force ? "1" : "0"),
+        ]
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        applyBridgeAuthHeaders(to: &request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object
+    }
+
+    private func applyPowerhouseStatusObject(_ object: [String: Any]) {
+        powerhouseState = object["state"] as? String ?? powerhouseState
+        powerhouseSummary = object["summary"] as? String ?? "Powerhouse warm pass completed."
+        if let posture = object["resourcePosture"] as? [String: Any] {
+            powerhouseResourcePostureSummary = Self.powerhousePostureSummary(posture)
+        }
+        if let hardware = object["hardware"] as? [String: Any],
+           let summary = hardware["summary"] as? String {
+            powerhouseHardwareSummary = summary
+        }
+        let workers = object["workers"] as? [[String: Any]]
+            ?? (object["workerPlan"] as? [[String: Any]])
+            ?? ((object["lastPrewarm"] as? [String: Any])?["workers"] as? [[String: Any]])
+        if let workers {
+            powerhouseWorkerItems = workers.map {
+                PowerhouseWorkerItem(
+                    id: ($0["id"] as? String) ?? UUID().uuidString,
+                    label: ($0["label"] as? String) ?? "Worker",
+                    state: ($0["state"] as? String) ?? "unknown",
+                    resource: ($0["resource"] as? String) ?? "",
+                    mode: ($0["mode"] as? String) ?? powerhouseMode.rawValue
+                )
+            }
+        }
+    }
+
+    private static func isTerminalPowerhouseState(_ state: String) -> Bool {
+        switch state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ready", "degraded", "failed", "error":
+            return true
+        default:
+            return false
         }
     }
 
@@ -1390,12 +1447,14 @@ final class BridgeStore: ObservableObject {
         }
     }
 
-    private func refreshPairingPayloadFromBridgeConfig() {
+    @discardableResult
+    private func refreshPairingPayloadFromBridgeConfig() -> Bool {
         let configURL = URL(fileURLWithPath: "\(NSHomeDirectory())/.voiceclaw/bridge.json")
         guard let data = try? Data(contentsOf: configURL),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
+        else { return false }
         updatePairingPayload(Self.pairingPayload(from: object))
+        return true
     }
 
     private func applyBridgeAuthHeaders(to request: inout URLRequest) {

@@ -1803,9 +1803,15 @@ private struct QRCodeView: View {
                 Image(systemName: "qrcode")
                     .font(.largeTitle)
                     .foregroundStyle(.secondary)
-                Text("No Setup Code")
+                Text(value.isEmpty ? "No Setup Code" : "Setup Code Too Large")
                     .font(.headline)
                     .foregroundStyle(.secondary)
+                if !value.isEmpty {
+                    Text("Use Copy Setup JSON or Copy Setup Link.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

@@ -4977,11 +4977,21 @@ const httpServer = createServer(async (req, res) => {
         const body = await readRequestBody(req).catch(() => '{}');
         let payload;
         try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
-        const status = await prewarmPowerhouseRuntime({
+        const options = {
           mode: payload.mode || readPowerhouseModeFromConfig(),
           install: payload.install !== false,
           selectedOnly: payload.selectedOnly === true,
-        });
+        };
+        if (payload.async === true || payload.background === true) {
+          prewarmPowerhouseRuntime(options).catch((error) => {
+            console.warn(`[voice-bridge] Powerhouse async prewarm failed: ${error?.message || String(error)}`);
+          });
+          const status = getPowerhouseQuickStatus({ mode: options.mode });
+          res.writeHead(202, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, accepted: true, ...status, modes: powerhouseModes() }));
+          return;
+        }
+        const status = await prewarmPowerhouseRuntime(options);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...status, modes: powerhouseModes() }));
       } catch (error) {
