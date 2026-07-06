@@ -23,6 +23,26 @@ const BRIDGE_DEFAULT_MODEL = process.env.INTERCOM_DEFAULT_MODEL || 'openai/gpt-5
 const BRIDGE_DEFAULT_LABEL = process.env.INTERCOM_DEFAULT_MODEL_LABEL || 'GPT-5.5 (OpenClaw tools)';
 const DIRECT_GPT55_ROUTE_ID = 'gpt55-direct';
 const DIRECT_GPT55_MODEL = 'openai/gpt-5.5';
+const DIRECT_OPENAI_MODEL_ROUTES = [
+  {
+    id: DIRECT_GPT55_ROUTE_ID,
+    label: 'GPT-5.5 Direct (raw/no OpenClaw)',
+    model: DIRECT_GPT55_MODEL,
+    aliases: ['gpt55-direct', 'gpt55direct', 'gpt-5.5-direct', 'gpt-5.5-without-openclaw', 'without-openclaw'],
+  },
+  {
+    id: 'gpt54-mini-direct',
+    label: 'GPT-5.4-mini Direct (raw/no OpenClaw)',
+    model: 'openai/gpt-5.4-mini',
+    aliases: ['gpt54-mini-direct', 'gpt54mini-direct', 'gpt-5.4-mini-direct', 'gpt-5.4-mini', 'gpt54mini'],
+  },
+  {
+    id: 'gpt54-nano-direct',
+    label: 'GPT-5.4-nano Direct (raw/no OpenClaw)',
+    model: 'openai/gpt-5.4-nano',
+    aliases: ['gpt54-nano-direct', 'gpt54nano-direct', 'gpt-5.4-nano-direct', 'gpt-5.4-nano', 'gpt54nano'],
+  },
+];
 const THINKING_OPTIONS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
 function shortModelName(modelId = '') {
@@ -100,17 +120,17 @@ function buildProcessingRoutes() {
     };
   });
 
-  routes.splice(Math.min(routes.length, 1), 0, {
-    id: DIRECT_GPT55_ROUTE_ID,
-    label: 'GPT-5.5 Direct (raw/no OpenClaw)',
+  routes.splice(Math.min(routes.length, 1), 0, ...DIRECT_OPENAI_MODEL_ROUTES.map((route) => ({
+    id: route.id,
+    label: route.label,
     agent: DEFAULT_AGENT,
-    model: DIRECT_GPT55_MODEL,
+    model: route.model,
     modelRun: true,
     promptMode: 'none',
-    modelOverride: DIRECT_GPT55_MODEL,
+    modelOverride: route.model,
     fastHint: true,
     fastVerified: false,
-  });
+  })));
 
   // Hard fallback if runtime metadata is unavailable.
   if (!routes.length) {
@@ -153,7 +173,8 @@ function routeIdByAlias(raw) {
 
   const primary = PROCESSING_ROUTES[0]?.id || 'default';
   if (wanted === 'main' || wanted === 'default' || wanted === 'default-fast' || wanted === 'intercom' || wanted === 'gpt54' || wanted === 'gpt54-fast') return primary;
-  if (['gpt55-direct', 'gpt55direct', 'gpt-5.5-direct', 'gpt-5.5-without-openclaw', 'without-openclaw'].includes(wanted)) return DIRECT_GPT55_ROUTE_ID;
+  const directRoute = DIRECT_OPENAI_MODEL_ROUTES.find((route) => route.aliases.includes(wanted));
+  if (directRoute) return directRoute.id;
   return wanted;
 }
 

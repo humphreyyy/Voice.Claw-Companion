@@ -53,6 +53,11 @@ const HF_DEFAULT_KOKORO_MODEL = process.env.VOICECLAW_HF_KOKORO_MODEL || 'mlx-co
 const HF_NATIVE_KOKORO_MODEL = process.env.VOICECLAW_HF_NATIVE_KOKORO_MODEL || 'hexgrad/Kokoro-82M';
 const HF_KOKORO_VOICE_MODEL = process.env.VOICECLAW_HF_KOKORO_VOICE_MODEL || 'prince-canuma/Kokoro-82M';
 const HF_DEFAULT_TTS_MODEL = process.env.VOICECLAW_HF_TTS_MODEL || 'mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit';
+const HF_OPENAI_BRAIN_MODELS = {
+  'gpt55-fast-low': { model: process.env.VOICECLAW_HF_OPENAI_MODEL || 'gpt-5.5', label: 'GPT-5.5' },
+  'gpt-5.4-mini': { model: 'gpt-5.4-mini', label: 'GPT-5.4-mini' },
+  'gpt-5.4-nano': { model: 'gpt-5.4-nano', label: 'GPT-5.4-nano' },
+};
 const CEREBRAS_BASE_URL = (process.env.CEREBRAS_BASE_URL || 'https://api.cerebras.ai/v1').replace(/\/+$/g, '');
 const CEREBRAS_RESPONSES_ADAPTER_HOST = process.env.VOICECLAW_CEREBRAS_RESPONSES_ADAPTER_HOST || '127.0.0.1';
 const CEREBRAS_RESPONSES_ADAPTER_PORT = Number.parseInt(process.env.VOICECLAW_CEREBRAS_RESPONSES_ADAPTER_PORT || '18764', 10);
@@ -956,7 +961,13 @@ function normalizeBrainMode(value = '') {
   const clean = String(value || '').trim();
   if (!clean || clean === 'local' || clean === 'qwen' || clean === 'qwen35' || clean === 'qwen3.5') return 'qwen3.5-2b';
   if (clean === 'cerebras') return `cerebras:${HF_DEFAULT_CEREBRAS_MODEL}`;
+  if (['gpt-5.4-mini', 'gpt54-mini', 'gpt54mini', 'gpt-54-mini', 'openai/gpt-5.4-mini'].includes(clean.toLowerCase())) return 'gpt-5.4-mini';
+  if (['gpt-5.4-nano', 'gpt54-nano', 'gpt54nano', 'gpt-54-nano', 'openai/gpt-5.4-nano'].includes(clean.toLowerCase())) return 'gpt-5.4-nano';
   return clean;
+}
+
+function openAIBrainModelForMode(brainMode = '') {
+  return HF_OPENAI_BRAIN_MODELS[normalizeBrainMode(brainMode)] || null;
 }
 
 function localMiddleBrainRequired(brainMode = '') {
@@ -965,8 +976,7 @@ function localMiddleBrainRequired(brainMode = '') {
 }
 
 function openAIMiddleBrainRequired(brainMode = '') {
-  const normalized = normalizeBrainMode(brainMode);
-  return normalized === 'gpt55-fast-low';
+  return !!openAIBrainModelForMode(brainMode);
 }
 
 function cerebrasMiddleBrainRequired(brainMode = '') {
@@ -1131,8 +1141,8 @@ function hfSidecarIdentityKey(options = {}) {
   const ttsConfig = ttsConfigForHF(options);
   const prefix = brainMode.startsWith('cerebras:')
     ? `cerebras:${normalizeCerebrasModel(String(options.cerebrasModel || brainMode.slice('cerebras:'.length) || HF_DEFAULT_CEREBRAS_MODEL))}`
-    : brainMode === 'gpt55-fast-low'
-      ? `openai:${process.env.VOICECLAW_HF_OPENAI_MODEL || 'gpt-5.5'}`
+    : openAIBrainModelForMode(brainMode)
+      ? `openai:${openAIBrainModelForMode(brainMode).model}`
     : `local:${HF_DEFAULT_LOCAL_MODEL}`;
   return `${prefix}:stt:${sttConfig.id}:tts:${ttsConfig.engine}:${ttsConfig.device || 'default'}:${ttsConfig.voice}`;
 }
@@ -1409,7 +1419,7 @@ async function getHFRealtimeSingleStatus(options = {}) {
     ...(!openAIKeyReady ? [{
       id: 'openai-api-key',
       label: 'OpenAI API key',
-      detail: 'Add an OpenAI API key in VoiceClaw Companion before using GPT-5.5 as the Companion Realtime Voice LLM.',
+      detail: 'Add an OpenAI API key in VoiceClaw Companion before using an OpenAI model as the Companion Realtime Voice LLM.',
       installable: false,
       command: 'manual setup required',
     }] : []),
@@ -2120,11 +2130,12 @@ async function sidecarConfigFromPayload(payload = {}, { port = HF_PORT } = {}) {
     };
   }
 
-  if (brainMode === 'gpt55-fast-low') {
-    const model = process.env.VOICECLAW_HF_OPENAI_MODEL || 'gpt-5.5';
+  const openAIBrain = openAIBrainModelForMode(brainMode);
+  if (openAIBrain) {
+    const model = openAIBrain.model;
     const apiKey = openAIKeyFromPayload(payload);
     if (!apiKey) {
-      throw new Error('OpenAI API key is required for the GPT-5.5 Companion Realtime Voice LLM.');
+      throw new Error(`OpenAI API key is required for the ${openAIBrain.label} Companion Realtime Voice LLM.`);
     }
     return {
       key: `openai:${model}:stt:${sttConfig.id}:tts:${ttsConfig.engine}:${ttsConfig.device || 'default'}:${ttsConfig.voice}`,
@@ -2275,7 +2286,7 @@ async function launchHFRealtimeSidecarOnce(config, attempt) {
 export async function ensureHFRealtimeSidecar(payload = {}) {
   const status = await getHFRealtimeStatus({ brainMode: payload.brainMode, ...payload });
   if (status.requireOpenAIKey && !status.openAIKeyReady) {
-    throw new Error('OpenAI API key is required for the GPT-5.5 Companion Realtime Voice LLM.');
+    throw new Error('OpenAI API key is required for the selected OpenAI Companion Realtime Voice LLM.');
   }
   if (status.requireCerebrasKey && !status.cerebrasKeyReady) {
     throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
@@ -2296,7 +2307,7 @@ export async function ensureHFRealtimeSidecar(payload = {}) {
     throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
   }
   if (config.key.startsWith('openai:') && !openAIKeyFromPayload(payload)) {
-    throw new Error('OpenAI API key is required for the GPT-5.5 Companion Realtime Voice LLM.');
+    throw new Error('OpenAI API key is required for the selected OpenAI Companion Realtime Voice LLM.');
   }
 
   const startPromise = (async () => {
