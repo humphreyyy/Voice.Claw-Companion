@@ -789,9 +789,25 @@ private struct CompanionVoicePanel: View {
 
                 StatusRow(
                     title: "\(store.powerhouseMode.label) Runtime",
-                    value: store.isPrewarmingPowerhouseRuntime ? "Running an aggressive Powerhouse warm/install pass..." : store.powerhouseSummary,
+                    value: store.powerhouseSummary,
                     symbol: "bolt.horizontal.circle"
                 )
+
+                if !store.powerhouseJobID.isEmpty {
+                    StatusRow(
+                        title: "Powerhouse Job",
+                        value: "\(store.powerhouseState) • \(store.powerhouseJobID)",
+                        symbol: "list.bullet.clipboard"
+                    )
+                }
+
+                if !store.powerhouseLastError.isEmpty {
+                    StatusRow(
+                        title: "Last Powerhouse Error",
+                        value: store.powerhouseLastError,
+                        symbol: "exclamationmark.triangle"
+                    )
+                }
 
                 StatusRow(
                     title: "Mac Hardware",
@@ -807,7 +823,7 @@ private struct CompanionVoicePanel: View {
 
                 if !store.powerhouseWorkerItems.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Worker Plan")
+                        Text(store.isPrewarmingPowerhouseRuntime ? "Powerhouse Progress" : "Worker Plan")
                             .font(.subheadline.weight(.semibold))
                         ForEach(store.powerhouseWorkerItems) { item in
                             PowerhouseWorkerRow(item: item)
@@ -822,7 +838,7 @@ private struct CompanionVoicePanel: View {
                         Label(store.isPrewarmingPowerhouseRuntime ? "Powerhouse Is Warming" : "Install and Warm Powerhouse", systemImage: "bolt.fill")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.isPrewarmingPowerhouseRuntime || store.status.isWorking)
+                    .disabled(store.isPrewarmingPowerhouseRuntime)
 
                     Button {
                         Task { await store.prewarmPowerhouseRuntime(install: false) }
@@ -830,7 +846,30 @@ private struct CompanionVoicePanel: View {
                         Label("Warm Without Installing", systemImage: "flame")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(store.isPrewarmingPowerhouseRuntime || store.status.isWorking)
+                    .disabled(store.isPrewarmingPowerhouseRuntime)
+
+                    Button {
+                        Task { await store.cancelPowerhouseRuntimeWarmPass() }
+                    } label: {
+                        Label("Cancel", systemImage: "stop.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!store.powerhouseCanCancel)
+
+                    Button {
+                        Task { await store.retryPowerhouseRuntimeWarmPass() }
+                    } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.isPrewarmingPowerhouseRuntime || !store.powerhouseCanRetry)
+
+                    Button {
+                        store.recoverPowerhouseRuntimeUI()
+                    } label: {
+                        Label("Recover UI", systemImage: "lifepreserver")
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
             .padding(14)
@@ -994,8 +1033,15 @@ private struct PowerhouseWorkerRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                if !item.summary.isEmpty {
+                    Text(item.summary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 if !item.mode.isEmpty {
-                    Text("Mode: \(item.mode)")
+                    Text(item.elapsedMs.map { "Mode: \(item.mode) • \($0) ms" } ?? "Mode: \(item.mode)")
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }

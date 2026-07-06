@@ -40,7 +40,14 @@ version_gt() {
   return 1
 }
 
-latest_appcast_version() {
+numeric_gt() {
+  local left="$1" right="$2"
+  [[ "$left" =~ ^[0-9]+$ ]] || return 1
+  [[ "$right" =~ ^[0-9]+$ ]] || return 1
+  [[ "$left" -gt "$right" ]]
+}
+
+latest_appcast_info() {
   /usr/bin/python3 - <<'PY'
 import pathlib
 import xml.etree.ElementTree as ET
@@ -53,7 +60,23 @@ item = root.find("./channel/item")
 if item is None:
     raise SystemExit(0)
 version = item.findtext("sparkle:shortVersionString", namespaces=ns) or item.findtext("title") or ""
-print(version.strip())
+build = item.findtext("sparkle:version", namespaces=ns) or ""
+print(version.strip() + "\t" + build.strip())
+PY
+}
+
+installed_companion_info() {
+  local installed_app="/Applications/$APP_NAME.app"
+  local info_plist="$installed_app/Contents/Info.plist"
+  if [[ ! -f "$info_plist" ]]; then
+    return 0
+  fi
+  /usr/bin/python3 - "$info_plist" <<'PY'
+import plistlib
+import sys
+with open(sys.argv[1], "rb") as handle:
+    info = plistlib.load(handle)
+print(str(info.get("CFBundleShortVersionString", "")).strip() + "\t" + str(info.get("CFBundleVersion", "")).strip())
 PY
 }
 
@@ -63,11 +86,43 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
-LATEST_VERSION="$(latest_appcast_version)"
-if [[ -n "$LATEST_VERSION" && "$RELEASE_MODE" == "public" ]] && ! version_gt "$VERSION" "$LATEST_VERSION"; then
-  echo "Refusing to package public release $VERSION because appcast latest is $LATEST_VERSION." >&2
-  echo "Set VOICECLAW_RELEASE_MODE=local only for explicit non-public test packaging." >&2
+if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "VOICECLAW_BRIDGE_BUILD must be numeric for Sparkle monotonic comparison; got '$BUILD_NUMBER'." >&2
   exit 1
+fi
+
+LATEST_VERSION=""
+LATEST_BUILD=""
+LATEST_INFO="$(latest_appcast_info || true)"
+if [[ -n "$LATEST_INFO" ]]; then
+  LATEST_VERSION="${LATEST_INFO%%$'\t'*}"
+  LATEST_BUILD="${LATEST_INFO#*$'\t'}"
+fi
+
+INSTALLED_VERSION=""
+INSTALLED_BUILD=""
+INSTALLED_INFO="$(installed_companion_info || true)"
+if [[ -n "$INSTALLED_INFO" ]]; then
+  INSTALLED_VERSION="${INSTALLED_INFO%%$'\t'*}"
+  INSTALLED_BUILD="${INSTALLED_INFO#*$'\t'}"
+fi
+
+if [[ "$RELEASE_MODE" == "public" ]]; then
+  if [[ -n "$LATEST_VERSION" ]] && ! version_gt "$VERSION" "$LATEST_VERSION"; then
+    echo "Refusing to package public release $VERSION because appcast latest short version is $LATEST_VERSION." >&2
+    echo "Set VOICECLAW_RELEASE_MODE=local only for explicit non-public test packaging." >&2
+    exit 1
+  fi
+  if [[ -n "$LATEST_BUILD" ]] && ! numeric_gt "$BUILD_NUMBER" "$LATEST_BUILD"; then
+    echo "Refusing to package public release $VERSION build $BUILD_NUMBER because appcast latest Sparkle build is $LATEST_BUILD." >&2
+    echo "Sparkle compares CFBundleVersion/sparkle:version; build numbers must always increase." >&2
+    exit 1
+  fi
+  if [[ -n "$INSTALLED_BUILD" ]] && ! numeric_gt "$BUILD_NUMBER" "$INSTALLED_BUILD"; then
+    echo "Refusing to package public release $VERSION build $BUILD_NUMBER because /Applications/$APP_NAME.app is $INSTALLED_VERSION build $INSTALLED_BUILD." >&2
+    echo "A published Sparkle update must be newer than the installed app's CFBundleVersion, even if its short version is newer." >&2
+    exit 1
+  fi
 fi
 
 cd "$ROOT_DIR"

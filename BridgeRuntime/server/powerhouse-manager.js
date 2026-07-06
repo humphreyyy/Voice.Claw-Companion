@@ -23,10 +23,133 @@ let hardwareSnapshot = null;
 let hardwareSnapshotAt = 0;
 let cachedStatus = null;
 let cachedStatusAt = 0;
-let prewarmInFlight = null;
 let lastPrewarm = null;
+let currentPrewarmJob = null;
+let lastPrewarmJob = null;
 let bootPrewarmStarted = false;
 let caffeinateProcess = null;
+
+function nowISO() {
+  return new Date().toISOString();
+}
+
+function newJobID() {
+  return `powerhouse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isPowerhouseJobActive(job = currentPrewarmJob) {
+  return !!job && ['accepted', 'running', 'warming', 'cancelling'].includes(String(job.state || '').toLowerCase());
+}
+
+function serializePowerhouseJob(job = currentPrewarmJob) {
+  if (!job) return null;
+  return {
+    ok: job.ok === true,
+    accepted: job.accepted === true,
+    state: job.state,
+    status: job.status || job.state,
+    mode: job.mode,
+    label: job.label,
+    summary: job.summary,
+    jobID: job.id,
+    jobId: job.id,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    completedAt: job.completedAt || '',
+    elapsedMs: job.startedMs ? Date.now() - job.startedMs : job.elapsedMs || 0,
+    canCancel: job.canCancel === true,
+    canRetry: job.canRetry === true,
+    cancelRequested: job.cancelRequested === true,
+    error: job.error || '',
+    progress: Array.isArray(job.progress) ? job.progress : [],
+    workers: Array.isArray(job.workers) ? job.workers : [],
+    lastPrewarm,
+    resourcePosture: job.resourcePosture || undefined,
+    hardware: job.hardware || undefined,
+  };
+}
+
+function updateJob(job, patch = {}) {
+  Object.assign(job, patch, { updatedAt: nowISO() });
+  return job;
+}
+
+function upsertJobProgress(job, item = {}) {
+  const id = String(item.id || `step-${job.progress.length + 1}`);
+  const existing = job.progress.findIndex((entry) => entry.id === id);
+  const next = {
+    id,
+    label: String(item.label || id),
+    state: String(item.state || 'running'),
+    resource: String(item.resource || ''),
+    mode: String(item.mode || job.mode || ''),
+    summary: String(item.summary || ''),
+    elapsedMs: Number.isFinite(item.elapsedMs) ? item.elapsedMs : undefined,
+  };
+  if (existing >= 0) {
+    job.progress[existing] = { ...job.progress[existing], ...next };
+  } else {
+    job.progress.push(next);
+  }
+  job.workers = job.progress;
+  updateJob(job);
+  return next;
+}
+
+function cancellationWorker(id, label, spec, summary = 'Powerhouse warm pass was cancelled.') {
+  const meta = workerMeta(id, spec);
+  return {
+    id,
+    label,
+    resource: meta.resource,
+    mode: meta.mode,
+    state: 'cancelled',
+    ok: false,
+    elapsedMs: 0,
+    summary,
+  };
+}
+
+function assertJobNotCancelled(job) {
+  if (job?.abortController?.signal?.aborted || job?.cancelRequested) {
+    const error = new Error('Powerhouse warm pass was cancelled.');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
+async function timedJobWorker(job, id, label, spec, fn) {
+  const meta = workerMeta(id, spec);
+  upsertJobProgress(job, {
+    id,
+    label,
+    state: 'running',
+    resource: meta.resource,
+    mode: meta.mode,
+    summary: 'Running...',
+  });
+  if (job.cancelRequested || job.abortController.signal.aborted) {
+    const cancelled = cancellationWorker(id, label, spec);
+    upsertJobProgress(job, cancelled);
+    return cancelled;
+  }
+  const result = await timedWorker(id, label, spec, async () => {
+    assertJobNotCancelled(job);
+    return await fn();
+  });
+  if (job.cancelRequested || job.abortController.signal.aborted) {
+    const cancelled = {
+      ...result,
+      state: 'cancelled',
+      ok: false,
+      summary: 'Powerhouse warm pass was cancelled after this worker returned.',
+    };
+    upsertJobProgress(job, cancelled);
+    return cancelled;
+  }
+  upsertJobProgress(job, result);
+  return result;
+}
 
 export function stopPowerhouseActivity(reason = 'shutdown') {
   if (!caffeinateProcess) return;
@@ -248,11 +371,12 @@ async function commandText(command, args = [], timeout = 5000) {
   }
 }
 
-async function runPrimeCommand(command, args = [], timeout = 120_000) {
+async function runPrimeCommand(command, args = [], timeout = 120_000, options = {}) {
   try {
     const { stdout, stderr } = await execFile(command, args, {
       timeout,
       maxBuffer: 8 * 1024 * 1024,
+      signal: options.signal || undefined,
       env: {
         ...process.env,
         PYTHONUNBUFFERED: '1',
@@ -361,19 +485,20 @@ export async function getHardwareSnapshot({ force = false } = {}) {
   return snapshot;
 }
 
-async function runLimited(tasks, limit = 2) {
+async function runLimited(tasks, limit = 2, signal = null) {
   const results = new Array(tasks.length);
   let next = 0;
   const workerCount = Math.max(1, Math.min(tasks.length, Math.max(1, Number.parseInt(String(limit || 1), 10) || 1)));
   async function worker() {
     while (next < tasks.length) {
+      if (signal?.aborted) return;
       const index = next;
       next += 1;
       results[index] = await tasks[index]();
     }
   }
   await Promise.all(Array.from({ length: workerCount }, worker));
-  return results;
+  return results.filter(Boolean);
 }
 
 async function timedWorker(id, label, specOrFn, maybeFn) {
@@ -408,9 +533,14 @@ async function timedWorker(id, label, specOrFn, maybeFn) {
   }
 }
 
-async function probeNetworkEndpoint(id, label, url, timeoutMs = 2500) {
+async function probeNetworkEndpoint(id, label, url, timeoutMs = 2500, externalSignal = null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const abortFromParent = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', abortFromParent, { once: true });
+  }
   try {
     const response = await fetch(url, { method: 'HEAD', signal: controller.signal });
     return {
@@ -430,6 +560,7 @@ async function probeNetworkEndpoint(id, label, url, timeoutMs = 2500) {
     };
   } finally {
     clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', abortFromParent);
   }
 }
 
@@ -469,6 +600,14 @@ export async function getPowerhouseStatus({ mode = readPowerhouseModeFromConfig(
 
 export function getPowerhouseQuickStatus({ mode = readPowerhouseModeFromConfig() } = {}) {
   const spec = modeSpec(mode);
+  if (isPowerhouseJobActive(currentPrewarmJob)) {
+    return {
+      ...serializePowerhouseJob(currentPrewarmJob),
+      cached: false,
+      lastCheckedAt: currentPrewarmJob.updatedAt || '',
+    };
+  }
+
   if (cachedStatus) {
     return {
       ok: cachedStatus.ok,
@@ -479,19 +618,6 @@ export function getPowerhouseQuickStatus({ mode = readPowerhouseModeFromConfig()
       cached: true,
       stale: Date.now() - cachedStatusAt >= STATUS_TTL_MS,
       lastCheckedAt: cachedStatusAt ? new Date(cachedStatusAt).toISOString() : '',
-      lastPrewarm,
-    };
-  }
-
-  if (prewarmInFlight) {
-    return {
-      ok: false,
-      state: 'warming',
-      mode: spec.mode,
-      label: spec.label,
-      summary: `${spec.label} Powerhouse warmup is running. Bridge liveness is separate from full voice-runtime readiness.`,
-      cached: false,
-      lastCheckedAt: '',
       lastPrewarm,
     };
   }
@@ -591,18 +717,25 @@ function repeatedTasks(count, makeTask) {
   return Array.from({ length: Math.max(0, count) }, (_, index) => makeTask(index + 1));
 }
 
-export async function prewarmPowerhouseRuntime(options = {}) {
-  if (prewarmInFlight) return await prewarmInFlight;
-  prewarmInFlight = (async () => {
-    const mode = normalizePowerhouseMode(options.mode || readPowerhouseModeFromConfig());
-    const spec = modeSpec(mode);
-    const startedAt = Date.now();
-    const hardware = await getHardwareSnapshot({ force: true });
-    const workers = [];
-    const posture = resourcePosture(spec, hardware);
+async function runPowerhousePrewarmJob(job, options = {}) {
+  const spec = modeSpec(job.mode);
+  try {
+    updateJob(job, {
+      state: 'running',
+      status: 'running',
+      summary: `Starting ${spec.label} Powerhouse warm pass. This job is advisory and never blocks QR, bridge readiness, or route start.`,
+      canCancel: true,
+      canRetry: false,
+    });
 
+    const hardware = await getHardwareSnapshot({ force: true });
+    assertJobNotCancelled(job);
+    const posture = resourcePosture(spec, hardware);
+    updateJob(job, { hardware, resourcePosture: posture });
+
+    const workers = [];
     const initialTasks = [
-      () => timedWorker('activity-assertion', 'Hold macOS Powerhouse activity assertion', spec, async () => {
+      () => timedJobWorker(job, 'activity-assertion', 'Hold macOS Powerhouse activity assertion', spec, async () => {
         const result = ensurePowerhouseActivity(spec);
         return {
           ok: result.state === 'ready' || result.state === 'skipped',
@@ -614,7 +747,7 @@ export async function prewarmPowerhouseRuntime(options = {}) {
     ];
 
     if (options.install !== false) {
-      initialTasks.push(() => timedWorker('hf-install', `Install/verify ${spec.installPrepareSet} HF profiles`, spec, () => installHFRealtimeRuntime({
+      initialTasks.push(() => timedJobWorker(job, 'hf-install', `Install/verify ${spec.installPrepareSet} HF profiles`, spec, () => installHFRealtimeRuntime({
         prepareSet: spec.installPrepareSet,
         brainMode: 'qwen3.5-2b',
         sttProfile: 'parakeet-live',
@@ -623,7 +756,7 @@ export async function prewarmPowerhouseRuntime(options = {}) {
     }
 
     if (spec.mode !== 'light') {
-      initialTasks.push(() => timedWorker('python-runtime-prime', 'Prime Python, MLX, Torch, NLTK, and Silero caches', spec, async () => {
+      initialTasks.push(() => timedJobWorker(job, 'python-runtime-prime', 'Prime Python, MLX, Torch, NLTK, and Silero caches', spec, async () => {
         const script = [
           'import importlib, os',
           'mods = ["speech_to_speech", "mlx", "mlx_audio", "torch", "kokoro", "soundfile", "faster_whisper"]',
@@ -650,7 +783,9 @@ export async function prewarmPowerhouseRuntime(options = {}) {
           'print("loaded=" + ",".join(loaded))',
           'print("failed=" + ",".join(failed))',
         ].join('\n');
-        const result = await runPrimeCommand(HF_PYTHON, ['-c', script], spec.mode === 'presentation' ? 240_000 : 180_000);
+        const result = await runPrimeCommand(HF_PYTHON, ['-c', script], spec.mode === 'presentation' ? 240_000 : 180_000, {
+          signal: job.abortController.signal,
+        });
         return {
           ok: result.ok,
           state: result.ok ? 'ready' : 'degraded',
@@ -663,17 +798,20 @@ export async function prewarmPowerhouseRuntime(options = {}) {
       }));
     }
 
-    workers.push(...await runLimited(initialTasks, posture.parallelWorkers));
+    workers.push(...await runLimited(initialTasks, posture.parallelWorkers, job.abortController.signal));
+    assertJobNotCancelled(job);
 
     const independentTasks = [];
 
     if (spec.ttsProbe) {
-      independentTasks.push(...repeatedTasks(spec.ttsProbeRepeats || 1, (index) => () => timedWorker(`tts-probe-${index}`, `Warm streaming TTS voice path ${index}`, spec, async () => {
+      independentTasks.push(...repeatedTasks(spec.ttsProbeRepeats || 1, (index) => () => timedJobWorker(job, `tts-probe-${index}`, `Warm streaming TTS voice path ${index}`, spec, async () => {
         let streamed = false;
         let bytes = 0;
         const controller = new AbortController();
         const timeoutMs = spec.mode === 'maximum' || spec.mode === 'presentation' ? 60_000 : 25_000;
         const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const abortFromJob = () => controller.abort();
+        job.abortController.signal.addEventListener('abort', abortFromJob, { once: true });
         try {
           const result = await synthesizeStream('Ready.', {
             signal: controller.signal,
@@ -693,34 +831,46 @@ export async function prewarmPowerhouseRuntime(options = {}) {
             bytes: audioBytes,
           };
         } finally {
+          job.abortController.signal.removeEventListener('abort', abortFromJob);
           clearTimeout(timer);
         }
       })));
     }
 
     if (spec.routePrewarm) {
-      independentTasks.push(...repeatedTasks(spec.routePrewarmRepeats || 1, (index) => () => timedWorker(`route-prewarm-${index}`, `Warm OpenClaw / Hermes route processing ${index}`, spec, () => prewarmProcessing({ sessionToken: `powerhouse-prewarm-${index}`, fastMode: 'on' }))));
+      independentTasks.push(...repeatedTasks(spec.routePrewarmRepeats || 1, (index) => () => timedJobWorker(
+        job,
+        `route-prewarm-${index}`,
+        `Warm OpenClaw / Hermes route processing ${index}`,
+        spec,
+        () => prewarmProcessing({ sessionToken: `powerhouse-prewarm-${index}`, fastMode: 'on', signal: job.abortController.signal }),
+      )));
     }
 
     if (spec.networkPrewarm) {
-      independentTasks.push(...repeatedTasks(spec.networkProbeRepeats || 1, (index) => () => timedWorker(`network-openai-${index}`, `Probe OpenAI API edge ${index}`, spec, () => probeNetworkEndpoint(`network-openai-${index}`, 'OpenAI API edge', 'https://api.openai.com/v1/models'))));
-      independentTasks.push(...repeatedTasks(spec.networkProbeRepeats || 1, (index) => () => timedWorker(`network-cerebras-${index}`, `Probe Cerebras API edge ${index}`, spec, () => probeNetworkEndpoint(`network-cerebras-${index}`, 'Cerebras API edge', 'https://api.cerebras.ai/v1/models'))));
-      independentTasks.push(...repeatedTasks(spec.networkProbeRepeats || 1, (index) => () => timedWorker(`network-hf-${index}`, `Probe Hugging Face edge ${index}`, spec, () => probeNetworkEndpoint(`network-hf-${index}`, 'Hugging Face edge', 'https://huggingface.co'))));
+      independentTasks.push(...repeatedTasks(spec.networkProbeRepeats || 1, (index) => () => timedJobWorker(job, `network-openai-${index}`, `Probe OpenAI API edge ${index}`, spec, () => probeNetworkEndpoint(`network-openai-${index}`, 'OpenAI API edge', 'https://api.openai.com/v1/models', 2500, job.abortController.signal))));
+      independentTasks.push(...repeatedTasks(spec.networkProbeRepeats || 1, (index) => () => timedJobWorker(job, `network-cerebras-${index}`, `Probe Cerebras API edge ${index}`, spec, () => probeNetworkEndpoint(`network-cerebras-${index}`, 'Cerebras API edge', 'https://api.cerebras.ai/v1/models', 2500, job.abortController.signal))));
+      independentTasks.push(...repeatedTasks(spec.networkProbeRepeats || 1, (index) => () => timedJobWorker(job, `network-hf-${index}`, `Probe Hugging Face edge ${index}`, spec, () => probeNetworkEndpoint(`network-hf-${index}`, 'Hugging Face edge', 'https://huggingface.co', 2500, job.abortController.signal))));
     }
 
     const profileCycle = orderedProfileWarmCycle(spec);
     const profileWarmRepeats = Math.max(1, Number.parseInt(String(spec.profileWarmRepeats || 1), 10));
-    const profileTasks = profileCycle.flatMap((profile) => repeatedTasks(profileWarmRepeats, (index) => () => timedWorker(
+    const profileTasks = profileCycle.flatMap((profile) => repeatedTasks(profileWarmRepeats, (index) => () => timedJobWorker(
+      job,
       `hf-prewarm-${profile.id}-${index}`,
       `Warm ${profile.label}${profile.id === 'primary' || profile.id === 'selected' ? ' as primary active sidecar' : ''} burst ${index}`,
       spec,
       () => prewarmHFRealtimeRuntime(profile.options),
     )));
     const allWarmTasks = [...profileTasks, ...independentTasks];
-    const profileAndIndependentResults = await runLimited(allWarmTasks, posture.parallelWorkers);
+    const profileAndIndependentResults = await runLimited(allWarmTasks, posture.parallelWorkers, job.abortController.signal);
     const profileResults = profileAndIndependentResults.filter((worker) => String(worker.id || '').startsWith('hf-prewarm-'));
     const independentResults = profileAndIndependentResults.filter((worker) => !String(worker.id || '').startsWith('hf-prewarm-'));
     workers.push(...profileResults, ...independentResults);
+
+    if (job.cancelRequested || job.abortController.signal.aborted) {
+      throw Object.assign(new Error('Powerhouse warm pass was cancelled.'), { name: 'AbortError' });
+    }
 
     const failedRequired = workers.filter((worker) => !worker.ok && worker.id === 'hf-install');
     const advisoryFailures = workers.filter((worker) => !worker.ok && worker.id !== 'hf-install');
@@ -732,21 +882,167 @@ export async function prewarmPowerhouseRuntime(options = {}) {
       summary: failedRequired.length
         ? `${spec.label} Powerhouse warmed with required failures: ${failedRequired.map((worker) => worker.summary).join('; ')}`
         : advisoryFailures.length
-          ? `${spec.label} Powerhouse warm pass completed across ${workers.length} workers in ${Date.now() - startedAt} ms. Advisory warmup misses do not block route start: ${advisoryFailures.map((worker) => worker.summary).join('; ')}`
-          : `${spec.label} Powerhouse warm pass completed across ${workers.length} workers in ${Date.now() - startedAt} ms.`,
-      elapsedMs: Date.now() - startedAt,
+          ? `${spec.label} Powerhouse warm pass completed across ${workers.length} workers in ${Date.now() - job.startedMs} ms. Advisory warmup misses do not block route start: ${advisoryFailures.map((worker) => worker.summary).join('; ')}`
+          : `${spec.label} Powerhouse warm pass completed across ${workers.length} workers in ${Date.now() - job.startedMs} ms.`,
+      elapsedMs: Date.now() - job.startedMs,
       hardware,
       resourcePosture: posture,
       workers,
+      jobID: job.id,
     };
     cachedStatus = null;
+    updateJob(job, {
+      ok: lastPrewarm.ok,
+      state: lastPrewarm.state,
+      status: lastPrewarm.state,
+      summary: lastPrewarm.summary,
+      completedAt: nowISO(),
+      elapsedMs: lastPrewarm.elapsedMs,
+      canCancel: false,
+      canRetry: true,
+      workers,
+      progress: workers,
+    });
+    lastPrewarmJob = serializePowerhouseJob(job);
     return lastPrewarm;
-  })();
-  try {
-    return await prewarmInFlight;
+  } catch (error) {
+    cachedStatus = null;
+    const cancelled = error?.name === 'AbortError' || job.cancelRequested || job.abortController.signal.aborted;
+    const state = cancelled ? 'cancelled' : 'failed';
+    const summary = cancelled
+      ? `${job.label} Powerhouse warm pass was cancelled. Bridge, QR, and route start remain available.`
+      : `${job.label} Powerhouse warm pass failed: ${error?.message || String(error)}. Bridge, QR, and route start remain available.`;
+    lastPrewarm = {
+      ok: false,
+      state,
+      mode: job.mode,
+      label: job.label,
+      summary,
+      elapsedMs: Date.now() - job.startedMs,
+      hardware: job.hardware,
+      resourcePosture: job.resourcePosture,
+      workers: job.workers,
+      jobID: job.id,
+    };
+    updateJob(job, {
+      ok: false,
+      state,
+      status: state,
+      summary,
+      error: error?.message || String(error),
+      completedAt: nowISO(),
+      elapsedMs: Date.now() - job.startedMs,
+      canCancel: false,
+      canRetry: true,
+    });
+    lastPrewarmJob = serializePowerhouseJob(job);
+    return lastPrewarm;
   } finally {
-    prewarmInFlight = null;
+    if (currentPrewarmJob?.id === job.id) {
+      currentPrewarmJob = null;
+    }
   }
+}
+
+export function startPowerhousePrewarmJob(options = {}) {
+  const mode = normalizePowerhouseMode(options.mode || readPowerhouseModeFromConfig());
+  const spec = modeSpec(mode);
+  if (isPowerhouseJobActive(currentPrewarmJob)) {
+    return {
+      ...serializePowerhouseJob(currentPrewarmJob),
+      accepted: false,
+      alreadyRunning: true,
+    };
+  }
+
+  const job = {
+    id: newJobID(),
+    ok: false,
+    accepted: true,
+    state: 'accepted',
+    status: 'accepted',
+    mode: spec.mode,
+    label: spec.label,
+    summary: `${spec.label} Powerhouse warm pass was queued. Bridge, QR, and route start are not blocked by this job.`,
+    startedAt: nowISO(),
+    updatedAt: nowISO(),
+    completedAt: '',
+    startedMs: Date.now(),
+    elapsedMs: 0,
+    canCancel: true,
+    canRetry: false,
+    cancelRequested: false,
+    error: '',
+    progress: [],
+    workers: [],
+    abortController: new AbortController(),
+  };
+  currentPrewarmJob = job;
+  job.promise = runPowerhousePrewarmJob(job, options).catch((error) => {
+    console.warn(`[powerhouse] prewarm job ${job.id} failed: ${error?.message || String(error)}`);
+    return lastPrewarm;
+  });
+  return serializePowerhouseJob(job);
+}
+
+export function cancelPowerhousePrewarmJob({ jobID = '', reason = 'user_cancelled' } = {}) {
+  if (!isPowerhouseJobActive(currentPrewarmJob)) {
+    return {
+      ok: true,
+      state: 'idle',
+      summary: 'No Powerhouse warm pass is currently running.',
+      jobID: jobID || '',
+      canCancel: false,
+      canRetry: true,
+      lastPrewarm,
+    };
+  }
+  if (jobID && currentPrewarmJob.id !== jobID) {
+    return {
+      ...serializePowerhouseJob(currentPrewarmJob),
+      ok: false,
+      accepted: false,
+      error: `Requested job ${jobID} is not the running Powerhouse job.`,
+    };
+  }
+  updateJob(currentPrewarmJob, {
+    state: 'cancelling',
+    status: 'cancelling',
+    summary: `${currentPrewarmJob.label} Powerhouse warm pass is cancelling (${reason}). Route start, QR, and bridge readiness are available.`,
+    cancelRequested: true,
+    canCancel: false,
+    canRetry: false,
+  });
+  currentPrewarmJob.abortController.abort();
+  return serializePowerhouseJob(currentPrewarmJob);
+}
+
+export async function getPowerhouseJobStatus({ mode = readPowerhouseModeFromConfig(), force = false } = {}) {
+  if (isPowerhouseJobActive(currentPrewarmJob)) {
+    return serializePowerhouseJob(currentPrewarmJob);
+  }
+  if (force) {
+    return await getPowerhouseStatus({ mode, force: true });
+  }
+  if (lastPrewarmJob) {
+    return {
+      ...lastPrewarmJob,
+      stale: false,
+      lastPrewarm,
+    };
+  }
+  return getPowerhouseQuickStatus({ mode });
+}
+
+export async function prewarmPowerhouseRuntime(options = {}) {
+  const jobStatus = startPowerhousePrewarmJob(options);
+  const job = currentPrewarmJob && currentPrewarmJob.id === jobStatus.jobID
+    ? currentPrewarmJob
+    : null;
+  if (!job?.promise) {
+    return jobStatus;
+  }
+  return await job.promise;
 }
 
 export async function maybeStartPowerhouseOnBoot() {

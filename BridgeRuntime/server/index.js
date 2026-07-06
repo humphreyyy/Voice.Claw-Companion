@@ -16,7 +16,16 @@ import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
 import { getHFRealtimeStatus, installHFRealtimeRuntime, prewarmHFRealtimeRuntime, HFRealtimeBridge } from './hf-realtime-sidecar.js';
-import { getPowerhouseQuickStatus, getPowerhouseStatus, powerhouseModes, prewarmPowerhouseRuntime, readPowerhouseModeFromConfig, readPrimaryCompanionVoiceRuntimeProfileFromConfig } from './powerhouse-manager.js';
+import {
+  cancelPowerhousePrewarmJob,
+  getPowerhouseJobStatus,
+  getPowerhouseQuickStatus,
+  powerhouseModes,
+  prewarmPowerhouseRuntime,
+  readPowerhouseModeFromConfig,
+  readPrimaryCompanionVoiceRuntimeProfileFromConfig,
+  startPowerhousePrewarmJob,
+} from './powerhouse-manager.js';
 import {
   REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
   buildRealtimeAuthStatus,
@@ -4929,9 +4938,9 @@ const httpServer = createServer(async (req, res) => {
         cerebrasModel: configURL.searchParams.get('cerebrasModel') || primaryProfile.cerebrasModel || '',
         prepareSet: configURL.searchParams.get('prepareSet') || 'recommended',
       }).catch((error) => ({ state: 'error', error: error?.message || String(error) }));
-      const powerhouse = await getPowerhouseStatus({
+      const powerhouse = getPowerhouseQuickStatus({
         mode: configURL.searchParams.get('powerhouseMode') || readPowerhouseModeFromConfig(),
-      }).catch((error) => ({ state: 'error', error: error?.message || String(error) }));
+      });
       const companionVoiceConfig = {
         path: `${BASE_PATH}/realtime/companion-voice-turn-file`,
         streamingPath: `${BASE_PATH}/ws`,
@@ -4942,6 +4951,7 @@ const httpServer = createServer(async (req, res) => {
         hfRealtimePrewarmPath: `${BASE_PATH}/realtime/hf-prewarm`,
         powerhouseStatusPath: `${BASE_PATH}/realtime/powerhouse/status`,
         powerhousePrewarmPath: `${BASE_PATH}/realtime/powerhouse/prewarm`,
+        powerhouseCancelPath: `${BASE_PATH}/realtime/powerhouse/cancel`,
         hfRealtime,
         powerhouse,
         powerhouseModes: powerhouseModes(),
@@ -5001,7 +5011,7 @@ const httpServer = createServer(async (req, res) => {
     if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/powerhouse/status`) {
       try {
         const statusURL = new URL(req.url, `http://localhost:${PORT}`);
-        const status = await getPowerhouseStatus({
+        const status = await getPowerhouseJobStatus({
           mode: statusURL.searchParams.get('mode') || readPowerhouseModeFromConfig(),
           force: statusURL.searchParams.get('force') === '1',
         });
@@ -5025,15 +5035,30 @@ const httpServer = createServer(async (req, res) => {
           selectedOnly: payload.selectedOnly === true,
         };
         if (payload.async === true || payload.background === true) {
-          prewarmPowerhouseRuntime(options).catch((error) => {
-            console.warn(`[voice-bridge] Powerhouse async prewarm failed: ${error?.message || String(error)}`);
-          });
-          const status = getPowerhouseQuickStatus({ mode: options.mode });
+          const status = startPowerhousePrewarmJob(options);
           res.writeHead(202, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, accepted: true, ...status, modes: powerhouseModes() }));
           return;
         }
         const status = await prewarmPowerhouseRuntime(options);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...status, modes: powerhouseModes() }));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, state: 'error', error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/powerhouse/cancel`) {
+      try {
+        const body = await readRequestBody(req).catch(() => '{}');
+        let payload;
+        try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+        const status = cancelPowerhousePrewarmJob({
+          jobID: payload.jobID || payload.jobId || '',
+          reason: payload.reason || 'user_cancelled',
+        });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...status, modes: powerhouseModes() }));
       } catch (error) {

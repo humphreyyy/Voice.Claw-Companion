@@ -206,6 +206,12 @@ final class BridgeStore: ObservableObject {
     @Published var powerhouseHardwareSummary: String = "Mac hardware profile has not been checked."
     @Published var powerhouseResourcePostureSummary: String = "Powerhouse resource posture has not been checked."
     @Published var powerhouseWorkerItems: [PowerhouseWorkerItem] = []
+    @Published var powerhouseJobID: String = ""
+    @Published var powerhouseJobStartedAt: String = ""
+    @Published var powerhouseJobUpdatedAt: String = ""
+    @Published var powerhouseCanCancel: Bool = false
+    @Published var powerhouseCanRetry: Bool = false
+    @Published var powerhouseLastError: String = ""
     @Published var companionVoiceDependencyInstallSummary: String = ""
     @Published var companionVoiceDependencyInstallAvailable: Bool = false
     @Published var companionVoiceDependencyItems: [CompanionVoiceDependencyItem] = []
@@ -267,6 +273,7 @@ final class BridgeStore: ObservableObject {
     private var runtimeSelfHealAttempted = false
     private var lastLocalBridgeRestartAttemptDate: Date?
     private var lastAutomaticPowerhousePrewarmDate: Date?
+    private var powerhousePollingTask: Task<Void, Never>?
 
     enum BridgeStatus: Equatable {
         case idle
@@ -895,7 +902,6 @@ final class BridgeStore: ObservableObject {
     }
 
     func prewarmPowerhouseRuntime(install: Bool = true, refreshAfterCompletion: Bool = true) async {
-        guard !isPrewarmingPowerhouseRuntime else { return }
         guard let portValue = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
               let url = URL(string: "http://127.0.0.1:\(portValue)/realtime/powerhouse/prewarm")
         else {
@@ -904,8 +910,7 @@ final class BridgeStore: ObservableObject {
         }
 
         isPrewarmingPowerhouseRuntime = true
-        powerhouseSummary = "Starting \(powerhouseMode.label) Powerhouse warm pass..."
-        defer { isPrewarmingPowerhouseRuntime = false }
+        powerhouseSummary = "Starting \(powerhouseMode.label) Powerhouse warm pass. QR, bridge readiness, and route start remain available."
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -929,28 +934,92 @@ final class BridgeStore: ObservableObject {
             }
 
             applyPowerhouseStatusObject(object)
-
-            let startedAt = Date()
-            var completed = Self.isTerminalPowerhouseState(powerhouseState)
-            while !completed && Date().timeIntervalSince(startedAt) < 45 * 60 {
-                try await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let status = try await fetchPowerhouseStatus(portValue: portValue, force: true) else {
-                    continue
-                }
-                applyPowerhouseStatusObject(status)
-                completed = Self.isTerminalPowerhouseState(powerhouseState)
-                if !completed {
-                    let elapsed = Int(Date().timeIntervalSince(startedAt).rounded())
-                    let summary = status["summary"] as? String ?? powerhouseSummary
-                    powerhouseSummary = "\(summary) Elapsed \(elapsed)s."
-                }
-            }
-            if refreshAfterCompletion {
-                await refreshStatus()
-            }
+            startPowerhouseStatusPolling(portValue: portValue, refreshAfterCompletion: refreshAfterCompletion)
         } catch {
             powerhouseState = "failed"
             powerhouseSummary = "Powerhouse warm pass failed: \(Self.userFacingSetupError(error))"
+            isPrewarmingPowerhouseRuntime = false
+            powerhouseCanRetry = true
+        }
+    }
+
+    func cancelPowerhouseRuntimeWarmPass() async {
+        guard let portValue = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let url = URL(string: "http://127.0.0.1:\(portValue)/realtime/powerhouse/cancel")
+        else {
+            recoverPowerhouseRuntimeUI()
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 12
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "jobID": powerhouseJobID,
+            "reason": "user_cancelled",
+        ])
+        applyBridgeAuthHeaders(to: &request)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                recoverPowerhouseRuntimeUI()
+                return
+            }
+            applyPowerhouseStatusObject(object)
+            startPowerhouseStatusPolling(portValue: portValue, refreshAfterCompletion: false)
+        } catch {
+            recoverPowerhouseRuntimeUI()
+        }
+    }
+
+    func retryPowerhouseRuntimeWarmPass() async {
+        await prewarmPowerhouseRuntime(install: true)
+    }
+
+    func recoverPowerhouseRuntimeUI() {
+        powerhousePollingTask?.cancel()
+        powerhousePollingTask = nil
+        isPrewarmingPowerhouseRuntime = false
+        powerhouseCanCancel = false
+        powerhouseCanRetry = true
+        powerhouseState = powerhouseState == "running" || powerhouseState == "warming" || powerhouseState == "accepted" || powerhouseState == "cancelling"
+            ? "not_checked"
+            : powerhouseState
+        powerhouseSummary = "Powerhouse UI recovered locally. Bridge, QR, and route start are not blocked by Powerhouse. Click Check Again or Retry to refresh the warm-pass status."
+    }
+
+    private func startPowerhouseStatusPolling(portValue: Int, refreshAfterCompletion: Bool) {
+        powerhousePollingTask?.cancel()
+        powerhousePollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self else { return }
+                do {
+                    guard let status = try await self.fetchPowerhouseStatus(portValue: portValue, force: false) else {
+                        continue
+                    }
+                    self.applyPowerhouseStatusObject(status)
+                    if Self.isTerminalPowerhouseState(self.powerhouseState) {
+                        if refreshAfterCompletion {
+                            await self.refreshStatus()
+                        }
+                        self.powerhousePollingTask = nil
+                        return
+                    }
+                } catch {
+                    self.powerhouseSummary = "Powerhouse status polling paused: \(Self.userFacingSetupError(error)). Bridge, QR, and route start remain available."
+                    self.isPrewarmingPowerhouseRuntime = false
+                    self.powerhouseCanCancel = false
+                    self.powerhouseCanRetry = true
+                    self.powerhousePollingTask = nil
+                    return
+                }
+            }
         }
     }
 
@@ -979,6 +1048,13 @@ final class BridgeStore: ObservableObject {
     private func applyPowerhouseStatusObject(_ object: [String: Any]) {
         powerhouseState = object["state"] as? String ?? powerhouseState
         powerhouseSummary = object["summary"] as? String ?? "Powerhouse warm pass completed."
+        powerhouseJobID = (object["jobID"] as? String) ?? (object["jobId"] as? String) ?? powerhouseJobID
+        powerhouseJobStartedAt = object["startedAt"] as? String ?? powerhouseJobStartedAt
+        powerhouseJobUpdatedAt = object["updatedAt"] as? String ?? powerhouseJobUpdatedAt
+        powerhouseCanCancel = object["canCancel"] as? Bool ?? Self.isRunningPowerhouseState(powerhouseState)
+        powerhouseCanRetry = object["canRetry"] as? Bool ?? Self.isTerminalPowerhouseState(powerhouseState)
+        powerhouseLastError = object["error"] as? String ?? ""
+        isPrewarmingPowerhouseRuntime = Self.isRunningPowerhouseState(powerhouseState)
         if let posture = object["resourcePosture"] as? [String: Any] {
             powerhouseResourcePostureSummary = Self.powerhousePostureSummary(posture)
         }
@@ -986,7 +1062,8 @@ final class BridgeStore: ObservableObject {
            let summary = hardware["summary"] as? String {
             powerhouseHardwareSummary = summary
         }
-        let workers = object["workers"] as? [[String: Any]]
+        let workers = object["progress"] as? [[String: Any]]
+            ?? (object["workers"] as? [[String: Any]])
             ?? (object["workerPlan"] as? [[String: Any]])
             ?? ((object["lastPrewarm"] as? [String: Any])?["workers"] as? [[String: Any]])
         if let workers {
@@ -996,15 +1073,26 @@ final class BridgeStore: ObservableObject {
                     label: ($0["label"] as? String) ?? "Worker",
                     state: ($0["state"] as? String) ?? "unknown",
                     resource: ($0["resource"] as? String) ?? "",
-                    mode: ($0["mode"] as? String) ?? powerhouseMode.rawValue
+                    mode: ($0["mode"] as? String) ?? powerhouseMode.rawValue,
+                    summary: ($0["summary"] as? String) ?? "",
+                    elapsedMs: $0["elapsedMs"] as? Int
                 )
             }
         }
     }
 
+    private static func isRunningPowerhouseState(_ state: String) -> Bool {
+        switch state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "accepted", "running", "warming", "cancelling":
+            return true
+        default:
+            return false
+        }
+    }
+
     private static func isTerminalPowerhouseState(_ state: String) -> Bool {
         switch state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "ready", "degraded", "failed", "error":
+        case "ready", "degraded", "failed", "error", "cancelled", "idle", "needs_setup", "not_checked":
             return true
         default:
             return false
@@ -1202,7 +1290,9 @@ final class BridgeStore: ObservableObject {
                     label: ($0.label?.isEmpty == false ? $0.label : $0.id) ?? "Worker",
                     state: $0.state ?? "unknown",
                     resource: $0.resource ?? "",
-                    mode: $0.mode ?? ""
+                    mode: $0.mode ?? "",
+                    summary: "",
+                    elapsedMs: nil
                 )
             }
             setupAdvice = diagnostics.suggestedAction
@@ -1919,6 +2009,8 @@ struct PowerhouseWorkerItem: Identifiable, Equatable {
     let state: String
     let resource: String
     let mode: String
+    let summary: String
+    let elapsedMs: Int?
 }
 
 private struct BridgeDiagnostics: Decodable {

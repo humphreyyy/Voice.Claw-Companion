@@ -25,6 +25,13 @@ Package a GitHub release artifact:
 ./scripts/package_release.sh
 ```
 
+For public releases, set both `VOICECLAW_BRIDGE_VERSION` and a strictly
+monotonic numeric `VOICECLAW_BRIDGE_BUILD`. Sparkle compares
+`CFBundleVersion` / `sparkle:version`, not only the visible
+`CFBundleShortVersionString`. The packaging script refuses to build a public
+release whose build number is not newer than the current appcast and the
+installed `/Applications/VoiceClaw Companion.app`, when present.
+
 For public distribution, notarize and staple the generated DMG before uploading it to a GitHub Release. Then generate the Sparkle appcast for the notarized DMG:
 
 ```sh
