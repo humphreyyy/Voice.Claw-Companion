@@ -766,7 +766,8 @@ export async function prewarmPowerhouseRuntime(options = {}) {
     const profileResults = [...primaryResults, ...fallbackResults];
     workers.push(...profileResults, ...independentResults);
 
-    const failedRequired = workers.filter((worker) => !worker.ok && ['hf-install', 'hf-prewarm-primary', 'hf-prewarm-selected'].includes(worker.id));
+    const failedRequired = workers.filter((worker) => !worker.ok && worker.id === 'hf-install');
+    const advisoryFailures = workers.filter((worker) => !worker.ok && worker.id !== 'hf-install');
     lastPrewarm = {
       ok: failedRequired.length === 0,
       state: failedRequired.length ? 'degraded' : 'ready',
@@ -774,7 +775,9 @@ export async function prewarmPowerhouseRuntime(options = {}) {
       label: spec.label,
       summary: failedRequired.length
         ? `${spec.label} Powerhouse warmed with required failures: ${failedRequired.map((worker) => worker.summary).join('; ')}`
-        : `${spec.label} Powerhouse warm pass completed across ${workers.length} workers in ${Date.now() - startedAt} ms.`,
+        : advisoryFailures.length
+          ? `${spec.label} Powerhouse warm pass completed across ${workers.length} workers in ${Date.now() - startedAt} ms. Advisory warmup misses do not block route start: ${advisoryFailures.map((worker) => worker.summary).join('; ')}`
+          : `${spec.label} Powerhouse warm pass completed across ${workers.length} workers in ${Date.now() - startedAt} ms.`,
       elapsedMs: Date.now() - startedAt,
       hardware,
       resourcePosture: posture,

@@ -1244,7 +1244,7 @@ final class BridgeStore: ObservableObject {
         if missing.isEmpty {
             status = .ready
             suppressTransientSetupWarningUntil = nil
-            bridgeRuntimeCheckSummary = "Companion Ready means the packaged bridge runtime is current, the local bridge is running, Tailscale Serve is mapped to VoiceClaw, access checks are clear, and Companion Realtime Voice dependencies are ready. Powerhouse resource posture is diagnostics-only and never blocks readiness."
+            bridgeRuntimeCheckSummary = "Companion Ready means the packaged bridge runtime is current, the local bridge is running, Tailscale Serve is mapped to VoiceClaw, access checks are clear, and Companion Realtime Voice dependencies are installed. Selected-runtime prewarming and Powerhouse warm passes are advisory and never block starting a route."
             return
         }
 

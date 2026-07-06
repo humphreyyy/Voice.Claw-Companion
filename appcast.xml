@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.105</title>
+            <pubDate>Mon, 06 Jul 2026 09:13:55 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607060910</sparkle:version>
+            <sparkle:shortVersionString>0.1.105</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.105</h2><ul><li>Makes selected-runtime prewarming and Powerhouse warm passes advisory, never blockers for starting a VoiceClaw route.</li><li>Keeps aggressive background warming while preserving route start responsiveness.</li><li>Clarifies Companion readiness wording so dependency installation is separate from warmup state.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.105/VoiceClawCompanion-0.1.105-202607060910.dmg" length="3563400" type="application/octet-stream" sparkle:edSignature="kMZ4fo0aBOKQZa+Vzx67KHNWYNGviZJ3HtRtnRaBhJdvioeqZeh+kjH9MizX22uzPk7UZimxidoF2wQ4cCYTDQ=="/>
+        </item>
+        <item>
             <title>0.1.104</title>
             <pubDate>Mon, 06 Jul 2026 08:56:59 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.103</h2><ul><li>Honors Cerebras as the selected Companion Realtime Voice LLM when native iPhone STT/TTS are selected.</li><li>Prevents Cerebras-selected turns from silently falling back to the local/Qwen planner when the Cerebras planner response is incomplete.</li><li>Keeps iPhone tool controls available while preserving the selected LLM for normal Companion Realtime Voice planning.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.103/VoiceClawCompanion-0.1.103-202607060847.dmg" length="3565286" type="application/octet-stream" sparkle:edSignature="b6aTX8TA3+uoUOBe/mchJovT+SCn/gB4uTc/5Cbxnj0OQhNaYtq5mexkS8QtFQZmb8skZsWU6PDWMpOY/QzKBQ=="/>
-        </item>
-        <item>
-            <title>0.1.102</title>
-            <pubDate>Mon, 06 Jul 2026 08:37:54 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607060824</sparkle:version>
-            <sparkle:shortVersionString>0.1.102</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.102</h2><ul><li>Fixes Companion Realtime Voice session updates so live runtime changes update the active HF sidecar without stale route/tool/VAD state.</li><li>Keeps the packaged runtime manifest aligned with the app bundle for accurate readiness checks.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.102/VoiceClawCompanion-0.1.102-202607060824.dmg" length="3565027" type="application/octet-stream" sparkle:edSignature="QCHq3sNrc0XTG+tptZumqSTqSI8DKUb+Moqz2CWUO01AuY8L78RTZC+vCh97sbqSwPScrfN6/7ND4jLrCIPRCQ=="/>
         </item>
     </channel>
 </rss>
