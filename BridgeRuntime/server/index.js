@@ -230,6 +230,22 @@ function requireBridgeAuth(req, res) {
 
 function loadOpenAIKeyFromConfig() {
   try {
+    const cfg = JSON.parse(readFileSync(VOICECLAW_CONFIG, 'utf8'));
+    const candidates = [
+      cfg?.openAIAPIKey,
+      cfg?.OpenAIAPIKey,
+      cfg?.openAIApiKey,
+      cfg?.openaiAPIKey,
+      cfg?.openaiApiKey,
+      cfg?.apiKey,
+    ];
+    for (const value of candidates) {
+      const key = String(value || '').trim();
+      if (key) return key;
+    }
+  } catch {}
+
+  try {
     const cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG, 'utf8'));
     return cfg?.messages?.tts?.providers?.openai?.apiKey || '';
   } catch {
@@ -238,7 +254,7 @@ function loadOpenAIKeyFromConfig() {
 }
 
 function getOpenAIApiKey() {
-  return process.env.OPENAI_API_KEY || loadOpenAIKeyFromConfig();
+  return loadOpenAIKeyFromConfig() || process.env.OPENAI_API_KEY || '';
 }
 
 function openAIKeyForRealtimeRequest(req) {
@@ -4693,7 +4709,7 @@ async function runCompanionVoiceTurn({ req, payload, signal } = {}) {
   let asrMs = 0;
   if (!transcript && audioBuffer?.length) {
     const asrStart = Date.now();
-    const { text } = await transcribe(audioBuffer, { signal });
+    const { text } = await transcribe(audioBuffer, { signal, authPayload: payload });
     asrMs = Date.now() - asrStart;
     transcript = String(text || '').trim();
   }
@@ -4823,7 +4839,7 @@ async function runCompanionVoiceTranscription({ req, payload }) {
   if (!audioBuffer?.length) throw new Error('Companion Realtime Voice transcription needs audio.');
 
   const asrStartedAt = Date.now();
-  const { text } = await transcribe(audioBuffer);
+  const { text } = await transcribe(audioBuffer, { authPayload: payload });
   const asrMs = Date.now() - asrStartedAt;
   const transcript = String(text || '').trim();
   await appendRealtimeLog({
@@ -5002,6 +5018,7 @@ const httpServer = createServer(async (req, res) => {
         try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
         const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
         const prewarmPayload = {
+          ...payload,
           brainMode: payload.brainMode || primaryProfile.brainMode || 'qwen3.5-2b',
           sttProfile: payload.sttProfile || primaryProfile.sttProfile || 'parakeet-live',
           localVoice: payload.localVoice || primaryProfile.localVoice || 'kokoro-af-heart',
@@ -5026,6 +5043,7 @@ const httpServer = createServer(async (req, res) => {
         let payload;
         try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
         const status = await installHFRealtimeRuntime({
+          ...payload,
           brainMode: payload.brainMode || 'qwen3.5-2b',
           sttProfile: payload.sttProfile || '',
           localVoice: payload.localVoice || '',
@@ -6171,7 +6189,11 @@ async function queueBusyUtterance(session, ws, send, rawAudio) {
 
   try {
     send({ type: 'status', status: 'transcribing' });
-    const { text } = await transcribe(rawAudio, { signal: controller.signal, sampleRate: companionSessionSampleRate(session) });
+    const { text } = await transcribe(rawAudio, {
+      signal: controller.signal,
+      sampleRate: companionSessionSampleRate(session),
+      authPayload: session.companionVoicePayload || {},
+    });
     session.busyAsrControllers.delete(controller);
 
     if (slot.epoch !== session.busyQueueEpoch || !session.pendingTextTurns.includes(slot)) return;
@@ -6267,7 +6289,11 @@ async function processUtterance(session, ws, send, cancelPipeline) {
     // 1. ASR
     send({ type: 'status', status: 'transcribing' });
     const asrStart = Date.now();
-    const { text } = await transcribe(rawAudio, { signal: asrController.signal, sampleRate: companionSessionSampleRate(session) });
+    const { text } = await transcribe(rawAudio, {
+      signal: asrController.signal,
+      sampleRate: companionSessionSampleRate(session),
+      authPayload: session.companionVoicePayload || {},
+    });
     console.log(`[turn] asr_ms=${Date.now() - asrStart} turn=${turnId} text=${JSON.stringify((text || '').slice(0, 80))}`);
     session.asrAbort = null;
 
@@ -6373,7 +6399,11 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
   try {
     send({ type: 'status', status: 'transcribing', turnId });
     const asrStart = Date.now();
-    const { text, source: asrSource = 'unknown', fallback: asrFallback = false } = await transcribe(rawAudio, { signal: controller.signal, sampleRate: companionSessionSampleRate(session) });
+    const { text, source: asrSource = 'unknown', fallback: asrFallback = false } = await transcribe(rawAudio, {
+      signal: controller.signal,
+      sampleRate: companionSessionSampleRate(session),
+      authPayload: session.companionVoicePayload || {},
+    });
     const asrMs = Date.now() - asrStart;
     const transcript = String(text || '').trim();
     console.log(`[companion-stream] asr_ms=${asrMs} asr_source=${asrSource}${asrFallback ? ' fallback=1' : ''} turn=${turnId} text=${JSON.stringify(transcript.slice(0, 120))}`);
@@ -6857,7 +6887,11 @@ async function processBargeProbe(session, ws, send, cancelPipeline) {
   const controller = new AbortController();
   const started = Date.now();
   try {
-    const { text } = await transcribe(rawAudio, { signal: controller.signal, sampleRate: companionSessionSampleRate(session) });
+    const { text } = await transcribe(rawAudio, {
+      signal: controller.signal,
+      sampleRate: companionSessionSampleRate(session),
+      authPayload: session.companionVoicePayload || {},
+    });
     const trimmed = String(text || '').trim();
     const parsed = parseBargeIn(trimmed, session.bargeMode);
     console.log(`[barge] mode=${session.bargeMode} probe_ms=${Date.now() - started} matched=${parsed.matched} phrase=${JSON.stringify(parsed.phrase || '')} remainder=${JSON.stringify(parsed.remainder || '')} text=${JSON.stringify(trimmed.slice(0, 120))}`);
@@ -6909,7 +6943,11 @@ async function processWakeProbe(session, ws, send) {
   const controller = new AbortController();
   const started = Date.now();
   try {
-    const { text } = await transcribe(rawAudio, { signal: controller.signal, sampleRate: companionSessionSampleRate(session) });
+    const { text } = await transcribe(rawAudio, {
+      signal: controller.signal,
+      sampleRate: companionSessionSampleRate(session),
+      authPayload: session.companionVoicePayload || {},
+    });
     const trimmed = String(text || '').trim();
     let matched;
     let turnText = trimmed;

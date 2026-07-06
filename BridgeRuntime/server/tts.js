@@ -38,6 +38,30 @@ const TTS_SPEED_PRESETS = [
 ];
 
 function loadOpenAITtsConfig() {
+  try {
+    const bridgeConfig = process.env.VOICECLAW_CONFIG_PATH || process.env.VOICECLAW_CONFIG || join(os.homedir(), '.voiceclaw', 'bridge.json');
+    const cfg = JSON.parse(readFileSync(bridgeConfig, 'utf8'));
+    const candidates = [
+      cfg?.openAIAPIKey,
+      cfg?.OpenAIAPIKey,
+      cfg?.openAIApiKey,
+      cfg?.openaiAPIKey,
+      cfg?.openaiApiKey,
+      cfg?.apiKey,
+    ];
+    for (const value of candidates) {
+      const key = String(value || '').trim();
+      if (key) {
+        return {
+          apiKey: key,
+          model: process.env.OPENAI_TTS_MODEL || OPENAI_TTS_MODEL,
+          voice: process.env.OPENAI_TTS_VOICE || OPENAI_TTS_VOICE,
+          provider: 'openai',
+        };
+      }
+    }
+  } catch {}
+
   let fromCfg = null;
   try {
     const raw = readFileSync(OPENCLAW_CONFIG, 'utf8');

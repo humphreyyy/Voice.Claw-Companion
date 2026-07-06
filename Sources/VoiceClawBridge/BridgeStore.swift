@@ -1087,6 +1087,13 @@ final class BridgeStore: ObservableObject {
         object["realtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
         object["openClawAgentName"] = normalizedOpenClawAgentName
         object["powerhouseMode"] = powerhouseMode.rawValue
+        let trimmedOpenAIKey = openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedOpenAIKey.isEmpty {
+            object.removeValue(forKey: "openAIAPIKey")
+            object.removeValue(forKey: "OpenAIAPIKey")
+        } else {
+            object["openAIAPIKey"] = trimmedOpenAIKey
+        }
         let trimmedCerebrasKey = cerebrasAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedCerebrasKey.isEmpty {
             object.removeValue(forKey: "cerebrasAPIKey")
@@ -1353,7 +1360,7 @@ final class BridgeStore: ObservableObject {
     private func refreshRealtimeAuthStatus(portValue: Int) async {
         var components = URLComponents(string: "http://127.0.0.1:\(portValue)/realtime/auth/status")
         components?.queryItems = [
-            URLQueryItem(name: "probe", value: realtimeAuthMode == .openClawOAuth ? "1" : "0"),
+            URLQueryItem(name: "probe", value: "1"),
             URLQueryItem(name: "model", value: "gpt-realtime-2"),
             URLQueryItem(name: "voice", value: "marin"),
         ]
@@ -1363,7 +1370,7 @@ final class BridgeStore: ObservableObject {
         }
 
         var request = URLRequest(url: url)
-        request.timeoutInterval = realtimeAuthMode == .openClawOAuth ? 12 : 3
+        request.timeoutInterval = 12
         applyBridgeAuthHeaders(to: &request)
 
         do {
@@ -1377,9 +1384,18 @@ final class BridgeStore: ObservableObject {
             }
 
             realtimeAuthStatusSummary = Self.realtimeAuthStatusSummary(from: object)
+            refreshPairingPayloadFromBridgeConfig()
         } catch {
             realtimeAuthStatusSummary = "OpenAI auth status is not reachable on the local companion bridge yet."
         }
+    }
+
+    private func refreshPairingPayloadFromBridgeConfig() {
+        let configURL = URL(fileURLWithPath: "\(NSHomeDirectory())/.voiceclaw/bridge.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        updatePairingPayload(Self.pairingPayload(from: object))
     }
 
     private func applyBridgeAuthHeaders(to request: inout URLRequest) {
@@ -1654,6 +1670,22 @@ final class BridgeStore: ObservableObject {
             "InstantWebSearch": true,
             "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
             "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? false,
+            "ChatGPTOAuthAccessToken": config["ChatGPTOAuthAccessToken"] as? String
+                ?? config["openAIChatGPTOAuthAccessToken"] as? String
+                ?? config["openAIOAuthAccessToken"] as? String
+                ?? "",
+            "ChatGPTOAuthRefreshToken": config["ChatGPTOAuthRefreshToken"] as? String
+                ?? config["openAIChatGPTOAuthRefreshToken"] as? String
+                ?? config["openAIOAuthRefreshToken"] as? String
+                ?? "",
+            "ChatGPTOAuthExpiresAt": config["ChatGPTOAuthExpiresAt"]
+                ?? config["openAIChatGPTOAuthExpiresAt"]
+                ?? config["openAIOAuthExpiresAt"]
+                ?? 0,
+            "ChatGPTOAuthAccountID": config["ChatGPTOAuthAccountID"] as? String
+                ?? config["openAIChatGPTOAuthAccountID"] as? String
+                ?? config["openAIOAuthAccountID"] as? String
+                ?? "",
             "CerebrasAPIKey": config["cerebrasAPIKey"] as? String ?? "",
             "WatchPublicBridgeURL": "",
             "CompanionVersion": Self.currentCompanionVersion ?? "",
@@ -1681,6 +1713,12 @@ final class BridgeStore: ObservableObject {
         }
         if let key = object["OpenAIAPIKey"] as? String, !key.isEmpty {
             object["OpenAIAPIKey"] = "••••••••••••\(key.suffix(4))"
+        }
+        if let token = object["ChatGPTOAuthAccessToken"] as? String, !token.isEmpty {
+            object["ChatGPTOAuthAccessToken"] = "••••••••••••\(token.suffix(4))"
+        }
+        if let token = object["ChatGPTOAuthRefreshToken"] as? String, !token.isEmpty {
+            object["ChatGPTOAuthRefreshToken"] = "••••••••••••\(token.suffix(4))"
         }
         if let key = object["CerebrasAPIKey"] as? String, !key.isEmpty {
             object["CerebrasAPIKey"] = "••••••••••••\(key.suffix(4))"

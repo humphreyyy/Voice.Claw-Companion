@@ -7,6 +7,7 @@ import os from 'node:os';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
 import { executablePath, normalizeProcessPath } from './bin-paths.js';
+import { parseRealtimeBoolean, readBridgeConfig, resolveOpenAIChatGPTOAuthBearer } from './realtime-auth.js';
 
 const execFile = promisify(execFileCb);
 normalizeProcessPath();
@@ -744,6 +745,17 @@ function preferredHFPoolPortForKey(key = '') {
   return HF_PORT + (hash % HF_POOL_SIZE);
 }
 
+function shortTokenFingerprint(value = '') {
+  const text = String(value || '');
+  if (!text) return 'none';
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0').slice(-8);
+}
+
 function safeReadDir(path) {
   try {
     return readdirSync(path, { withFileTypes: true });
@@ -1305,7 +1317,7 @@ async function getHFRealtimeSingleStatus(options = {}) {
     }))
     : { before: null, after: await hfRuntimeProcessSnapshot(), changed: false, skipped: true };
   const requireLocalMiddleBrain = localMiddleBrainRequired(brainMode);
-  const requireOpenAIKey = openAIMiddleBrainRequired(brainMode);
+  const requireOpenAIBearer = openAIMiddleBrainRequired(brainMode);
   const requireCerebrasKey = cerebrasMiddleBrainRequired(brainMode);
   const pythonReady = await fileExecutable(HF_PYTHON);
   const cliReady = await fileExecutable(HF_CLI);
@@ -1373,12 +1385,17 @@ async function getHFRealtimeSingleStatus(options = {}) {
     ...ttsRequiredModels,
     { id: 'middle-qwen35-2b-local', label: 'Qwen 3.5 2B local Companion Realtime Voice LLM', model: HF_DEFAULT_LOCAL_MODEL, cached: localModelCached, required: requireLocalMiddleBrain },
   ];
-  const openAIKeyReady = !requireOpenAIKey || !!openAIKeyFromPayload(options);
+  const openAIBearerStatus = requireOpenAIBearer
+    ? await openAIResponsesBearerReadyForHF(options)
+    : { ready: true, source: 'not-required', error: '' };
+  const openAIBearerReady = !requireOpenAIBearer || openAIBearerStatus.ready;
   const cerebrasKeyReady = !requireCerebrasKey || !!cerebrasKeyFromPayload(options);
   const missingSTTModules = sttModuleStatuses.filter((item) => item.required && !item.ready);
   const missingTTSModules = ttsModuleStatuses.filter((item) => item.required && !item.ready);
   const missingRequiredModels = requiredModels.filter((model) => model.required && !model.cached);
-  const ready = runtimeReady && missingSTTModules.length === 0 && missingTTSModules.length === 0 && missingRequiredModels.length === 0 && openAIKeyReady && cerebrasKeyReady;
+  const dependenciesReady = runtimeReady && missingSTTModules.length === 0 && missingTTSModules.length === 0 && missingRequiredModels.length === 0 && openAIBearerReady && cerebrasKeyReady;
+  const streamingReady = !!(dependenciesReady && (requestedSidecarRunning || (sidecarKey === requestedKey && !!sidecar && !sidecar.killed)) && health?.reachable);
+  const ready = dependenciesReady;
   const installItems = ready ? [] : [
     ...(!runtimeReady ? [{
       id: 'hf-speech-to-speech-runtime',
@@ -1417,10 +1434,10 @@ async function getHFRealtimeSingleStatus(options = {}) {
       installable: false,
       command: 'manual setup required',
     }] : []),
-    ...(!openAIKeyReady ? [{
-      id: 'openai-api-key',
-      label: 'OpenAI API key',
-      detail: 'Add an OpenAI API key in VoiceClaw Companion before using an OpenAI model as the Companion Realtime Voice LLM.',
+    ...(!openAIBearerReady ? [{
+      id: 'openai-responses-bearer',
+      label: 'OpenAI Responses authentication',
+      detail: openAIBearerStatus.error || 'Sync Companion ChatGPT OAuth or enable API-key fallback before using an OpenAI model as the Companion Realtime Voice LLM.',
       installable: false,
       command: 'manual setup required',
     }] : []),
@@ -1430,6 +1447,14 @@ async function getHFRealtimeSingleStatus(options = {}) {
     summary: ready
       ? `HF speech-to-speech runtime is ready for ${HF_STT_PROFILE_OPTIONS.find((item) => item.id === sttProfile)?.label || sttProfile} at ${HF_ROOT}.`
       : `HF speech-to-speech runtime or selected STT profile needs setup for ${HF_STT_PROFILE_OPTIONS.find((item) => item.id === sttProfile)?.label || sttProfile} at ${HF_ROOT}.`,
+    dependencyState: dependenciesReady ? 'ready' : 'needs_setup',
+    dependenciesReady,
+    streamingReady,
+    streamingSummary: streamingReady
+      ? `HF streaming sidecar is listening on ${hfWsURL(healthPort)}.`
+      : dependenciesReady
+        ? 'HF runtime dependencies are ready, but the streaming sidecar is not currently listening. It will be started when Companion Realtime Voice opens.'
+        : 'HF streaming sidecar is waiting for required runtime dependencies.',
     root: HF_ROOT,
     python: pythonReady ? HF_PYTHON : '',
     cli: cliReady ? HF_CLI : '',
@@ -1439,8 +1464,12 @@ async function getHFRealtimeSingleStatus(options = {}) {
     runtimeReady,
     brainMode,
     requireLocalMiddleBrain,
-    requireOpenAIKey,
-    openAIKeyReady,
+    requireOpenAIKey: requireOpenAIBearer,
+    openAIKeyReady: openAIBearerReady,
+    requireOpenAIBearer,
+    openAIBearerReady,
+    openAIBearerSource: openAIBearerStatus.source,
+    openAIBearerError: openAIBearerStatus.error,
     requireCerebrasKey,
     cerebrasKeyReady,
     sttProfile,
@@ -1570,6 +1599,50 @@ function openAIKeyFromPayload(payload = {}) {
     if (configured) return configured;
   } catch {}
   return String(process.env.OPENAI_API_KEY || '').trim();
+}
+
+function openAIResponsesAPIKeyFallbackEnabled(payload = {}) {
+  const cfg = readBridgeConfig();
+  return parseRealtimeBoolean(
+    payload.realtimeAuthFallbackToAPIKey
+      ?? payload.openAIAPIKeyFallback
+      ?? payload.apiKeyFallback
+      ?? process.env.VOICECLAW_REALTIME_AUTH_FALLBACK_TO_API_KEY,
+    parseRealtimeBoolean(cfg.realtimeAuthFallbackToAPIKey, false)
+  );
+}
+
+async function resolveOpenAIResponsesBearerForHF(payload = {}) {
+  let oauthError = null;
+  try {
+    const bearer = await resolveOpenAIChatGPTOAuthBearer(undefined, payload);
+    if (bearer) {
+      return { bearer, source: 'companion-oauth' };
+    }
+  } catch (error) {
+    oauthError = error;
+  }
+
+  if (openAIResponsesAPIKeyFallbackEnabled(payload)) {
+    const apiKey = openAIKeyFromPayload(payload);
+    if (apiKey) {
+      return { bearer: apiKey, source: 'api-key-fallback' };
+    }
+  }
+
+  const apiNote = openAIResponsesAPIKeyFallbackEnabled(payload)
+    ? 'API-key fallback is enabled, but no OpenAI API key was available.'
+    : 'API-key fallback is off, so the HF OpenAI Responses branch will not use an API key.';
+  throw new Error(`OpenAI-compatible Responses bearer is unavailable for the selected OpenAI Companion Realtime Voice LLM. ${oauthError?.message || oauthError || 'No Companion OAuth bearer found.'} ${apiNote}`);
+}
+
+async function openAIResponsesBearerReadyForHF(payload = {}) {
+  try {
+    const auth = await resolveOpenAIResponsesBearerForHF(payload);
+    return { ready: !!auth.bearer, source: auth.source, error: '' };
+  } catch (error) {
+    return { ready: false, source: '', error: error?.message || String(error) };
+  }
 }
 
 function normalizeCerebrasModel(model = '') {
@@ -2134,14 +2207,11 @@ async function sidecarConfigFromPayload(payload = {}, { port = HF_PORT } = {}) {
   const openAIBrain = openAIBrainModelForMode(brainMode);
   if (openAIBrain) {
     const model = openAIBrain.model;
-    const apiKey = openAIKeyFromPayload(payload);
-    if (!apiKey) {
-      throw new Error(`OpenAI API key is required for the ${openAIBrain.label} Companion Realtime Voice LLM.`);
-    }
+    const auth = await resolveOpenAIResponsesBearerForHF(payload);
     return {
-      key: `openai:${model}:stt:${sttConfig.id}:tts:${ttsConfig.engine}:${ttsConfig.device || 'default'}:${ttsConfig.voice}`,
+      key: `openai:${model}:auth:${auth.source}:${shortTokenFingerprint(auth.bearer)}:stt:${sttConfig.id}:tts:${ttsConfig.engine}:${ttsConfig.device || 'default'}:${ttsConfig.voice}`,
       env: {
-        OPENAI_API_KEY: apiKey,
+        OPENAI_API_KEY: auth.bearer,
       },
       args: [
         '--mode', 'realtime',
@@ -2286,8 +2356,8 @@ async function launchHFRealtimeSidecarOnce(config, attempt) {
 
 export async function ensureHFRealtimeSidecar(payload = {}) {
   const status = await getHFRealtimeStatus({ brainMode: payload.brainMode, ...payload });
-  if (status.requireOpenAIKey && !status.openAIKeyReady) {
-    throw new Error('OpenAI API key is required for the selected OpenAI Companion Realtime Voice LLM.');
+  if (status.requireOpenAIBearer && !status.openAIBearerReady) {
+    throw new Error(status.openAIBearerError || 'OpenAI Responses authentication is required for the selected OpenAI Companion Realtime Voice LLM.');
   }
   if (status.requireCerebrasKey && !status.cerebrasKeyReady) {
     throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
@@ -2306,9 +2376,6 @@ export async function ensureHFRealtimeSidecar(payload = {}) {
   const config = await sidecarConfigFromPayload(payload, { port });
   if (config.key.startsWith('cerebras:') && !cerebrasKeyFromPayload(payload)) {
     throw new Error('Cerebras API key is required for the HF/Cerebras Companion Realtime Voice LLM.');
-  }
-  if (config.key.startsWith('openai:') && !openAIKeyFromPayload(payload)) {
-    throw new Error('OpenAI API key is required for the selected OpenAI Companion Realtime Voice LLM.');
   }
 
   const startPromise = (async () => {
@@ -2428,11 +2495,33 @@ function voiceForHF(localVoice = '', realtimeVoice = '', engine = '') {
   const lower = candidate.toLowerCase();
   const ttsEngine = String(engine || HF_DEFAULT_TTS || 'auto').toLowerCase();
   if (ttsEngine === 'kokoro' || ttsEngine === 'auto') {
-    if (!candidate) return process.env.VOICECLAW_HF_KOKORO_VOICE || 'af_heart';
-    if (lower.startsWith('kokoro-')) return candidate.slice('kokoro-'.length).replace(/-/g, '_') || 'af_heart';
+    const supported = new Set([
+      'af_alloy', 'af_aoede', 'af_bella', 'af_heart', 'af_jessica', 'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah', 'af_sky',
+      'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam', 'am_michael', 'am_onyx', 'am_puck', 'am_santa',
+      'bf_alice', 'bf_emma', 'bf_isabella', 'bf_lily',
+      'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis',
+    ]);
+    if (!candidate) {
+      const configured = String(process.env.VOICECLAW_HF_KOKORO_VOICE || 'af_heart').trim().replace(/-/g, '_').toLowerCase();
+      return supported.has(configured) ? configured : 'af_heart';
+    }
+    if (lower.startsWith('kokoro-')) {
+      const clean = candidate.slice('kokoro-'.length).replace(/-/g, '_').toLowerCase();
+      return supported.has(clean) ? clean : 'af_heart';
+    }
     if (lower.includes('heart')) return 'af_heart';
     if (lower.includes('fable')) return 'bm_fable';
-    return candidate.replace(/^openai-/i, '').replace(/^piper-/i, '').replace(/-/g, '_') || 'af_heart';
+    if (lower.includes('bella')) return 'af_bella';
+    if (lower.includes('nicole')) return 'af_nicole';
+    if (lower.includes('sarah')) return 'af_sarah';
+    if (lower.includes('sky')) return 'af_sky';
+    if (lower.includes('adam')) return 'am_adam';
+    if (lower.includes('michael')) return 'am_michael';
+    if (lower.includes('emma')) return 'bf_emma';
+    if (lower.includes('isabella')) return 'bf_isabella';
+    if (lower.includes('george')) return 'bm_george';
+    const clean = candidate.replace(/^openai-/i, '').replace(/^piper-/i, '').replace(/^kokoro-/i, '').replace(/-/g, '_').toLowerCase();
+    return supported.has(clean) ? clean : 'af_heart';
   }
   if (ttsEngine === 'qwen3') {
     const supported = new Set(['aiden', 'dylan', 'eric', 'ono_anna', 'ryan', 'serena', 'sohee', 'uncle_fu', 'vivian']);

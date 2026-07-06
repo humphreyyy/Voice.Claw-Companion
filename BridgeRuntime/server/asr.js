@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import { executablePath, normalizeProcessPath } from './bin-paths.js';
+import { parseRealtimeBoolean, readBridgeConfig, resolveOpenAIChatGPTOAuthBearer } from './realtime-auth.js';
 
 normalizeProcessPath();
 
@@ -19,9 +20,39 @@ const FFMPEG_TIMEOUT_MS = Number.parseInt(process.env.FFMPEG_TIMEOUT_MS || '1200
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(os.homedir(), '.openclaw', 'openclaw.json');
 const OPENAI_ASR_MODEL = process.env.OPENAI_ASR_MODEL || 'gpt-4o-mini-transcribe';
 const OPENAI_ASR_TIMEOUT_MS = Number.parseInt(process.env.OPENAI_ASR_TIMEOUT_MS || '30000', 10);
-const OPENAI_ASR_FALLBACK_ENABLED = process.env.OPENAI_ASR_FALLBACK !== '0';
 
-function loadOpenAIASRConfig() {
+function openAIASRAPIKeyFallbackEnabled(authPayload = {}) {
+  const cfg = readBridgeConfig();
+  return parseRealtimeBoolean(
+    authPayload.realtimeAuthFallbackToAPIKey
+      ?? authPayload.openAIAPIKeyFallback
+      ?? authPayload.apiKeyFallback
+      ?? process.env.OPENAI_ASR_FALLBACK
+      ?? process.env.VOICECLAW_REALTIME_AUTH_FALLBACK_TO_API_KEY,
+    parseRealtimeBoolean(cfg.realtimeAuthFallbackToAPIKey, false)
+  );
+}
+
+function loadOpenAIASRAPIKeyConfig() {
+  try {
+    const bridgeConfig = process.env.VOICECLAW_CONFIG_PATH || process.env.VOICECLAW_CONFIG || join(os.homedir(), '.voiceclaw', 'bridge.json');
+    const cfg = JSON.parse(readFileSync(bridgeConfig, 'utf8'));
+    const candidates = [
+      cfg?.openAIAPIKey,
+      cfg?.OpenAIAPIKey,
+      cfg?.openAIApiKey,
+      cfg?.openaiAPIKey,
+      cfg?.openaiApiKey,
+      cfg?.apiKey,
+    ];
+    for (const value of candidates) {
+      const key = String(value || '').trim();
+      if (key) {
+        return { apiKey: key, model: process.env.OPENAI_ASR_MODEL || OPENAI_ASR_MODEL };
+      }
+    }
+  } catch {}
+
   let fromConfig = null;
   try {
     const cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG, 'utf8'));
@@ -48,7 +79,10 @@ function loadOpenAIASRConfig() {
   return fromConfig;
 }
 
-const OPENAI_ASR = loadOpenAIASRConfig();
+function openAIASRAPIKeyConfigIfAllowed(authPayload = {}) {
+  if (!openAIASRAPIKeyFallbackEnabled(authPayload)) return null;
+  return loadOpenAIASRAPIKeyConfig();
+}
 
 /**
  * Write a WAV header for raw PCM s16le mono data at the given sample rate.
@@ -125,7 +159,7 @@ async function toWavViaFfmpeg(inputBuffer, inputPath, wavPath, signal) {
  * Returns { text: string } or throws.
  * Caller can pass an AbortSignal to cancel.
  */
-export async function transcribe(audioBuffer, { signal, sampleRate = 16000 } = {}) {
+export async function transcribe(audioBuffer, { signal, sampleRate = 16000, authPayload = {} } = {}) {
   const id = randomUUID();
   const wavPath = join(os.tmpdir(), `vb-asr-${id}.wav`);
   const tmpPath = join(os.tmpdir(), `vb-asr-${id}.tmp`);
@@ -148,10 +182,9 @@ export async function transcribe(audioBuffer, { signal, sampleRate = 16000 } = {
       return { text, source: 'whisper-cli', fallback: false };
     } catch (err) {
       if (err.message === 'aborted') throw err;
-      if (!OPENAI_ASR_FALLBACK_ENABLED || !OPENAI_ASR?.apiKey) throw err;
       console.warn(`[asr] local whisper failed; falling back to OpenAI transcription: ${err.message}`);
-      const text = await transcribeWithOpenAI(wavPath, { signal });
-      return { text, source: 'openai', fallback: true };
+      const result = await transcribeWithOpenAI(wavPath, { signal, authPayload });
+      return { text: result.text, source: result.source, fallback: true };
     }
   } finally {
     unlink(wavPath).catch(() => {});
@@ -197,8 +230,8 @@ async function transcribeWithWhisperCLI(wavPath, { signal } = {}) {
   });
 }
 
-async function transcribeWithOpenAI(wavPath, { signal } = {}) {
-  if (!OPENAI_ASR?.apiKey) throw new Error('openai asr not configured');
+async function transcribeWithOpenAI(wavPath, { signal, authPayload = {} } = {}) {
+  const auth = await resolveOpenAIASRAuth(authPayload);
   if (signal?.aborted) throw new Error('aborted');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error('openai speech-to-text timed out')), OPENAI_ASR_TIMEOUT_MS);
@@ -207,13 +240,13 @@ async function transcribeWithOpenAI(wavPath, { signal } = {}) {
   try {
     const audio = await readFile(wavPath);
     const form = new FormData();
-    form.append('model', OPENAI_ASR.model || OPENAI_ASR_MODEL);
+    form.append('model', auth.model || OPENAI_ASR_MODEL);
     form.append('response_format', 'json');
     form.append('file', new Blob([audio], { type: 'audio/wav' }), 'voiceclaw-turn.wav');
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${OPENAI_ASR.apiKey}`,
+        Authorization: `Bearer ${auth.bearer}`,
       },
       body: form,
       signal: controller.signal,
@@ -223,11 +256,41 @@ async function transcribeWithOpenAI(wavPath, { signal } = {}) {
       throw new Error(`openai speech-to-text ${response.status}: ${detail.slice(0, 220)}`);
     }
     const json = await response.json();
-    return String(json?.text || '').trim();
+    return { text: String(json?.text || '').trim(), source: auth.source };
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener('abort', onAbort);
   }
+}
+
+async function resolveOpenAIASRAuth(authPayload = {}) {
+  let oauthError = null;
+  try {
+    const bearer = await resolveOpenAIChatGPTOAuthBearer(undefined, authPayload);
+    if (bearer) {
+      return {
+        bearer,
+        model: process.env.OPENAI_ASR_MODEL || OPENAI_ASR_MODEL,
+        source: 'openai-oauth',
+      };
+    }
+  } catch (error) {
+    oauthError = error;
+  }
+
+  const apiKeyConfig = openAIASRAPIKeyConfigIfAllowed(authPayload);
+  if (apiKeyConfig?.apiKey) {
+    return {
+      bearer: apiKeyConfig.apiKey,
+      model: apiKeyConfig.model || OPENAI_ASR_MODEL,
+      source: 'openai-api-key-fallback',
+    };
+  }
+
+  const apiNote = openAIASRAPIKeyFallbackEnabled(authPayload)
+    ? 'API-key fallback is enabled, but no OpenAI API key was available.'
+    : 'API-key fallback is off, so OpenAI STT will not use an API key.';
+  throw new Error(`openai speech-to-text OAuth unavailable. ${oauthError?.message || oauthError || 'No OAuth bearer found.'} ${apiNote}`);
 }
 
 /**

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { execFile, spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -246,23 +246,109 @@ async function loadOpenAIChatGPTOAuthProfilesFromJson() {
   return profiles;
 }
 
-async function loadOpenAIChatGPTOAuthProfiles() {
+function loadOpenAIChatGPTOAuthProfilesFromRequestPayload(payload = {}) {
+  const objects = [
+    payload,
+    payload?.chatGPTOAuth,
+    payload?.openAIChatGPTOAuth,
+    payload?.openAIOAuth,
+    payload?.oauth,
+  ].filter((item) => item && typeof item === 'object');
+  const profiles = [];
+
+  for (const object of objects) {
+    const access = nonEmptyString(
+      object.ChatGPTOAuthAccessToken
+        || object.openAIChatGPTOAuthAccessToken
+        || object.openAIOAuthAccessToken
+        || object.accessToken
+        || object.access
+    );
+    const refresh = nonEmptyString(
+      object.ChatGPTOAuthRefreshToken
+        || object.openAIChatGPTOAuthRefreshToken
+        || object.openAIOAuthRefreshToken
+        || object.refreshToken
+        || object.refresh
+    );
+    if (!access && !refresh) continue;
+
+    const expires = object.ChatGPTOAuthExpiresAt
+      || object.openAIChatGPTOAuthExpiresAt
+      || object.openAIOAuthExpiresAt
+      || object.expiresAt
+      || object.expires
+      || 0;
+    profiles.push({
+      storeKind: 'request',
+      storePath: 'ios-request',
+      profileId: 'iphone-chatgpt-oauth-request',
+      profile: {
+        type: 'oauth',
+        provider: 'openai',
+        access,
+        refresh,
+        expires,
+        accountId: object.ChatGPTOAuthAccountID
+          || object.openAIChatGPTOAuthAccountID
+          || object.openAIOAuthAccountID
+          || object.accountID
+          || object.accountId
+          || '',
+      },
+      expiresMs: normalizeOpenAIAuthExpiryMs(expires),
+    });
+  }
+
+  return profiles;
+}
+
+async function loadOpenAIChatGPTOAuthProfiles(requestPayload = {}) {
   const profiles = [
+    ...loadOpenAIChatGPTOAuthProfilesFromBridgeConfig(),
+    ...loadOpenAIChatGPTOAuthProfilesFromRequestPayload(requestPayload),
     ...await loadOpenAIChatGPTOAuthProfilesFromSqlite(),
     ...await loadOpenAIChatGPTOAuthProfilesFromJson(),
   ];
 
   profiles.sort((left, right) => {
-    const leftPriority = left.storeKind === 'sqlite' ? 0 : 1;
-    const rightPriority = right.storeKind === 'sqlite' ? 0 : 1;
+    const priority = (candidate) => candidate.storeKind === 'bridge' ? 0 : candidate.storeKind === 'request' ? 1 : candidate.storeKind === 'sqlite' ? 2 : 3;
+    const leftPriority = priority(left);
+    const rightPriority = priority(right);
     if (leftPriority !== rightPriority) return leftPriority - rightPriority;
     return right.expiresMs - left.expiresMs;
   });
   return profiles;
 }
 
+function loadOpenAIChatGPTOAuthProfilesFromBridgeConfig() {
+  const cfg = readBridgeConfig();
+  const access = nonEmptyString(cfg.ChatGPTOAuthAccessToken || cfg.openAIChatGPTOAuthAccessToken || cfg.openAIOAuthAccessToken);
+  const refresh = nonEmptyString(cfg.ChatGPTOAuthRefreshToken || cfg.openAIChatGPTOAuthRefreshToken || cfg.openAIOAuthRefreshToken);
+  if (!access && !refresh) return [];
+  return [{
+    storeKind: 'bridge',
+    storePath: BRIDGE_CONFIG_FILE,
+    profileId: 'voiceclaw-bridge-chatgpt-oauth',
+    profile: {
+      type: 'oauth',
+      provider: 'openai',
+      access,
+      refresh,
+      expires: cfg.ChatGPTOAuthExpiresAt || cfg.openAIChatGPTOAuthExpiresAt || cfg.openAIOAuthExpiresAt || 0,
+      accountId: cfg.ChatGPTOAuthAccountID || cfg.openAIChatGPTOAuthAccountID || cfg.openAIOAuthAccountID || '',
+    },
+    expiresMs: normalizeOpenAIAuthExpiryMs(cfg.ChatGPTOAuthExpiresAt || cfg.openAIChatGPTOAuthExpiresAt || cfg.openAIOAuthExpiresAt),
+  }];
+}
+
 async function persistRefreshedOpenAIChatGPTOAuthProfile(candidate, refreshed) {
   try {
+    if (candidate.storeKind === 'bridge' || candidate.storeKind === 'request') {
+      await persistOpenAIChatGPTOAuthBridgeConfig(refreshed);
+      return;
+    }
+
     if (candidate.storeKind === 'sqlite') {
       const rows = await readSqliteJsonRows(
         candidate.storePath,
@@ -301,7 +387,29 @@ async function persistRefreshedOpenAIChatGPTOAuthProfile(candidate, refreshed) {
     await writeFile(candidate.storePath, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
   } catch (error) {
     console.warn('[realtime-auth] failed to persist refreshed OpenAI OAuth profile:', error?.message || String(error));
+  } finally {
+    if (candidate.storeKind !== 'bridge' && candidate.storeKind !== 'request') {
+      await persistOpenAIChatGPTOAuthBridgeConfig(refreshed).catch((error) => {
+        console.warn('[realtime-auth] failed to mirror refreshed OpenAI OAuth profile into bridge config:', error?.message || String(error));
+      });
+    }
   }
+}
+
+async function persistOpenAIChatGPTOAuthBridgeConfig(token) {
+  const access = nonEmptyString(token?.access);
+  const refresh = nonEmptyString(token?.refresh);
+  if (!access && !refresh) return;
+  const current = readBridgeConfig();
+  const next = {
+    ...current,
+    ChatGPTOAuthAccessToken: access || current.ChatGPTOAuthAccessToken || '',
+    ChatGPTOAuthRefreshToken: refresh || current.ChatGPTOAuthRefreshToken || '',
+    ChatGPTOAuthExpiresAt: token?.expires || current.ChatGPTOAuthExpiresAt || 0,
+    ChatGPTOAuthAccountID: nonEmptyString(token?.accountId) || current.ChatGPTOAuthAccountID || '',
+  };
+  await mkdir(dirname(BRIDGE_CONFIG_FILE), { recursive: true });
+  await writeFile(BRIDGE_CONFIG_FILE, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
 }
 
 function chatGPTAccountIdFromAccessToken(accessToken = '') {
@@ -376,8 +484,8 @@ async function validateOpenClawOAuthToken(token, validateToken) {
   if (validateToken) await validateToken(token);
 }
 
-async function resolveOpenClawOAuthBearerFromProfileStore(validateToken) {
-  const profiles = await loadOpenAIChatGPTOAuthProfiles();
+async function resolveOpenClawOAuthBearerFromProfileStore(validateToken, requestPayload = {}) {
+  const profiles = await loadOpenAIChatGPTOAuthProfiles(requestPayload);
   const now = Date.now();
   const refreshErrors = [];
 
@@ -386,6 +494,12 @@ async function resolveOpenClawOAuthBearerFromProfileStore(validateToken) {
     if (access && candidate.expiresMs > now + OPENAI_OAUTH_REFRESH_SKEW_MS) {
       try {
         await validateOpenClawOAuthToken(access, validateToken);
+        await persistOpenAIChatGPTOAuthBridgeConfig({
+          access,
+          refresh: candidate.profile.refresh,
+          expires: candidate.expiresMs,
+          accountId: candidate.profile.accountId || chatGPTAccountIdFromAccessToken(access),
+        });
         return access;
       } catch (error) {
         refreshErrors.push(`${candidate.profileId} (${candidate.storeKind || 'json'} access): ${error?.message || String(error)}`);
@@ -488,10 +602,10 @@ async function resolveOpenClawOAuthBearerFromProviderModule(validateToken) {
   return '';
 }
 
-async function resolveOpenClawOAuthBearer(validateToken) {
+async function resolveOpenClawOAuthBearer(validateToken, requestPayload = {}) {
   let profileStoreError = null;
   try {
-    const token = await resolveOpenClawOAuthBearerFromProfileStore(validateToken);
+    const token = await resolveOpenClawOAuthBearerFromProfileStore(validateToken, requestPayload);
     if (token) {
       return token;
     }
@@ -513,6 +627,10 @@ async function resolveOpenClawOAuthBearer(validateToken) {
   }
 
   return token;
+}
+
+export async function resolveOpenAIChatGPTOAuthBearer(validateToken, requestPayload = {}) {
+  return await resolveOpenClawOAuthBearer(validateToken, requestPayload);
 }
 
 export async function createRealtimeClientSecret({ authToken, session }) {
@@ -565,10 +683,7 @@ export async function resolveRealtimeBearer({ req, session, apiKey }) {
   if (pairedPhoneClientSecret) {
     return {
       bearer: pairedPhoneClientSecret,
-      // The Realtime sideband connection is part of the same session. Prefer a
-      // server API key if configured, otherwise use the phone-minted short-lived
-      // client secret for the Companion-owned sideband connection as well.
-      sidebandBearer: apiKey || pairedPhoneClientSecret,
+      sidebandBearer: preferences.fallbackToAPIKey && apiKey ? apiKey : pairedPhoneClientSecret,
       source: 'paired-phone-oauth',
       preferences,
     };
@@ -581,10 +696,7 @@ export async function resolveRealtimeBearer({ req, session, apiKey }) {
     });
     return {
       bearer: clientSecret.value,
-      // OpenAI's sideband WebSocket examples use a server API key. OAuth can
-      // mint the client secret used by the iPhone, but prefer the API key for
-      // server-owned tool control when the user supplied one.
-      sidebandBearer: apiKey || oauthBearer,
+      sidebandBearer: preferences.fallbackToAPIKey && apiKey ? apiKey : oauthBearer,
       source: REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
       expiresAt: clientSecret.expiresAt,
       preferences,
