@@ -3,6 +3,21 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.120</title>
+            <pubDate>Mon, 06 Jul 2026 21:57:17 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607062152</sparkle:version>
+            <sparkle:shortVersionString>0.1.120</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.120</h2>
+<ul>
+  <li>Includes the latest VoiceClaw Companion improvements.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.120/VoiceClawCompanion-0.1.120-202607062152.dmg" length="3589372" type="application/octet-stream" sparkle:edSignature="BjdgEIoLqvWbjkRYV0xR8WBzzPkflHQtgIxi86sNGunSKuF/Y8Lv5ZhlFircYJrKUTrmAVX0UPGFo2MoDWrACQ=="/>
+        </item>
+        <item>
             <title>0.1.119</title>
             <pubDate>Mon, 06 Jul 2026 20:57:38 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>

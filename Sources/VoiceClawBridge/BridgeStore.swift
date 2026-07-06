@@ -1820,6 +1820,7 @@ final class BridgeStore: ObservableObject {
             "BridgePath": "/realtime/openclaw-turn",
             "OpenClawInstallPath": config["openClawInstallPath"] as? String ?? "\(NSHomeDirectory())/.openclaw",
             "OpenClawGatewayToken": config["gatewayToken"] as? String ?? "",
+            "OpenClawGatewayPassword": config["gatewayPassword"] as? String ?? "",
             "RouteMode": "openclaw-bridge",
             "RealtimeModel": "gpt-realtime-2",
             "InstantModel": "gpt-5-chat-latest",
@@ -1860,33 +1861,42 @@ final class BridgeStore: ObservableObject {
     }
 
     private static func compactDeepLink(for payload: [String: Any]) -> String? {
+        let includeOpenAIKey = (payload["OpenAIAPIKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let includeCerebrasKey = (payload["CerebrasAPIKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let gatewayToken = (payload["OpenClawGatewayToken"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let gatewayPassword = (payload["OpenClawGatewayPassword"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !gatewayToken.isEmpty || !gatewayPassword.isEmpty else { return nil }
+
         let baseURLCandidates = [
             payload["TailscaleBaseURL"] as? String,
             payload["WatchPublicBridgeURL"] as? String,
         ]
 
-        guard let payloadURL = baseURLCandidates.lazy
+        guard let setupPayloadURL = baseURLCandidates.lazy
             .compactMap({ $0 })
             .compactMap({ bridgeEndpointURL(baseURLString: $0, path: "/realtime/setup-payload") })
             .first,
+              var payloadComponents = URLComponents(url: setupPayloadURL, resolvingAgainstBaseURL: false),
               var components = URLComponents(string: "voiceclaw://setup")
         else { return nil }
+
+        var payloadQueryItems = payloadComponents.queryItems ?? []
+        payloadQueryItems.append(URLQueryItem(name: "include_openai_key", value: includeOpenAIKey ? "1" : "0"))
+        payloadQueryItems.append(URLQueryItem(name: "include_cerebras_key", value: includeCerebrasKey ? "1" : "0"))
+        payloadComponents.queryItems = payloadQueryItems
+        guard let payloadURL = payloadComponents.url else { return nil }
 
         var items = [
             URLQueryItem(name: "v", value: "2"),
             URLQueryItem(name: "payload_url", value: payloadURL.absoluteString),
-            URLQueryItem(name: "include_openai_key", value: ((payload["OpenAIAPIKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? "1" : "0"),
-            URLQueryItem(name: "include_cerebras_key", value: ((payload["CerebrasAPIKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? "1" : "0"),
         ]
 
-        if let token = payload["OpenClawGatewayToken"] as? String,
-           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            items.append(URLQueryItem(name: "gateway_token", value: token))
+        if !gatewayToken.isEmpty {
+            items.append(URLQueryItem(name: "gateway_token", value: gatewayToken))
         }
 
-        if let password = payload["OpenClawGatewayPassword"] as? String,
-           !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            items.append(URLQueryItem(name: "gateway_password", value: password))
+        if !gatewayPassword.isEmpty {
+            items.append(URLQueryItem(name: "gateway_password", value: gatewayPassword))
         }
 
         components.queryItems = items
