@@ -16,7 +16,7 @@ import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
 import { getHFRealtimeStatus, installHFRealtimeRuntime, prewarmHFRealtimeRuntime, HFRealtimeBridge } from './hf-realtime-sidecar.js';
-import { getPowerhouseQuickStatus, getPowerhouseStatus, maybeStartPowerhouseOnBoot, powerhouseModes, prewarmPowerhouseRuntime, readPowerhouseModeFromConfig, readPrimaryCompanionVoiceRuntimeProfileFromConfig } from './powerhouse-manager.js';
+import { getPowerhouseQuickStatus, getPowerhouseStatus, powerhouseModes, prewarmPowerhouseRuntime, readPowerhouseModeFromConfig, readPrimaryCompanionVoiceRuntimeProfileFromConfig } from './powerhouse-manager.js';
 import {
   REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
   buildRealtimeAuthStatus,
@@ -7025,30 +7025,5 @@ httpServer.listen(PORT, BIND_HOST, () => {
   console.log(`[voice-bridge] WebSocket endpoint: ws://localhost:${PORT}${WS_PATH}`);
   console.log(`[voice-bridge] health endpoint: http://localhost:${PORT}/healthz`);
   console.log(`[voice-bridge] wake phrase: ${JSON.stringify(WAKE_PHRASE)}`);
-  prewarmQwen35Planner().catch((error) => {
-    console.warn(`[voice-bridge] Qwen planner prewarm failed: ${error?.message || String(error)}`);
-  });
-  prewarmCompanionVoiceTts().catch((error) => {
-    console.warn(`[voice-bridge] Companion voice TTS prewarm failed: ${error?.message || String(error)}`);
-  });
-  if (COMPANION_VOICE_HF_PREWARM) {
-    const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
-    prewarmHFRealtimeRuntime({
-      prepareSet: 'recommended',
-      brainMode: primaryProfile.brainMode || 'qwen3.5-2b',
-      sttProfile: primaryProfile.sttProfile || 'parakeet-live',
-      localVoice: primaryProfile.localVoice || 'kokoro-af-heart',
-      cerebrasModel: primaryProfile.cerebrasModel || '',
-    }).then((result) => {
-      console.log(`[voice-bridge] Companion voice HF runtime prewarm complete: ${result?.summary || 'ready'}`);
-    }).catch((error) => {
-      console.warn(`[voice-bridge] Companion voice HF runtime prewarm failed: ${error?.message || String(error)}`);
-    });
-  }
-  startCompanionVoiceKeepHot();
-  maybeStartPowerhouseOnBoot().then((result) => {
-    if (result) console.log(`[voice-bridge] Powerhouse boot prewarm complete: ${result.summary || result.state || 'ready'}`);
-  }).catch((error) => {
-    console.warn(`[voice-bridge] Powerhouse boot prewarm failed: ${error?.message || String(error)}`);
-  });
+  console.log('[voice-bridge] startup prewarm disabled; Companion voice, keep-hot, and Powerhouse warm passes run only after explicit user action or route demand.');
 });

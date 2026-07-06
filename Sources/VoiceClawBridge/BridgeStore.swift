@@ -216,7 +216,6 @@ final class BridgeStore: ObservableObject {
     @Published var isInstallingCompanionVoiceDependencies: Bool = false
     @Published var isPrewarmingCompanionVoiceRuntime: Bool = false
     @Published var isPrewarmingPowerhouseRuntime: Bool = false
-    @Published var isInstallingPriorityHelper: Bool = false
     @Published var pairingJSON: String = ""
     @Published var pairingPreview: String = ""
     @Published var pairingURL: String = ""
@@ -885,8 +884,7 @@ final class BridgeStore: ObservableObject {
     }
 
     private var shouldAutomaticallyPrewarmPowerhouse: Bool {
-        guard !isPrewarmingPowerhouseRuntime else { return false }
-        return true
+        false
     }
 
     func prewarmPowerhouseRuntime(install: Bool = true, refreshAfterCompletion: Bool = true) async {
@@ -948,28 +946,6 @@ final class BridgeStore: ObservableObject {
         } catch {
             powerhouseState = "failed"
             powerhouseSummary = "Powerhouse warm pass failed: \(Self.userFacingSetupError(error))"
-        }
-    }
-
-    func installRealtimePriorityHelper() async {
-        guard !isInstallingPriorityHelper else { return }
-        isInstallingPriorityHelper = true
-        powerhouseSummary = "Requesting admin approval to install the realtime priority helper..."
-        defer { isInstallingPriorityHelper = false }
-
-        do {
-            let output = try await runSetupScript(arguments: ["--install-priority-helper", "--json"])
-            if let data = output.data(using: .utf8),
-               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let helper = object["helper"] as? [String: Any],
-               let summary = helper["summary"] as? String {
-                powerhouseSummary = summary
-            } else {
-                powerhouseSummary = "Realtime priority helper install completed."
-            }
-            await refreshStatus()
-        } catch {
-            powerhouseSummary = "Realtime priority helper install failed: \(Self.userFacingSetupError(error))"
         }
     }
 

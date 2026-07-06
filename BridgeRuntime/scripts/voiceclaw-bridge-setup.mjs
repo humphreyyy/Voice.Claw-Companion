@@ -51,7 +51,6 @@ function parseArgs(argv) {
     diagnose: false,
     suggestPort: false,
     installCompanionVoiceDependencies: false,
-    installPriorityHelper: false,
     uninstallPriorityHelper: false,
     refreshLaunchAgent: false,
     port: null,
@@ -73,8 +72,9 @@ function parseArgs(argv) {
     else if (arg === '--diagnose') options.diagnose = true;
     else if (arg === '--suggest-port') options.suggestPort = true;
     else if (arg === '--install-companion-voice-deps') options.installCompanionVoiceDependencies = true;
-    else if (arg === '--install-priority-helper') options.installPriorityHelper = true;
-    else if (arg === '--uninstall-priority-helper') options.uninstallPriorityHelper = true;
+    else if (arg === '--install-priority-helper') {
+      throw new Error('The realtime priority helper installer is no longer offered by VoiceClaw Companion.');
+    } else if (arg === '--uninstall-priority-helper') options.uninstallPriorityHelper = true;
     else if (arg === '--refresh-launch-agent') options.refreshLaunchAgent = true;
     else if (arg === '--port') options.port = Number(argv[++index]);
     else if (arg.startsWith('--port=')) options.port = Number(arg.slice('--port='.length));
@@ -1699,23 +1699,6 @@ async function main() {
       console.log(JSON.stringify(result, null, 2));
     } else {
       console.log(result.diagnostics?.companionVoice?.summary || result.diagnostics?.summary || 'Companion Realtime Voice dependency install completed.');
-    }
-    if (!result.ok) process.exitCode = 1;
-    return;
-  }
-
-  if (options.installPriorityHelper) {
-    const helper = await installPriorityHelper();
-    const result = {
-      ok: helper.state === 'ready',
-      installedPriorityHelper: helper.state === 'ready',
-      priority: await checkPriorityAccess(),
-      helper,
-    };
-    if (options.jsonOnly) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      console.log(helper.summary);
     }
     if (!result.ok) process.exitCode = 1;
     return;

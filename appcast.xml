@@ -27,16 +27,16 @@
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.108/VoiceClawCompanion-0.1.108-202607061231.dmg" length="3568245" type="application/octet-stream" sparkle:edSignature="bAnMRW5OgbbpwplXRA6b+gdMjsDMNX3wjJQ3ACw2O1z8fKRhQb7vSCc366ISd9FFfdrOghI8FvuA6Q+jSlucCA=="/>
         </item>
         <item>
-            <title>0.1.107</title>
-            <pubDate>Mon, 06 Jul 2026 09:49:33 +0300</pubDate>
+            <title>0.1.111</title>
+            <pubDate>Mon, 06 Jul 2026 13:50:46 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607060947</sparkle:version>
-            <sparkle:shortVersionString>0.1.107</sparkle:shortVersionString>
+            <sparkle:version>202607061046</sparkle:version>
+            <sparkle:shortVersionString>0.1.111</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.107</h2><ul><li>Restarts the local LaunchAgent automatically when diagnostics find the bridge down on localhost.</li><li>Keeps the Companion Realtime Voice streaming sidecar hot with boot bursts, periodic profile warmups, and websocket heartbeats.</li><li>Raises LaunchAgent thread, HF pipeline, and runtime environment defaults for more aggressive realtime readiness.</li><li>Runs Powerhouse startup warmup with heavier parallel sidecar, TTS, route, and network preparation.</li></ul>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.111</h2><ul><li>Stops Companion voice, HF, Qwen, TTS, keep-hot, and Powerhouse prewarming from running automatically at bridge startup.</li><li>Keeps Powerhouse warming and dependency preparation as explicit user actions.</li><li>Removes the realtime priority-helper installer path while preserving legacy helper diagnostics.</li><li>Keeps the default Powerhouse mode at Light.</li></ul>
 ]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.107/VoiceClawCompanion-0.1.107-202607060947.dmg" length="3568228" type="application/octet-stream" sparkle:edSignature="tGuhGE0qj2j1WAO66F0jZayjyxoNFsTuHJxgG9VlE9fee6dxK4D+4V0cCNtrsYt1nowjGqa/eked6FBCYvaADw=="/>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.111/VoiceClawCompanion-0.1.111-202607061046.dmg" length="3567288" type="application/octet-stream" sparkle:edSignature="cipzfCqe+Mf1depH9p4Y4rxj54Hz3cVeO6tCTbZd7l6NfrBVH1JcK+eLD7+FrbEKPQ9trmIzDkShYaIja2IiAg=="/>
         </item>
     </channel>
 </rss>
