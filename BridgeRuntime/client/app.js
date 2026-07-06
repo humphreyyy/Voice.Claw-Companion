@@ -334,9 +334,10 @@ function loadProcessingConfig() {
 
 function loadCloudOptionsConfig() {
   const saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
+  const realtimeModels = new Set(['gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-mini']);
   return {
     transcription: saved.transcriptionEngine === 'gpt-realtime-whisper' ? 'gpt-realtime-whisper' : 'local-whisper',
-    model: saved.conversationModel === 'gpt-realtime-2' ? 'gpt-realtime-2' : 'openclaw-gpt55',
+    model: realtimeModels.has(saved.conversationModel) ? saved.conversationModel : 'openclaw-gpt55',
   };
 }
 
@@ -485,7 +486,7 @@ function updateCloudOptionsFromInputs() {
   if (els.conversationModelSelect) state.cloudOptions.model = els.conversationModelSelect.value || state.cloudOptions.model;
   persistConfigFromInputs();
   syncCloudOptionsUi();
-  const wantsRealtime = state.cloudOptions.transcription === 'gpt-realtime-whisper' || state.cloudOptions.model === 'gpt-realtime-2';
+  const wantsRealtime = state.cloudOptions.transcription === 'gpt-realtime-whisper' || state.cloudOptions.model.startsWith('gpt-realtime-');
   addTranscript('system', wantsRealtime
     ? 'Realtime cloud option selected. Tap Open Realtime‑2 to use GPT‑Realtime‑2 / GPT‑Realtime‑Whisper.'
     : 'Local/private option selected: whisper.cpp + OpenClaw tools.');

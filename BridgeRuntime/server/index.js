@@ -88,7 +88,7 @@ function loadRuntimeManifest() {
   }
 }
 
-const REALTIME_MODEL = process.env.REALTIME_MODEL || 'gpt-realtime-2';
+const REALTIME_MODEL = process.env.REALTIME_MODEL || 'gpt-realtime-2.1-mini';
 const REALTIME_TRANSCRIPTION_MODEL = process.env.REALTIME_TRANSCRIPTION_MODEL || 'gpt-realtime-whisper';
 const REALTIME_REASONING_EFFORT = process.env.REALTIME_REASONING_EFFORT || 'high';
 const REALTIME_TRANSCRIPTION_DEFAULT = !['0', 'false', 'off', 'no'].includes(String(process.env.REALTIME_TRANSCRIPTION_DEFAULT || '0').toLowerCase());

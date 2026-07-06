@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.121</title>
+            <pubDate>Tue, 07 Jul 2026 02:11:29 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607062309</sparkle:version>
+            <sparkle:shortVersionString>0.1.121</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.121</h2><ul><li>Adds GPT Realtime 2.1 Mini as the default pairing/runtime realtime model.</li><li>Keeps GPT Realtime 2.1 and GPT-Realtime-2 compatible with the existing realtime mechanics.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.121/VoiceClawCompanion-0.1.121-202607062309.dmg" length="3589656" type="application/octet-stream" sparkle:edSignature="vW9YDv4UHECgbx1/z/9spRz1pWPHjTL166oWqgBmP8lcy+aj/afgf+8kA9wFG56NPEC4ewP9j3DP1XY82Ki3AQ=="/>
+        </item>
+        <item>
             <title>0.1.120</title>
             <pubDate>Mon, 06 Jul 2026 21:57:17 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -28,18 +40,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.119</h2><ul><li>Fixes Sparkle update eligibility by enforcing strictly increasing Companion build numbers.</li><li>Adds appcast verification so the published update feed matches the notarized DMG bundle version and Sparkle signature.</li><li>Converts Powerhouse warmup into a nonblocking background job with live progress, cancel, retry, and UI recovery controls.</li><li>Keeps QR pairing, bridge readiness, and route start independent from Powerhouse warm/prewarm completion.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.119/VoiceClawCompanion-0.1.119-202607062100.dmg" length="3588866" type="application/octet-stream" sparkle:edSignature="raIDWI6fyI3leeyFFVbY9aaog/56ge68a7YYU9eXmkDqT2Qly+/ZnRG2z5aFkFdNGBN4E8y6sWUZgRpNhfKzDg=="/>
-        </item>
-        <item>
-            <title>0.1.118</title>
-            <pubDate>Mon, 06 Jul 2026 20:12:45 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607061711</sparkle:version>
-            <sparkle:shortVersionString>0.1.118</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.118</h2><ul><li>Keeps the phone pairing QR compact by serving the full setup payload through the protected bridge endpoint instead of embedding oversized secrets directly in the QR code.</li><li>Uses the public watch/bridge URL as a compact setup fallback when Tailscale Serve is missing or stale.</li><li>Preserves full manual setup JSON for troubleshooting while keeping the QR import path small enough for reliable scanning.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.118/VoiceClawCompanion-0.1.118-202607061711.dmg" length="3575505" type="application/octet-stream" sparkle:edSignature="baC+OBsq5l3KPXEsDtOC10DuSZVEQ++Fhve5q+Ln2dKIaJoaB6M8R1bbrbd7eOCzsx0yPJc5qxBneZ3THNyTDg=="/>
         </item>
     </channel>
 </rss>

@@ -720,7 +720,7 @@ export async function resolveRealtimeBearer({ req, session, apiKey }) {
   }
 }
 
-export async function buildRealtimeAuthStatus({ req, apiKey, probe = false, model = 'gpt-realtime-2', voice = 'marin' }) {
+export async function buildRealtimeAuthStatus({ req, apiKey, probe = false, model = 'gpt-realtime-2.1-mini', voice = 'marin' }) {
   const preferences = realtimeAuthPreferences(req);
   const status = {
     ok: true,

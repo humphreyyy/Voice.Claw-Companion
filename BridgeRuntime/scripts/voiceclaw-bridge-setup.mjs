@@ -1653,7 +1653,7 @@ function buildPairingPayload(config) {
     OpenClawAgent: config.openClawAgentName,
     OpenClawGatewayToken: config.gatewayToken,
     RouteMode: 'openclaw-bridge',
-    RealtimeModel: 'gpt-realtime-2',
+    RealtimeModel: 'gpt-realtime-2.1-mini',
     RealtimeAuthMode: config.realtimeAuthMode,
     RealtimeAuthFallbackToAPIKey: config.realtimeAuthFallbackToAPIKey,
     PowerhouseMode: config.powerhouseMode || 'light',

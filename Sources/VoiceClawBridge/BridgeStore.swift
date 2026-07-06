@@ -1515,7 +1515,7 @@ final class BridgeStore: ObservableObject {
         var components = URLComponents(string: "http://127.0.0.1:\(portValue)/realtime/auth/status")
         components?.queryItems = [
             URLQueryItem(name: "probe", value: "1"),
-            URLQueryItem(name: "model", value: "gpt-realtime-2"),
+            URLQueryItem(name: "model", value: "gpt-realtime-2.1-mini"),
             URLQueryItem(name: "voice", value: "marin"),
         ]
         guard let url = components?.url else {
@@ -1822,7 +1822,7 @@ final class BridgeStore: ObservableObject {
             "OpenClawGatewayToken": config["gatewayToken"] as? String ?? "",
             "OpenClawGatewayPassword": config["gatewayPassword"] as? String ?? "",
             "RouteMode": "openclaw-bridge",
-            "RealtimeModel": "gpt-realtime-2",
+            "RealtimeModel": "gpt-realtime-2.1-mini",
             "InstantModel": "gpt-5-chat-latest",
             "InstantWebSearch": true,
             "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
