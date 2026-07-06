@@ -110,12 +110,12 @@ const COMPANION_VOICE_CEREBRAS_MODELS = ['gemma-4-31b', 'gpt-oss-120b', 'zai-glm
 const CEREBRAS_BASE_URL = (process.env.CEREBRAS_BASE_URL || 'https://api.cerebras.ai/v1').replace(/\/+$/g, '');
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/+$/g, '');
 const COMPANION_VOICE_QWEN_KEEP_ALIVE = process.env.COMPANION_VOICE_QWEN_KEEP_ALIVE || '30m';
-const COMPANION_VOICE_QWEN_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_QWEN_PREWARM || '1').toLowerCase());
-const COMPANION_VOICE_TTS_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_TTS_PREWARM || '1').toLowerCase());
-const COMPANION_VOICE_HF_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_HF_PREWARM || '1').toLowerCase());
-const COMPANION_VOICE_HF_KEEPHOT = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_HF_KEEPHOT || '1').toLowerCase());
+const COMPANION_VOICE_QWEN_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_QWEN_PREWARM || '0').toLowerCase());
+const COMPANION_VOICE_TTS_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_TTS_PREWARM || '0').toLowerCase());
+const COMPANION_VOICE_HF_PREWARM = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_HF_PREWARM || '0').toLowerCase());
+const COMPANION_VOICE_HF_KEEPHOT = !['0', 'false', 'off', 'no'].includes(String(process.env.COMPANION_VOICE_HF_KEEPHOT || '0').toLowerCase());
 const COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS = Math.max(120_000, Number.parseInt(process.env.COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS || '300000', 10));
-const COMPANION_VOICE_HF_BOOT_BURSTS = Math.min(1, Math.max(0, Number.parseInt(process.env.COMPANION_VOICE_HF_BOOT_BURSTS || '1', 10)));
+const COMPANION_VOICE_HF_BOOT_BURSTS = Math.min(1, Math.max(0, Number.parseInt(process.env.COMPANION_VOICE_HF_BOOT_BURSTS || '0', 10)));
 const COMPANION_VOICE_WS_HEARTBEAT_MS = Math.max(5_000, Number.parseInt(process.env.COMPANION_VOICE_WS_HEARTBEAT_MS || '15000', 10));
 const COMPANION_VOICE_PLANNER_SCHEMA = {
   type: 'object',

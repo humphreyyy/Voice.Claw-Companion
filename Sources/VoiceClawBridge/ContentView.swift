@@ -831,14 +831,6 @@ private struct CompanionVoicePanel: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(store.isPrewarmingPowerhouseRuntime || store.status.isWorking)
-
-                    Button {
-                        Task { await store.installRealtimePriorityHelper() }
-                    } label: {
-                        Label(store.isInstallingPriorityHelper ? "Installing Priority Helper" : "Install Priority Helper", systemImage: "speedometer")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(store.isInstallingPriorityHelper || store.isPrewarmingPowerhouseRuntime || store.status.isWorking)
                 }
             }
             .padding(14)

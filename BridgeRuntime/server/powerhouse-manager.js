@@ -9,7 +9,7 @@ import { prewarmProcessing } from './dialogue.js';
 const execFile = promisify(execFileCb);
 
 const VALID_MODES = new Set(['light', 'balanced', 'maximum', 'presentation']);
-const DEFAULT_MODE = normalizePowerhouseMode(process.env.VOICECLAW_POWERHOUSE_MODE || 'balanced');
+const DEFAULT_MODE = normalizePowerhouseMode(process.env.VOICECLAW_POWERHOUSE_MODE || 'light');
 const CONFIG_PATH = process.env.VOICECLAW_CONFIG_PATH || process.env.VOICECLAW_CONFIG || `${os.homedir()}/.voiceclaw/bridge.json`;
 const HF_ROOT = process.env.VOICECLAW_HF_ROOT || `${os.homedir()}/.voiceclaw/hf-runtime`;
 const HF_PYTHON = process.env.VOICECLAW_HF_PYTHON || `${HF_ROOT}/bin/python`;
@@ -754,7 +754,7 @@ export async function maybeStartPowerhouseOnBoot() {
   bootPrewarmStarted = true;
   const mode = readPowerhouseModeFromConfig();
   if (mode === 'light') return null;
-  if (!/^(1|true|yes)$/i.test(String(process.env.VOICECLAW_POWERHOUSE_BOOT_PREWARM || '1'))) return null;
+  if (!/^(1|true|yes)$/i.test(String(process.env.VOICECLAW_POWERHOUSE_BOOT_PREWARM || '0'))) return null;
   return prewarmPowerhouseRuntime({
     mode,
     install: /^(1|true|yes)$/i.test(String(process.env.VOICECLAW_POWERHOUSE_BOOT_INSTALL || '0')),

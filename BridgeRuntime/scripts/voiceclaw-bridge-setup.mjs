@@ -117,9 +117,6 @@ Options:
   --suggest-port             Print a fresh unused test port without changing system state
   --install-companion-voice-deps
                              Install missing Companion Realtime Voice dependencies after app confirmation
-  --install-priority-helper  Install optional root LaunchDaemon that renices VoiceClaw realtime sidecars
-  --uninstall-priority-helper
-                             Remove the optional VoiceClaw realtime priority LaunchDaemon
   --refresh-launch-agent     Reinstall and restart only VoiceClaw's LaunchAgent from the current app runtime
   --json                     Print only the phone setup JSON
   --port 12321               Bridge/Tailscale HTTPS port
@@ -171,8 +168,8 @@ function normalizeOpenClawAgentID(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-function prepareSetForPowerhouseMode(mode = 'maximum') {
-  const normalized = normalizePowerhouseMode(mode || 'maximum');
+function prepareSetForPowerhouseMode(mode = 'light') {
+  const normalized = normalizePowerhouseMode(mode || 'light');
   if (normalized === 'maximum' || normalized === 'presentation') return 'full';
   if (normalized === 'balanced') return 'recommended';
   return 'selected';
@@ -818,7 +815,7 @@ async function checkPriorityAccess() {
   const helper = await checkPriorityHelper();
   let sudoNonInteractive = false;
   let sudoSummary = helper.loaded
-    ? 'Noninteractive sudo is not required because the VoiceClaw priority helper is loaded.'
+    ? 'Noninteractive sudo is not required because a legacy VoiceClaw priority helper is already loaded.'
     : 'sudo is not available, so negative nice priority cannot be applied.';
   if (sudoPath) {
     if (!helper.loaded) {
@@ -827,7 +824,7 @@ async function checkPriorityAccess() {
         sudoNonInteractive = true;
         sudoSummary = 'Noninteractive sudo is currently authorized; VoiceClaw can apply negative nice priority to hot realtime sidecars.';
       } catch {
-        sudoSummary = 'Noninteractive sudo is not currently authorized; VoiceClaw will still use taskpolicy foreground scheduling, but negative nice priority will be skipped unless the priority helper is installed.';
+        sudoSummary = 'Noninteractive sudo is not currently authorized; VoiceClaw will still use taskpolicy foreground scheduling and will skip negative nice priority.';
       }
     }
   }
@@ -835,11 +832,11 @@ async function checkPriorityAccess() {
     ? 'taskpolicy is available for foreground latency/throughput policy.'
     : 'taskpolicy is not available; process scheduling policy cannot be adjusted.';
   const reniceSummary = renicePath
-    ? (helper.loaded ? 'renice can be applied through the loaded root helper.' : (sudoNonInteractive ? 'renice can be applied through sudo -n.' : 'renice exists, but negative nice requires admin authorization.'))
+    ? (helper.loaded ? 'renice can be applied through the loaded legacy root helper.' : (sudoNonInteractive ? 'renice can be applied through sudo -n.' : 'renice exists, but negative nice requires admin authorization.'))
     : 'renice is not available.';
   const helperSummary = helper.loaded
-    ? 'The VoiceClaw priority helper is loaded and will continuously boost realtime sidecars and bridge runtime processes.'
-    : 'The optional VoiceClaw priority helper is not loaded.';
+    ? 'A legacy VoiceClaw priority helper is loaded. New Companion installs do not offer priority-helper installation.'
+    : 'No VoiceClaw priority helper is loaded. New Companion installs do not offer priority-helper installation.';
   return {
     state: taskpolicyPath ? (sudoNonInteractive || helper.loaded ? 'ready' : 'partial') : 'needs_action',
     taskpolicyPath: taskpolicyPath || '',
@@ -948,10 +945,10 @@ async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallP
     statusItem({
       id: 'realtime-priority',
       label: 'Realtime process priority',
-      state: priority.state === 'ready' ? 'ready' : (priority.state === 'partial' ? 'manual' : 'needs_action'),
+      state: priority.state === 'ready' ? 'ready' : 'manual',
       summary: priority.summary,
       detail: `taskpolicy: ${priority.taskpolicyPath || '(missing)'}\nrenice: ${priority.renicePath || '(missing)'}\nsudo -n: ${priority.sudoNonInteractive ? 'authorized' : 'not authorized'}\nhelper: ${priority.helperLoaded ? 'loaded' : 'not loaded'}`,
-      action: priority.helperLoaded || priority.sudoNonInteractive ? 'Verify Everything' : 'Install Realtime Priority Helper',
+      action: 'Verify Everything',
     }),
     statusItem({
       id: 'hf-cache',
@@ -1311,7 +1308,7 @@ async function diagnoseBridge(port) {
 
   const launchAgent = await checkLaunchAgentAccess(local);
   const runtimeIntegrity = checkRuntimeIntegrity(local, launchAgent);
-  const powerhouseMode = normalizePowerhouseMode(existing.powerhouseMode || existing.PowerhouseMode || 'balanced');
+  const powerhouseMode = normalizePowerhouseMode(existing.powerhouseMode || existing.PowerhouseMode || 'light');
   const companionPrepareSet = prepareSetForPowerhouseMode(powerhouseMode);
   let suggestedAction = 'Click Install and Start to install the bridge and configure Tailscale Serve for this port.';
   if (runtimeIntegrity.selfHealRecommended) {
@@ -1483,10 +1480,10 @@ async function checkPriorityHelper() {
     loaded,
     state: loaded && plistExists && scriptExists ? 'ready' : (plistExists || scriptExists ? 'needs_restart' : 'not_installed'),
     summary: loaded && plistExists && scriptExists
-      ? 'VoiceClaw realtime priority helper is installed and loaded; it can apply root-level renice to hot HF sidecars.'
+      ? 'Legacy VoiceClaw realtime priority helper is installed and loaded.'
       : (plistExists || scriptExists)
-        ? 'VoiceClaw realtime priority helper files exist, but launchd does not report the helper loaded.'
-        : 'VoiceClaw realtime priority helper is not installed; the Companion will use taskpolicy and noninteractive sudo only.',
+        ? 'Legacy VoiceClaw realtime priority helper files exist, but launchd does not report the helper loaded.'
+        : 'VoiceClaw realtime priority helper is not installed; the Companion uses taskpolicy and skips negative nice priority unless sudo is already authorized.',
     detail,
   };
 }
@@ -1574,9 +1571,19 @@ async function installLaunchAgent(config) {
     <key>VOICECLAW_CONFIG</key>
     <string>${xmlEscape(CONFIG_FILE)}</string>
     <key>VOICECLAW_POWERHOUSE_MODE</key>
-    <string>${xmlEscape(config.powerhouseMode || 'balanced')}</string>
+    <string>${xmlEscape(config.powerhouseMode || 'light')}</string>
     <key>VOICECLAW_POWERHOUSE_BOOT_PREWARM</key>
-    <string>true</string>
+    <string>false</string>
+    <key>COMPANION_VOICE_QWEN_PREWARM</key>
+    <string>false</string>
+    <key>COMPANION_VOICE_TTS_PREWARM</key>
+    <string>false</string>
+    <key>COMPANION_VOICE_HF_PREWARM</key>
+    <string>false</string>
+    <key>COMPANION_VOICE_HF_KEEPHOT</key>
+    <string>false</string>
+    <key>COMPANION_VOICE_HF_BOOT_BURSTS</key>
+    <string>0</string>
     <key>VOICECLAW_AGGRESSIVE_THREADS</key>
     <string>${xmlEscape(aggressiveThreads)}</string>
     <key>VOICECLAW_HF_NUM_PIPELINES</key>
@@ -1649,7 +1656,7 @@ function buildPairingPayload(config) {
     RealtimeModel: 'gpt-realtime-2',
     RealtimeAuthMode: config.realtimeAuthMode,
     RealtimeAuthFallbackToAPIKey: config.realtimeAuthFallbackToAPIKey,
-    PowerhouseMode: config.powerhouseMode || 'balanced',
+    PowerhouseMode: config.powerhouseMode || 'light',
   };
 }
 
@@ -1660,7 +1667,7 @@ function printSummary(config, pairingPayload, actions) {
   console.log(`Bridge URL: ${config.tailscaleBaseURL || '(Tailscale DNS unavailable)'}`);
   console.log(`OpenClaw path: ${config.openClawInstallPath}`);
   console.log(`OpenClaw agent: ${config.openClawAgentName}`);
-  console.log(`Powerhouse mode: ${config.powerhouseMode || 'balanced'}`);
+  console.log(`Powerhouse mode: ${config.powerhouseMode || 'light'}`);
   console.log(`Token: ${config.gatewayToken ? 'generated' : 'missing'}`);
   for (const action of actions) console.log(`- ${action}`);
   console.log('\nPaste this setup JSON into VoiceClaw Settings, or show it as a QR code from the Mac companion:\n');
@@ -1686,7 +1693,7 @@ async function main() {
   if (options.installCompanionVoiceDependencies) {
     const existing = await readBridgeConfig();
     const openClawInstallPath = normalizeInstallPath(options.openClawInstallPath || existing.openClawInstallPath);
-    const prepareSet = prepareSetForPowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'balanced');
+    const prepareSet = prepareSetForPowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'light');
     const result = await installCompanionVoiceDependencies(openClawInstallPath, { prepareSet });
     if (options.jsonOnly) {
       console.log(JSON.stringify(result, null, 2));
@@ -1745,7 +1752,7 @@ async function main() {
       realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'openclaw-oauth'),
       realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? false,
       cerebrasAPIKey: existing.cerebrasAPIKey || '',
-      powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'balanced'),
+      powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'light'),
     };
     await writeBridgeConfig(config);
     await installLaunchAgent(config);
@@ -1790,7 +1797,7 @@ async function main() {
     realtimeAuthMode: normalizeRealtimeAuthMode(options.realtimeAuthMode || existing.realtimeAuthMode || 'openclaw-oauth'),
     realtimeAuthFallbackToAPIKey: options.realtimeAuthFallbackToAPIKey ?? existing.realtimeAuthFallbackToAPIKey ?? false,
     cerebrasAPIKey: existing.cerebrasAPIKey || '',
-    powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'balanced'),
+    powerhouseMode: normalizePowerhouseMode(options.powerhouseMode || existing.powerhouseMode || existing.PowerhouseMode || 'light'),
   };
   config.tailscaleBaseURL = config.tailscaleDNSName ? `https://${config.tailscaleDNSName}:${config.port}` : (existing.tailscaleBaseURL || '');
 

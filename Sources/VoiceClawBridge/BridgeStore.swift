@@ -101,7 +101,7 @@ enum CompanionPowerhouseMode: String, CaseIterable, Identifiable {
         case .light:
             "Bridge stays available, but voice workers and models warm only on demand."
         case .balanced:
-            "Keeps the primary/default realtime voice stack warm and prepares recommended fallback profiles."
+            "Prepares the primary/default realtime voice stack only when you explicitly start a warm pass."
         case .maximum:
             "Aggressively prepares local STT, local LLM, streaming TTS, route prewarm, and network probes."
         case .presentation:
@@ -183,7 +183,7 @@ final class BridgeStore: ObservableObject {
             Task { await persistBridgeAuthDefaults() }
         }
     }
-    @Published var powerhouseMode: CompanionPowerhouseMode = .balanced {
+    @Published var powerhouseMode: CompanionPowerhouseMode = .light {
         didSet {
             lastAutomaticPowerhousePrewarmDate = nil
             UserDefaults.standard.set(powerhouseMode.rawValue, forKey: DefaultsKeys.powerhouseMode)
@@ -361,13 +361,6 @@ final class BridgeStore: ObservableObject {
             lastRefreshDate = Date()
         }
         await refreshBridgeDiagnostics()
-        if companionVoiceState == "ready", !companionVoiceDependencyInstallAvailable {
-            Task { await prewarmCompanionVoiceRuntimeIfReady() }
-            if shouldAutomaticallyPrewarmPowerhouse {
-                lastAutomaticPowerhousePrewarmDate = Date()
-                Task { await prewarmPowerhouseRuntime(install: false, refreshAfterCompletion: false) }
-            }
-        }
     }
 
     func refreshLaunchAtStartupStatus() {
@@ -839,7 +832,6 @@ final class BridgeStore: ObservableObject {
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             lastLog = trimmed.isEmpty ? "Companion Realtime Voice dependency installation completed." : trimmed
             await refreshStatus()
-            await prewarmCompanionVoiceRuntimeIfReady(force: true)
         } catch {
             lastLog = Self.userFacingSetupError(error)
             status = .failed("Voice Dependency Install Failed")
