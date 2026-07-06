@@ -3,45 +3,16 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
-            <title>0.1.117</title>
-            <pubDate>Mon, 06 Jul 2026 19:56:53 +0300</pubDate>
+            <title>0.1.118</title>
+            <pubDate>Mon, 06 Jul 2026 20:12:45 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607061955</sparkle:version>
-            <sparkle:shortVersionString>0.1.117</sparkle:shortVersionString>
+            <sparkle:version>202607061711</sparkle:version>
+            <sparkle:shortVersionString>0.1.118</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.117</h2>
-<ul>
-  <li>Fixes phone pairing when the full setup payload is too large for a QR code by using a compact secure setup link.</li>
-  <li>Adds a protected setup-payload endpoint so the iOS app can fetch the current full pairing JSON, including selected API/OAuth/Cerebras fields.</li>
-  <li>Keeps Copy Setup JSON available for full manual import.</li>
-</ul>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.118</h2><ul><li>Keeps the phone pairing QR compact by serving the full setup payload through the protected bridge endpoint instead of embedding oversized secrets directly in the QR code.</li><li>Uses the public watch/bridge URL as a compact setup fallback when Tailscale Serve is missing or stale.</li><li>Preserves full manual setup JSON for troubleshooting while keeping the QR import path small enough for reliable scanning.</li></ul>
 ]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.117/VoiceClawCompanion-0.1.117-202607061955.dmg" length="3574532" type="application/octet-stream" sparkle:edSignature="SjuY6E99uy3e+TM9wphcMLtRFsqOgcbKDZMg9QErSzDz5ppm69PfDAYgpkHVUK8Bb41whoukpAogQUHNed3dBQ=="/>
-        </item>
-        <item>
-            <title>0.1.116</title>
-            <pubDate>Mon, 06 Jul 2026 19:18:25 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607061917</sparkle:version>
-            <sparkle:shortVersionString>0.1.116</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.116</h2><ul><li>Fixes Pair Phone QR regeneration so setup payloads are restored from the installed bridge config during status checks.</li><li>Makes Powerhouse warm/install runs nonblocking from the Companion UI, with status polling instead of a blind long-running request.</li><li>Keeps route startup independent from Powerhouse prewarm completion.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.116/VoiceClawCompanion-0.1.116-202607061917.dmg" length="3571760" type="application/octet-stream" sparkle:edSignature="uOOaYdIln/oy4E0ni/YKE90xFUbm6+bvHDmWfgsVtbIEQRI6dPa2FcgyChRK/iWiRzf4njL196q5+e+m8E94BA=="/>
-        </item>
-        <item>
-            <title>0.1.115</title>
-            <pubDate>Mon, 06 Jul 2026 18:47:09 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607061845</sparkle:version>
-            <sparkle:shortVersionString>0.1.115</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.115</h2><ul><li>Improves OpenAI OAuth handoff between the iPhone app, Companion QR sync, and Companion Realtime Voice.</li><li>Keeps OpenAI STT and OpenAI Companion Realtime Voice LLMs OAuth-first, using API-key fallback only when the paired iPhone explicitly enables it.</li><li>Refreshes and persists Companion-side ChatGPT OAuth into the bridge configuration so the runtime can recover from stale imported credentials.</li><li>Preserves OpenAI TTS and GPT-Realtime-2 API-key behavior where those paths currently require it.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.115/VoiceClawCompanion-0.1.115-202607061845.dmg" length="3569981" type="application/octet-stream" sparkle:edSignature="0NNFpwkcFV2MK1sFZl4JlgZIbd9m2EsBELqKxRIrsNtEjTu2QPdCJ5rY5pSB2qu3AY9dcgJBaT0nrtp7riyLCA=="/>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.118/VoiceClawCompanion-0.1.118-202607061711.dmg" length="3575505" type="application/octet-stream" sparkle:edSignature="baC+OBsq5l3KPXEsDtOC10DuSZVEQ++Fhve5q+Ln2dKIaJoaB6M8R1bbrbd7eOCzsx0yPJc5qxBneZ3THNyTDg=="/>
         </item>
     </channel>
 </rss>

@@ -1770,9 +1770,15 @@ final class BridgeStore: ObservableObject {
     }
 
     private static func compactDeepLink(for payload: [String: Any]) -> String? {
-        guard let baseURLString = payload["TailscaleBaseURL"] as? String,
-              !baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let payloadURL = bridgeEndpointURL(baseURLString: baseURLString, path: "/realtime/setup-payload"),
+        let baseURLCandidates = [
+            payload["TailscaleBaseURL"] as? String,
+            payload["WatchPublicBridgeURL"] as? String,
+        ]
+
+        guard let payloadURL = baseURLCandidates.lazy
+            .compactMap({ $0 })
+            .compactMap({ bridgeEndpointURL(baseURLString: $0, path: "/realtime/setup-payload") })
+            .first,
               var components = URLComponents(string: "voiceclaw://setup")
         else { return nil }
 
