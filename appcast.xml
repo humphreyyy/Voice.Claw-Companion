@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.116</title>
+            <pubDate>Mon, 06 Jul 2026 19:18:25 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607061917</sparkle:version>
+            <sparkle:shortVersionString>0.1.116</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.116</h2><ul><li>Fixes Pair Phone QR regeneration so setup payloads are restored from the installed bridge config during status checks.</li><li>Makes Powerhouse warm/install runs nonblocking from the Companion UI, with status polling instead of a blind long-running request.</li><li>Keeps route startup independent from Powerhouse prewarm completion.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.116/VoiceClawCompanion-0.1.116-202607061917.dmg" length="3571760" type="application/octet-stream" sparkle:edSignature="uOOaYdIln/oy4E0ni/YKE90xFUbm6+bvHDmWfgsVtbIEQRI6dPa2FcgyChRK/iWiRzf4njL196q5+e+m8E94BA=="/>
+        </item>
+        <item>
             <title>0.1.115</title>
             <pubDate>Mon, 06 Jul 2026 18:47:09 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.114</h2><ul><li>Adds GPT-5.4 as a Companion Realtime Voice LLM option and keeps GPT-5.4-mini selectable.</li><li>Maps legacy GPT-5.4-nano selections to GPT-5.4-mini instead of advertising nano as a live option.</li><li>Adds forward-compatible GPT-5.6 Sol, Terra, and Luna route vocabulary so the Companion does not coerce those preview routes back to GPT-5.5.</li><li>Keeps the HF speech-to-speech runtime readiness and 16 kHz runtime contract intact.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.114/VoiceClawCompanion-0.1.114-202607061707.dmg" length="3561278" type="application/octet-stream" sparkle:edSignature="DpuP04IixmLm1sYRX3G5J7/HOByju5X9bHkXo7azbQTKu7ynUuGTG4znmU802ZZmDcHG//nirpNntPFXOZURBw=="/>
-        </item>
-        <item>
-            <title>0.1.113</title>
-            <pubDate>Mon, 06 Jul 2026 15:25:56 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607061523</sparkle:version>
-            <sparkle:shortVersionString>0.1.113</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.113</h2><ul><li>Adds GPT-5.4-mini and GPT-5.4-nano as Companion Realtime Voice LLM choices alongside GPT-5.5, Cerebras, and Local Qwen.</li><li>Aligns Companion Realtime Voice planning with the selected OpenAI LLM instead of hard-coding GPT-5.5.</li><li>Keeps the HF speech-to-speech runtime readiness and 16 kHz runtime contract intact.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.113/VoiceClawCompanion-0.1.113-202607061523.dmg" length="3564219" type="application/octet-stream" sparkle:edSignature="Ii/EDDtxWPHE1hQ/AgQe5BpsfVHTQyTgaLYooT4n4eQxtQcR00evC9STR5yjbVmqRW2F1ErQyfoV2kckcdkNBA=="/>
         </item>
     </channel>
 </rss>
