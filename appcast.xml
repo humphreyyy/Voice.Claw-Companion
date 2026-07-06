@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.108</title>
+            <pubDate>Mon, 06 Jul 2026 13:01:08 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607061231</sparkle:version>
+            <sparkle:shortVersionString>0.1.108</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.108</h2><ul><li>Bounds Powerhouse prewarm concurrency so readiness work no longer spawns duplicate OpenAI/Cerebras probes or oversized local voice worker fleets.</li><li>Caps HF realtime sidecar pool and thread defaults while keeping the selected local voice runtime warm.</li><li>Switches new installs to Balanced Powerhouse mode by default and keeps memory pressure as telemetry instead of a readiness blocker.</li><li>Fixes the Powerhouse worker limiter so configured concurrency limits are actually honored.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.108/VoiceClawCompanion-0.1.108-202607061231.dmg" length="3568245" type="application/octet-stream" sparkle:edSignature="bAnMRW5OgbbpwplXRA6b+gdMjsDMNX3wjJQ3ACw2O1z8fKRhQb7vSCc366ISd9FFfdrOghI8FvuA6Q+jSlucCA=="/>
+        </item>
+        <item>
             <title>0.1.107</title>
             <pubDate>Mon, 06 Jul 2026 09:49:33 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.106</h2><ul><li>Raises Powerhouse thread defaults and worker ceilings for much more aggressive CPU/GPU/silicon utilization.</li><li>Runs all Companion Realtime Voice HF sidecar profiles in repeated concurrent warm bursts instead of staged primary/fallback warmup.</li><li>Increases TTS, route, and network warm probes so the Mac converges faster toward a hot realtime appliance state.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.106/VoiceClawCompanion-0.1.106-202607060927.dmg" length="3563312" type="application/octet-stream" sparkle:edSignature="9aCudyS7KayChcJg3z4iLXlERc06UhoDuFjpz0Ez6owzQdCY5QFlyEhgeWx2TOtOE+ZBq/wKbLBa95mH3tvnDw=="/>
-        </item>
-        <item>
-            <title>0.1.105</title>
-            <pubDate>Mon, 06 Jul 2026 09:13:55 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607060910</sparkle:version>
-            <sparkle:shortVersionString>0.1.105</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.105</h2><ul><li>Makes selected-runtime prewarming and Powerhouse warm passes advisory, never blockers for starting a VoiceClaw route.</li><li>Keeps aggressive background warming while preserving route start responsiveness.</li><li>Clarifies Companion readiness wording so dependency installation is separate from warmup state.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.105/VoiceClawCompanion-0.1.105-202607060910.dmg" length="3563400" type="application/octet-stream" sparkle:edSignature="kMZ4fo0aBOKQZa+Vzx67KHNWYNGviZJ3HtRtnRaBhJdvioeqZeh+kjH9MizX22uzPk7UZimxidoF2wQ4cCYTDQ=="/>
         </item>
     </channel>
 </rss>
