@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.111</title>
+            <pubDate>Mon, 06 Jul 2026 13:50:46 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607061046</sparkle:version>
+            <sparkle:shortVersionString>0.1.111</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.111</h2><ul><li>Stops Companion voice, HF, Qwen, TTS, keep-hot, and Powerhouse prewarming from running automatically at bridge startup.</li><li>Keeps Powerhouse warming and dependency preparation as explicit user actions.</li><li>Removes the realtime priority-helper installer path while preserving legacy helper diagnostics.</li><li>Keeps the default Powerhouse mode at Light.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.111/VoiceClawCompanion-0.1.111-202607061046.dmg" length="3567288" type="application/octet-stream" sparkle:edSignature="cipzfCqe+Mf1depH9p4Y4rxj54Hz3cVeO6tCTbZd7l6NfrBVH1JcK+eLD7+FrbEKPQ9trmIzDkShYaIja2IiAg=="/>
+        </item>
+        <item>
             <title>0.1.110</title>
             <pubDate>Mon, 06 Jul 2026 13:26:01 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.108</h2><ul><li>Bounds Powerhouse prewarm concurrency so readiness work no longer spawns duplicate OpenAI/Cerebras probes or oversized local voice worker fleets.</li><li>Caps HF realtime sidecar pool and thread defaults while keeping the selected local voice runtime warm.</li><li>Switches new installs to Balanced Powerhouse mode by default and keeps memory pressure as telemetry instead of a readiness blocker.</li><li>Fixes the Powerhouse worker limiter so configured concurrency limits are actually honored.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.108/VoiceClawCompanion-0.1.108-202607061231.dmg" length="3568245" type="application/octet-stream" sparkle:edSignature="bAnMRW5OgbbpwplXRA6b+gdMjsDMNX3wjJQ3ACw2O1z8fKRhQb7vSCc366ISd9FFfdrOghI8FvuA6Q+jSlucCA=="/>
-        </item>
-        <item>
-            <title>0.1.111</title>
-            <pubDate>Mon, 06 Jul 2026 13:50:46 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607061046</sparkle:version>
-            <sparkle:shortVersionString>0.1.111</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.111</h2><ul><li>Stops Companion voice, HF, Qwen, TTS, keep-hot, and Powerhouse prewarming from running automatically at bridge startup.</li><li>Keeps Powerhouse warming and dependency preparation as explicit user actions.</li><li>Removes the realtime priority-helper installer path while preserving legacy helper diagnostics.</li><li>Keeps the default Powerhouse mode at Light.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.111/VoiceClawCompanion-0.1.111-202607061046.dmg" length="3567288" type="application/octet-stream" sparkle:edSignature="cipzfCqe+Mf1depH9p4Y4rxj54Hz3cVeO6tCTbZd7l6NfrBVH1JcK+eLD7+FrbEKPQ9trmIzDkShYaIja2IiAg=="/>
         </item>
     </channel>
 </rss>
