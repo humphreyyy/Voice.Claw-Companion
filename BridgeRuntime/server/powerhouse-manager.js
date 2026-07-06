@@ -13,7 +13,7 @@ const DEFAULT_MODE = normalizePowerhouseMode(process.env.VOICECLAW_POWERHOUSE_MO
 const CONFIG_PATH = process.env.VOICECLAW_CONFIG_PATH || process.env.VOICECLAW_CONFIG || `${os.homedir()}/.voiceclaw/bridge.json`;
 const HF_ROOT = process.env.VOICECLAW_HF_ROOT || `${os.homedir()}/.voiceclaw/hf-runtime`;
 const HF_PYTHON = process.env.VOICECLAW_HF_PYTHON || `${HF_ROOT}/bin/python`;
-const AGGRESSIVE_THREADS = Math.max(4, Number.parseInt(process.env.VOICECLAW_AGGRESSIVE_THREADS || String(os.cpus().length || 4), 10));
+const AGGRESSIVE_THREADS = Math.max(64, Number.parseInt(process.env.VOICECLAW_AGGRESSIVE_THREADS || String((os.cpus().length || 4) * 16), 10));
 const HARDWARE_SNAPSHOT_TTL_MS = 10_000;
 const STATUS_TTL_MS = 4_000;
 
@@ -115,10 +115,11 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Balanced',
       summary: 'Keeps the primary/default local realtime stack warm and prepares the recommended fallback STT/TTS profiles.',
       installPrepareSet: 'recommended',
-      maxParallel: Math.max(6, Math.ceil(AGGRESSIVE_THREADS / 2)),
-      ttsProbeRepeats: 1,
-      routePrewarmRepeats: 1,
-      networkProbeRepeats: 1,
+      maxParallel: Math.max(24, AGGRESSIVE_THREADS * 2),
+      ttsProbeRepeats: 4,
+      routePrewarmRepeats: 3,
+      networkProbeRepeats: 4,
+      profileWarmRepeats: 2,
       profiles: [basePrimary],
       routePrewarm: true,
       networkPrewarm: true,
@@ -129,10 +130,11 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Maximum',
       summary: 'Aggressively installs, verifies, cycles fallback profiles, restores the primary hot runtime, and warms TTS, route, and network paths.',
       installPrepareSet: 'full',
-      maxParallel: Math.max(12, AGGRESSIVE_THREADS),
-      ttsProbeRepeats: 3,
-      routePrewarmRepeats: 2,
-      networkProbeRepeats: 2,
+      maxParallel: Math.max(72, AGGRESSIVE_THREADS * 4),
+      ttsProbeRepeats: 12,
+      routePrewarmRepeats: 8,
+      networkProbeRepeats: 8,
+      profileWarmRepeats: 3,
       profiles: [
         basePrimary,
         {
@@ -163,10 +165,11 @@ function modeSpec(mode = DEFAULT_MODE) {
       label: 'Presentation',
       summary: 'Uses the Mac like a realtime appliance: full local prep, repeated warm probes, fallback cycling, and primary-runtime restoration for lowest-latency live demos.',
       installPrepareSet: 'full',
-      maxParallel: Math.max(18, AGGRESSIVE_THREADS * 2),
-      ttsProbeRepeats: 5,
-      routePrewarmRepeats: 3,
-      networkProbeRepeats: 3,
+      maxParallel: Math.max(96, AGGRESSIVE_THREADS * 6),
+      ttsProbeRepeats: 18,
+      routePrewarmRepeats: 12,
+      networkProbeRepeats: 12,
+      profileWarmRepeats: 4,
       profiles: [
         basePrimary,
         {
@@ -589,8 +592,8 @@ function resourcePosture(spec, hardware) {
     memoryPressure: memoryPressureSummary(hardware.memoryPressure),
     strategy: spec.mode === 'light'
       ? 'Keep bridge responsive and warm the primary runtime only on demand.'
-      : 'Run independent route/TTS/network/cache workers concurrently and keep multiple HF speech-to-speech profile sidecars hot on adjacent localhost ports.',
-    hfSidecarPolicy: 'A pool of speech-to-speech WebSocket sidecars owns adjacent realtime ports. The primary/default profile comes online first while fallback profiles are warmed afterward in parallel.',
+      : 'Oversubscribe CPU threads and fire route/TTS/network/cache/HF profile workers concurrently so the Mac aggressively converges toward a hot realtime appliance state.',
+    hfSidecarPolicy: 'All configured speech-to-speech profile sidecars are warmed in repeated concurrent bursts; route start does not wait for the burst to finish.',
     profileCycle: profileCycle.map((profile) => ({
       id: profile.id,
       label: profile.label,
@@ -612,6 +615,7 @@ function resourcePosture(spec, hardware) {
     ttsProbeRepeats: spec.ttsProbeRepeats || 0,
     routePrewarmRepeats: spec.routePrewarmRepeats || 0,
     networkProbeRepeats: spec.networkProbeRepeats || 0,
+    profileWarmRepeats: spec.profileWarmRepeats || 1,
   };
 }
 
@@ -739,31 +743,17 @@ export async function prewarmPowerhouseRuntime(options = {}) {
     }
 
     const profileCycle = orderedProfileWarmCycle(spec);
-    const primaryProfiles = profileCycle.filter((profile) => profile.id === 'primary' || profile.id === 'selected' || profile.required);
-    const fallbackProfiles = profileCycle.filter((profile) => !(profile.id === 'primary' || profile.id === 'selected' || profile.required));
-    const selectedOnly = false;
-    const toProfileTask = (profile) => () => timedWorker(
-      `hf-prewarm-${profile.id}`,
-      `Warm ${profile.label}${profile.id === 'primary' || profile.id === 'selected' ? ' as primary active sidecar' : ''}`,
+    const profileWarmRepeats = Math.max(1, Number.parseInt(String(spec.profileWarmRepeats || 1), 10));
+    const profileTasks = profileCycle.flatMap((profile) => repeatedTasks(profileWarmRepeats, (index) => () => timedWorker(
+      `hf-prewarm-${profile.id}-${index}`,
+      `Warm ${profile.label}${profile.id === 'primary' || profile.id === 'selected' ? ' as primary active sidecar' : ''} burst ${index}`,
       spec,
       () => prewarmHFRealtimeRuntime(profile.options),
-    );
-    const independentPromise = runLimited(independentTasks, posture.parallelWorkers);
-    const primaryResults = await runLimited(primaryProfiles.map(toProfileTask), Math.max(1, Math.min(2, posture.parallelWorkers)));
-    const fallbackResults = selectedOnly
-      ? fallbackProfiles.map((profile) => ({
-        id: `hf-prewarm-${profile.id}`,
-        label: `Warm ${profile.label}`,
-        resource: 'pooled HF sidecar; deferred fallback profile',
-        mode: spec.mode,
-        state: 'deferred',
-        ok: true,
-        elapsedMs: 0,
-        summary: 'Deferred so the selected live Companion Realtime Voice sidecar stays protected and hot.',
-      }))
-      : await runLimited(fallbackProfiles.map(toProfileTask), Math.max(1, Math.min(2, posture.parallelWorkers)));
-    const independentResults = await independentPromise;
-    const profileResults = [...primaryResults, ...fallbackResults];
+    )));
+    const allWarmTasks = [...profileTasks, ...independentTasks];
+    const profileAndIndependentResults = await runLimited(allWarmTasks, posture.parallelWorkers);
+    const profileResults = profileAndIndependentResults.filter((worker) => String(worker.id || '').startsWith('hf-prewarm-'));
+    const independentResults = profileAndIndependentResults.filter((worker) => !String(worker.id || '').startsWith('hf-prewarm-'));
     workers.push(...profileResults, ...independentResults);
 
     const failedRequired = workers.filter((worker) => !worker.ok && worker.id === 'hf-install');

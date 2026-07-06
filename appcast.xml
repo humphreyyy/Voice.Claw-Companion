@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.106</title>
+            <pubDate>Mon, 06 Jul 2026 09:30:26 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607060927</sparkle:version>
+            <sparkle:shortVersionString>0.1.106</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.106</h2><ul><li>Raises Powerhouse thread defaults and worker ceilings for much more aggressive CPU/GPU/silicon utilization.</li><li>Runs all Companion Realtime Voice HF sidecar profiles in repeated concurrent warm bursts instead of staged primary/fallback warmup.</li><li>Increases TTS, route, and network warm probes so the Mac converges faster toward a hot realtime appliance state.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.106/VoiceClawCompanion-0.1.106-202607060927.dmg" length="3563312" type="application/octet-stream" sparkle:edSignature="9aCudyS7KayChcJg3z4iLXlERc06UhoDuFjpz0Ez6owzQdCY5QFlyEhgeWx2TOtOE+ZBq/wKbLBa95mH3tvnDw=="/>
+        </item>
+        <item>
             <title>0.1.105</title>
             <pubDate>Mon, 06 Jul 2026 09:13:55 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.104</h2><ul><li>Removes Powerhouse resource pressure as a readiness blocker; resource posture is now diagnostics-only.</li><li>Runs Powerhouse warmup aggressively without selected-only fallback deferral or worker throttling.</li><li>Honors Cerebras as the selected Companion Realtime Voice LLM when native iPhone STT/TTS are selected.</li><li>Prevents Cerebras-selected turns from silently falling back to the local/Qwen planner when the Cerebras planner response is incomplete.</li><li>Raises runtime request body ceilings for large audio/config payloads.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.104/VoiceClawCompanion-0.1.104-202607060854.dmg" length="3563324" type="application/octet-stream" sparkle:edSignature="bLw6b+htzRNqIbj41RyJMmX+xHBpK4t+o/IiB9gwbtHFJh6LqOcVoaCKipCxRjAxC26Mwnj/0aI+i0LaXKAXBg=="/>
-        </item>
-        <item>
-            <title>0.1.103</title>
-            <pubDate>Mon, 06 Jul 2026 08:49:12 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607060847</sparkle:version>
-            <sparkle:shortVersionString>0.1.103</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.103</h2><ul><li>Honors Cerebras as the selected Companion Realtime Voice LLM when native iPhone STT/TTS are selected.</li><li>Prevents Cerebras-selected turns from silently falling back to the local/Qwen planner when the Cerebras planner response is incomplete.</li><li>Keeps iPhone tool controls available while preserving the selected LLM for normal Companion Realtime Voice planning.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.103/VoiceClawCompanion-0.1.103-202607060847.dmg" length="3565286" type="application/octet-stream" sparkle:edSignature="b6aTX8TA3+uoUOBe/mchJovT+SCn/gB4uTc/5Cbxnj0OQhNaYtq5mexkS8QtFQZmb8skZsWU6PDWMpOY/QzKBQ=="/>
         </item>
     </channel>
 </rss>
