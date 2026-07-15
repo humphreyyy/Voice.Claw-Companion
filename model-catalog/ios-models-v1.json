@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-07-15T00:00:00Z",
+  "models": [
+    {
+      "id": "qwen35-2b-mlx-q4",
+      "component": "localLLM",
+      "displayName": "Qwen 3.5 2B",
+      "bundledRelativePath": "Qwen/Qwen3.5-2B-4bit",
+      "filePreferences": [
+        { "role": "weights", "preferredNames": ["model.safetensors"], "acceptedSuffixes": [".safetensors"] },
+        { "role": "configuration", "preferredNames": ["config.json"], "acceptedSuffixes": ["config.json"] },
+        { "role": "tokenizer", "preferredNames": ["tokenizer.json", "tokenizer_config.json", "vocab.json"], "acceptedSuffixes": ["tokenizer.json", "tokenizer_config.json", "vocab.json"] },
+        { "role": "chatTemplate", "preferredNames": ["chat_template.jinja"], "acceptedSuffixes": [".jinja"] }
+      ],
+      "sources": [
+        { "repository": "mlx-community/Qwen3.5-2B-4bit", "revision": "674aaa7240b91e8012fcad5d791b7dfe5ba90207", "pathPrefix": "" },
+        { "repository": "mlx-community/Qwen3.5-2B-4bit", "revision": "main", "pathPrefix": "" }
+      ]
+    },
+    {
+      "id": "whisper-tiny-en-coreml",
+      "component": "speechRecognition",
+      "displayName": "Whisper Tiny English",
+      "bundledRelativePath": "Whisper/tiny.en",
+      "filePreferences": [
+        { "role": "encoder", "preferredNames": ["AudioEncoder.mlmodelc"], "acceptedSuffixes": ["AudioEncoder.mlmodelc"] },
+        { "role": "decoder", "preferredNames": ["TextDecoder.mlmodelc"], "acceptedSuffixes": ["TextDecoder.mlmodelc"] },
+        { "role": "spectrogram", "preferredNames": ["MelSpectrogram.mlmodelc"], "acceptedSuffixes": ["MelSpectrogram.mlmodelc"] },
+        { "role": "tokenizer", "preferredNames": ["tokenizer.json", "tokenizer_config.json"], "acceptedSuffixes": ["tokenizer.json", "tokenizer_config.json"] }
+      ],
+      "sources": [
+        { "repository": "argmaxinc/whisperkit-coreml", "revision": "97a5bf9bbc74c7d9c12c755d04dea59e672e3808", "pathPrefix": "openai_whisper-tiny.en" },
+        { "repository": "argmaxinc/whisperkit-coreml", "revision": "main", "pathPrefix": "openai_whisper-tiny.en" },
+        { "repository": "openai/whisper-tiny.en", "revision": "main", "pathPrefix": "" }
+      ]
+    },
+    {
+      "id": "whisper-base-en-coreml",
+      "component": "speechRecognition",
+      "displayName": "Whisper Base English",
+      "bundledRelativePath": "Whisper/base.en",
+      "filePreferences": [
+        { "role": "encoder", "preferredNames": ["AudioEncoder.mlmodelc"], "acceptedSuffixes": ["AudioEncoder.mlmodelc"] },
+        { "role": "decoder", "preferredNames": ["TextDecoder.mlmodelc"], "acceptedSuffixes": ["TextDecoder.mlmodelc"] },
+        { "role": "spectrogram", "preferredNames": ["MelSpectrogram.mlmodelc"], "acceptedSuffixes": ["MelSpectrogram.mlmodelc"] },
+        { "role": "tokenizer", "preferredNames": ["tokenizer.json", "tokenizer_config.json"], "acceptedSuffixes": ["tokenizer.json", "tokenizer_config.json"] }
+      ],
+      "sources": [
+        { "repository": "argmaxinc/whisperkit-coreml", "revision": "97a5bf9bbc74c7d9c12c755d04dea59e672e3808", "pathPrefix": "openai_whisper-base.en" },
+        { "repository": "argmaxinc/whisperkit-coreml", "revision": "main", "pathPrefix": "openai_whisper-base.en" },
+        { "repository": "openai/whisper-base.en", "revision": "main", "pathPrefix": "" }
+      ]
+    },
+    {
+      "id": "whisper-small-en-coreml",
+      "component": "speechRecognition",
+      "displayName": "Whisper Small English",
+      "bundledRelativePath": "Whisper/small.en",
+      "filePreferences": [
+        { "role": "encoder", "preferredNames": ["AudioEncoder.mlmodelc"], "acceptedSuffixes": ["AudioEncoder.mlmodelc"] },
+        { "role": "decoder", "preferredNames": ["TextDecoder.mlmodelc"], "acceptedSuffixes": ["TextDecoder.mlmodelc"] },
+        { "role": "spectrogram", "preferredNames": ["MelSpectrogram.mlmodelc"], "acceptedSuffixes": ["MelSpectrogram.mlmodelc"] },
+        { "role": "tokenizer", "preferredNames": ["tokenizer.json", "tokenizer_config.json"], "acceptedSuffixes": ["tokenizer.json", "tokenizer_config.json"] }
+      ],
+      "sources": [
+        { "repository": "argmaxinc/whisperkit-coreml", "revision": "97a5bf9bbc74c7d9c12c755d04dea59e672e3808", "pathPrefix": "openai_whisper-small.en" },
+        { "repository": "argmaxinc/whisperkit-coreml", "revision": "main", "pathPrefix": "openai_whisper-small.en" },
+        { "repository": "openai/whisper-small.en", "revision": "main", "pathPrefix": "" }
+      ]
+    }
+  ]
+}
