@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.123</title>
+            <pubDate>Wed, 22 Jul 2026 20:57:55 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607221737</sparkle:version>
+            <sparkle:shortVersionString>0.1.123</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.123</h2><ul><li>Adds the Codex app-server realtime voice route and hardened reconnect/session lifecycle.</li><li>Uses Qwen 3.5 0.8B consistently for local Companion setup and model guidance.</li><li>Improves QR setup refresh, live tunnel URL handling, remote session controls, and runtime readiness reporting.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.123/VoiceClawCompanion-0.1.123-202607221737.dmg" length="3757953" type="application/octet-stream" sparkle:edSignature="9y/WQGOCc2/742VLa9gausxEWa9Qgz86cCKNy6izdEuMamQWozt9cmxU+QDuvNllhnkCsx+ZhnPTYel/jnGEAg=="/>
+        </item>
+        <item>
             <title>0.1.122</title>
             <pubDate>Wed, 22 Jul 2026 20:34:06 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,21 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.121</h2><ul><li>Adds GPT Realtime 2.1 Mini as the default pairing/runtime realtime model.</li><li>Keeps GPT Realtime 2.1 and GPT-Realtime-2 compatible with the existing realtime mechanics.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.121/VoiceClawCompanion-0.1.121-202607062309.dmg" length="3589656" type="application/octet-stream" sparkle:edSignature="vW9YDv4UHECgbx1/z/9spRz1pWPHjTL166oWqgBmP8lcy+aj/afgf+8kA9wFG56NPEC4ewP9j3DP1XY82Ki3AQ=="/>
-        </item>
-        <item>
-            <title>0.1.120</title>
-            <pubDate>Mon, 06 Jul 2026 21:57:17 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607062152</sparkle:version>
-            <sparkle:shortVersionString>0.1.120</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.120</h2>
-<ul>
-  <li>Includes the latest VoiceClaw Companion improvements.</li>
-</ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.120/VoiceClawCompanion-0.1.120-202607062152.dmg" length="3589372" type="application/octet-stream" sparkle:edSignature="BjdgEIoLqvWbjkRYV0xR8WBzzPkflHQtgIxi86sNGunSKuF/Y8Lv5ZhlFircYJrKUTrmAVX0UPGFo2MoDWrACQ=="/>
         </item>
     </channel>
 </rss>
