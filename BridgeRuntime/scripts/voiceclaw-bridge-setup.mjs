@@ -27,7 +27,7 @@ const PRIORITY_HELPER_FILE = `/Library/LaunchDaemons/${PRIORITY_HELPER_LABEL}.pl
 const PRIORITY_HELPER_SCRIPT = '/Library/Application Support/VoiceClaw Companion/voiceclaw-priority-helper.sh';
 const DEFAULT_BRIDGE_PORT = 12321;
 const DEFAULT_OPENCLAW_AGENT_NAME = 'main';
-const DEFAULT_QWEN_MODEL = process.env.COMPANION_VOICE_QWEN_MODEL || 'qwen3.5:2b';
+const DEFAULT_QWEN_MODEL = process.env.COMPANION_VOICE_QWEN_MODEL || 'qwen3.5:0.8b';
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
 const RUNTIME_PATH = [
   '/opt/homebrew/bin',

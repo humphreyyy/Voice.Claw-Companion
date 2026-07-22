@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-07-15T00:00:00Z",
+  "updatedAt": "2026-07-22T00:00:00Z",
   "models": [
     {
-      "id": "qwen35-2b-mlx-q4",
+      "id": "qwen35-800m-mlx-q4",
       "component": "localLLM",
-      "displayName": "Qwen 3.5 2B",
-      "bundledRelativePath": "Qwen/Qwen3.5-2B-4bit",
+      "displayName": "Qwen 3.5 0.8B",
+      "bundledRelativePath": "Qwen/Qwen3.5-0.8B-4bit",
       "filePreferences": [
         { "role": "weights", "preferredNames": ["model.safetensors"], "acceptedSuffixes": [".safetensors"] },
         { "role": "configuration", "preferredNames": ["config.json"], "acceptedSuffixes": ["config.json"] },
@@ -14,8 +14,8 @@
         { "role": "chatTemplate", "preferredNames": ["chat_template.jinja"], "acceptedSuffixes": [".jinja"] }
       ],
       "sources": [
-        { "repository": "mlx-community/Qwen3.5-2B-4bit", "revision": "674aaa7240b91e8012fcad5d791b7dfe5ba90207", "pathPrefix": "" },
-        { "repository": "mlx-community/Qwen3.5-2B-4bit", "revision": "main", "pathPrefix": "" }
+        { "repository": "mlx-community/Qwen3.5-0.8B-4bit", "revision": "da28692b5f139cb0ec58a356b437486b7dac7462", "pathPrefix": "" },
+        { "repository": "mlx-community/Qwen3.5-0.8B-4bit", "revision": "main", "pathPrefix": "" }
       ]
     },
     {
