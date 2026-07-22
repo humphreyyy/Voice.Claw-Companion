@@ -184,7 +184,7 @@ export function readPowerhouseModeFromConfig() {
 
 function defaultCompanionVoiceRuntimeProfile() {
   return {
-    brainMode: 'qwen3.5-2b',
+    brainMode: 'qwen3.5-0.8b',
     sttProfile: 'parakeet-live',
     localVoice: 'kokoro-af-heart',
     prepareSet: 'recommended',
@@ -749,7 +749,7 @@ async function runPowerhousePrewarmJob(job, options = {}) {
     if (options.install !== false) {
       initialTasks.push(() => timedJobWorker(job, 'hf-install', `Install/verify ${spec.installPrepareSet} HF profiles`, spec, () => installHFRealtimeRuntime({
         prepareSet: spec.installPrepareSet,
-        brainMode: 'qwen3.5-2b',
+        brainMode: 'qwen3.5-0.8b',
         sttProfile: 'parakeet-live',
         localVoice: 'kokoro-af-heart',
       })));

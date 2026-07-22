@@ -307,6 +307,40 @@ return { companionVoiceFallbackIPhoneTool, companionVoiceRepairIPhoneTool, compa
   fail(`fallback behavior harness failed: ${error?.message || String(error)}`);
 }
 
+const realtimeWebSocketContractPhrases = [
+  'maxPayload: COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES',
+  'beginPendingWebSocketAuth',
+  'isBridgeAuthFirstMessage',
+  "msg.gatewayPassword || msg.password || msg.sessionCode",
+  'enqueueSocketTask',
+  'enqueueBinaryFrame(Buffer.from(data))',
+  'COMPANION_VOICE_WS_MAX_PENDING_INPUT_BYTES',
+  'COMPANION_VOICE_WS_MAX_BUFFERED_AUDIO_BYTES',
+  "direction: 'input'",
+  "'STALE_CLIENT_SESSION'",
+  "'STALE_CLIENT_GENERATION'",
+  "'STALE_CONFIG_REVISION'",
+  "'STALE_CLIENT_TURN'",
+  "'STALE_AUDIO_SEQUENCE'",
+  'event.clientSessionID = context.clientSessionID',
+  'event.clientGeneration = context.clientGeneration',
+  'pendingIPhoneToolCalls',
+  'hfInputCommitPending',
+  "transport: 'companion-server-vad-fallback'",
+  'bridgeReady: false',
+];
+
+for (const phrase of realtimeWebSocketContractPhrases) {
+  if (!source.includes(phrase)) fail(`Companion WebSocket contract phrase missing: ${phrase}`);
+}
+
+if (/ws\.on\(['"]message['"],\s*async\s*\(/.test(source)) {
+  fail('outer Companion WebSocket messages must use the per-socket serializer, not an async event callback');
+}
+if (/new WebSocketServer\(\{\s*server:\s*httpServer,\s*path:\s*WS_PATH/.test(source)) {
+  fail('outer Companion WebSocket upgrades must pass through the authorization gate');
+}
+
 if (!process.exitCode) {
   console.log(`Runtime contract check passed (${actualIphoneTools.length} iPhone tools).`);
 }

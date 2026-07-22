@@ -3,19 +3,25 @@
 // Serves client assets, handles audio upload/streaming, ASR, TTS, interrupts
 
 import { createServer } from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFile, stat, mkdir, appendFile, readdir, writeFile, unlink } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { join, extname, dirname } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { Readable } from 'node:stream';
 import WebSocket, { WebSocketServer } from 'ws';
 import { executablePath, normalizeProcessPath } from './bin-paths.js';
+import { attachCodexRealtimeRelaySocket, CodexAppServerBridge } from './codex-app-server.js';
 import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
-import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply } from './dialogue.js';
+import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply, createVoiceRemoteSessionRuntimeAdapter } from './dialogue.js';
 import { getHFRealtimeStatus, installHFRealtimeRuntime, prewarmHFRealtimeRuntime, HFRealtimeBridge } from './hf-realtime-sidecar.js';
+import {
+  CompanionVoiceAudioAlignmentProducer,
+  companionVoiceTextSegmentID,
+} from './voice-audio-alignment.js';
 import {
   cancelPowerhousePrewarmJob,
   getPowerhouseJobStatus,
@@ -31,20 +37,47 @@ import {
   buildRealtimeAuthStatus,
   createRealtimeClientSecret,
   realtimeAuthPreferences,
+  resolveOpenAIChatGPTOAuthBearer,
   resolveRealtimeBearer,
 } from './realtime-auth.js';
+import {
+  VoiceCredentialBoundaryError,
+  bindValidatedVoiceAccessTokenDelegation,
+  enforceVoiceCredentialBoundaryOnControlPayload,
+  sanitizeVoiceControlPayload,
+  voiceCredentialTransportFromNodeRequest,
+} from './voice-credential-boundary.js';
+import { VoiceRemoteSessionService, createVoiceRemoteSessionHTTPHandler } from './voice-remote-sessions.js';
+import {
+  VOICE_STREAM_WIRE_FORMAT,
+  VoiceStartSessionHandshakeRegistry,
+  VoiceStreamResumeError,
+  VoiceStreamResumeRegistry,
+  normalizeVoiceStreamWireFormat,
+  voiceStreamOutputCapacityDecision,
+} from './voice-stream-resume.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 normalizeProcessPath();
 const CLIENT_DIR = join(__dirname, '..', 'client');
 const RUNTIME_MANIFEST_PATH = join(__dirname, '..', 'runtime-manifest.json');
 const RUNTIME_MANIFEST = loadRuntimeManifest();
+const codexAppServerBridge = new CodexAppServerBridge({
+  workspacePath: process.env.VOICECLAW_CODEX_CWD,
+});
 const PORT = parseInt(process.env.VB_PORT || '12321', 10);
 const BIND_HOST = (process.env.VB_BIND_HOST || process.env.HOST || '127.0.0.1').trim() || '127.0.0.1';
 const RAW_BASE_PATH = (process.env.VB_BASE_PATH || '').trim();
 const BASE_PATH = RAW_BASE_PATH
   ? '/' + RAW_BASE_PATH.replace(/^\/+|\/+$/g, '')
   : '';
+const voiceRemoteSessionService = new VoiceRemoteSessionService({
+  runtimeAdapter: createVoiceRemoteSessionRuntimeAdapter(),
+});
+const voiceRemoteSessionHTTP = createVoiceRemoteSessionHTTPHandler({
+  service: voiceRemoteSessionService,
+  basePath: BASE_PATH,
+});
 const WAKE_PHRASE = (process.env.INTERCOM_WAKE_PHRASE || 'Hey').trim() || 'Hey';
 
 // MIME types for static serving
@@ -149,6 +182,29 @@ const COMPANION_VOICE_HF_KEEPHOT = !['0', 'false', 'off', 'no'].includes(String(
 const COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS = Math.max(120_000, Number.parseInt(process.env.COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS || '300000', 10));
 const COMPANION_VOICE_HF_BOOT_BURSTS = Math.min(1, Math.max(0, Number.parseInt(process.env.COMPANION_VOICE_HF_BOOT_BURSTS || '0', 10)));
 const COMPANION_VOICE_WS_HEARTBEAT_MS = Math.max(5_000, Number.parseInt(process.env.COMPANION_VOICE_WS_HEARTBEAT_MS || '15000', 10));
+const COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES, 4_000_000, 64_000, 16_000_000));
+const COMPANION_VOICE_WS_AUTH_DEADLINE_MS = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_AUTH_DEADLINE_MS, 3_000, 500, 10_000));
+const COMPANION_VOICE_WS_AUTH_MAX_BYTES = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_AUTH_MAX_BYTES, 64_000, 1_024, 256_000));
+const COMPANION_VOICE_WS_MAX_PENDING_CONTROLS = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_MAX_PENDING_CONTROLS, 128, 8, 512));
+const COMPANION_VOICE_WS_MAX_PENDING_INPUT_BYTES = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_MAX_PENDING_INPUT_BYTES, 2_000_000, 64_000, 16_000_000));
+const COMPANION_VOICE_WS_MAX_BUFFERED_AUDIO_BYTES = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_MAX_BUFFERED_AUDIO_BYTES, 4_000_000, 256_000, 32_000_000));
+const COMPANION_VOICE_HF_INPUT_HIGH_WATER_BYTES = Math.round(boundedNumber(process.env.COMPANION_VOICE_HF_INPUT_HIGH_WATER_BYTES, 96_000, 16_000, 2_000_000));
+const COMPANION_VOICE_HF_INPUT_LOW_WATER_BYTES = Math.min(
+  COMPANION_VOICE_HF_INPUT_HIGH_WATER_BYTES - 1,
+  Math.round(boundedNumber(process.env.COMPANION_VOICE_HF_INPUT_LOW_WATER_BYTES, 32_000, 4_000, 1_000_000)),
+);
+const COMPANION_VOICE_WS_OUTPUT_HIGH_WATER_BYTES = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_OUTPUT_HIGH_WATER_BYTES, 2_000_000, 128_000, 8_000_000));
+const COMPANION_VOICE_WS_OUTPUT_LOW_WATER_BYTES = Math.min(
+  COMPANION_VOICE_WS_OUTPUT_HIGH_WATER_BYTES - 1,
+  Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_OUTPUT_LOW_WATER_BYTES, 500_000, 32_000, 4_000_000)),
+);
+const COMPANION_VOICE_WS_OUTPUT_HARD_LIMIT_BYTES = Math.max(
+  COMPANION_VOICE_WS_OUTPUT_HIGH_WATER_BYTES + 1,
+  Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_OUTPUT_HARD_LIMIT_BYTES, 8_000_000, 512_000, 32_000_000)),
+);
+const COMPANION_VOICE_HF_READY_TIMEOUT_MS = Math.round(boundedNumber(process.env.COMPANION_VOICE_HF_READY_TIMEOUT_MS, 8_000, 1_000, 30_000));
+const COMPANION_VOICE_HF_RECONNECT_MAX_DELAY_MS = Math.round(boundedNumber(process.env.COMPANION_VOICE_HF_RECONNECT_MAX_DELAY_MS, 15_000, 2_000, 60_000));
+const COMPANION_VOICE_IPHONE_TOOL_RESULT_TIMEOUT_MS = Math.round(boundedNumber(process.env.COMPANION_VOICE_IPHONE_TOOL_RESULT_TIMEOUT_MS, 120_000, 10_000, 600_000));
 const COMPANION_VOICE_PLANNER_SCHEMA = {
   type: 'object',
   properties: {
@@ -165,6 +221,35 @@ const openClawRealtimeJobs = new Map();
 const companionVoiceJobs = new Map();
 const watchRealtimeJobs = new Map();
 const watchRealtimeSessions = new Map();
+const credentialDelegationsByRequest = new WeakMap();
+const credentialDelegationsByControlPayload = new WeakMap();
+const credentialDelegationsBySession = new WeakMap();
+const credentialDelegationsByWebSocket = new WeakMap();
+const credentialBoundRequestBodies = new WeakMap();
+const credentialTransportsByWebSocket = new WeakMap();
+const credentialBoundaryRuntimeMetrics = {
+  webSocketSessionAllocations: 0,
+  hfRuntimeStarts: 0,
+  startSessionApplications: 0,
+};
+const voiceStreamResumeRegistry = new VoiceStreamResumeRegistry({
+  retentionMs: Math.round(boundedNumber(process.env.COMPANION_VOICE_RESUME_RETENTION_MS, 30_000, 5_000, 300_000)),
+  maxSessions: Math.round(boundedNumber(process.env.COMPANION_VOICE_RESUME_MAX_SESSIONS, 64, 1, 1_024)),
+  maxEventsPerSession: Math.round(boundedNumber(process.env.COMPANION_VOICE_RESUME_MAX_EVENTS, 512, 8, 8_192)),
+  maxEventBytes: Math.round(boundedNumber(process.env.COMPANION_VOICE_RESUME_MAX_EVENT_BYTES, 128_000, 1_024, 1_000_000)),
+  maxBytesPerSession: Math.round(boundedNumber(process.env.COMPANION_VOICE_RESUME_MAX_SESSION_BYTES, 1_000_000, 16_000, 16_000_000)),
+  maxResumeReceiptBytes: Math.round(boundedNumber(process.env.COMPANION_VOICE_RESUME_MAX_RECEIPT_BYTES, 2_000_000, 16_000, 32_000_000)),
+});
+const voiceStartSessionRegistry = new VoiceStartSessionHandshakeRegistry({
+  retentionMs: Math.round(boundedNumber(process.env.COMPANION_VOICE_START_RECEIPT_RETENTION_MS, 5 * 60_000, 5_000, 30 * 60_000)),
+  maxEntries: Math.round(boundedNumber(process.env.COMPANION_VOICE_START_RECEIPT_MAX_ENTRIES, 256, 8, 4_096)),
+});
+const COMPANION_VOICE_AUDIO_CHUNK_EVENT_BUDGET_BYTES = Math.round(boundedNumber(
+  process.env.COMPANION_VOICE_AUDIO_CHUNK_EVENT_BUDGET_BYTES,
+  8_192,
+  2_048,
+  64_000,
+));
 
 function timeoutAtLeastTenMinutes(value, fallback = MIN_REALTIME_REPLY_TIMEOUT_MS) {
   const numeric = Number(value || fallback);
@@ -194,6 +279,38 @@ function bearerTokenFromRequest(req) {
   const header = String(req.headers.authorization || '').trim();
   const match = header.match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : '';
+}
+
+function opaqueBridgeClientIdentity(kind, credential) {
+  return createHash('sha256')
+    .update(`voiceclaw-bridge-client\0${kind}\0${String(credential || '')}`)
+    .digest('hex');
+}
+
+function authenticatedBridgeClientIdentityFromRequest(req) {
+  if (!bridgeAuthEnabled()) return opaqueBridgeClientIdentity('auth-disabled-loopback', 'local');
+  const bearerToken = bearerTokenFromRequest(req);
+  if (VOICECLAW_BRIDGE_TOKEN && timingSafeStringEqual(bearerToken, VOICECLAW_BRIDGE_TOKEN)) {
+    return opaqueBridgeClientIdentity('bearer', bearerToken);
+  }
+  const gatewayPassword = String(req.headers['x-openclaw-gateway-password'] || '').trim();
+  if (VOICECLAW_BRIDGE_PASSWORD && timingSafeStringEqual(gatewayPassword, VOICECLAW_BRIDGE_PASSWORD)) {
+    return opaqueBridgeClientIdentity('gateway-password', gatewayPassword);
+  }
+  return '';
+}
+
+function authenticatedBridgeClientIdentityFromMessage(msg = {}) {
+  if (!bridgeAuthEnabled()) return opaqueBridgeClientIdentity('auth-disabled-loopback', 'local');
+  const token = String(msg.token || msg.gatewayToken || msg.bearerToken || '').trim();
+  if (VOICECLAW_BRIDGE_TOKEN && timingSafeStringEqual(token, VOICECLAW_BRIDGE_TOKEN)) {
+    return opaqueBridgeClientIdentity('bearer', token);
+  }
+  const password = String(msg.gatewayPassword || msg.password || msg.sessionCode || '').trim();
+  if (VOICECLAW_BRIDGE_PASSWORD && timingSafeStringEqual(password, VOICECLAW_BRIDGE_PASSWORD)) {
+    return opaqueBridgeClientIdentity('gateway-password', password);
+  }
+  return '';
 }
 
 function hasBridgeAuth(req) {
@@ -237,6 +354,98 @@ function requireBridgeAuth(req, res) {
   return false;
 }
 
+function credentialBoundHTTPControlPayload(payload, req) {
+  const result = enforceVoiceCredentialBoundaryOnControlPayload(
+    payload,
+    voiceCredentialTransportFromNodeRequest(req),
+  );
+  if (result.credentialDelegation) {
+    credentialDelegationsByRequest.set(req, result.credentialDelegation);
+  }
+  return result.payload;
+}
+
+function credentialBoundWebSocketControlPayload(
+  payload,
+  ws,
+  { allowBridgeAuthenticationFields = false } = {},
+) {
+  const transport = credentialTransportsByWebSocket.get(ws);
+  const result = enforceVoiceCredentialBoundaryOnControlPayload(payload, transport, {
+    allowBridgeAuthenticationFields,
+  });
+  if (result.credentialDelegation) {
+    credentialDelegationsByControlPayload.set(result.payload, result.credentialDelegation);
+    credentialDelegationsByWebSocket.set(ws, result.credentialDelegation);
+  }
+  return result.payload;
+}
+
+function bindRequestCredentialDelegation(req, payload) {
+  const credentialDelegation = credentialDelegationsByRequest.get(req);
+  if (credentialDelegation && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    bindValidatedVoiceAccessTokenDelegation(payload, credentialDelegation);
+  }
+  return payload;
+}
+
+function bindSessionCredentialDelegation(session, payload) {
+  const credentialDelegation = session && credentialDelegationsBySession.get(session);
+  if (credentialDelegation && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    bindValidatedVoiceAccessTokenDelegation(payload, credentialDelegation);
+  }
+  return payload;
+}
+
+async function prepareCredentialBoundRequestBody(req, urlPath) {
+  const method = String(req.method || '').toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+      || !isProtectedBridgePath(urlPath)) return;
+
+  const rawBody = await readRawRequestBuffer(req, 200_000_000);
+  const text = rawBody.toString('utf8').trim();
+  if (!text) {
+    credentialBoundRequestBodies.set(req, rawBody);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    credentialBoundRequestBodies.set(req, rawBody);
+    return;
+  }
+  const sanitized = credentialBoundHTTPControlPayload(parsed, req);
+  credentialBoundRequestBodies.set(req, Buffer.from(JSON.stringify(sanitized), 'utf8'));
+}
+
+function credentialBoundReplayRequest(req) {
+  const body = credentialBoundRequestBodies.get(req);
+  if (!body) return req;
+  const replay = Readable.from(body.length ? [body] : []);
+  replay.headers = req.headers;
+  replay.method = req.method;
+  replay.url = req.url;
+  replay.socket = req.socket;
+  return replay;
+}
+
+function writeVoiceCredentialBoundaryHTTPError(res, error) {
+  res.writeHead(400, {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
+  });
+  res.end(JSON.stringify({
+    ok: false,
+    error: {
+      code: error.code,
+      message: error.message,
+      ...(error.path ? { path: error.path } : {}),
+    },
+  }));
+}
+
 function loadOpenAIKeyFromConfig() {
   try {
     const cfg = JSON.parse(readFileSync(VOICECLAW_CONFIG, 'utf8'));
@@ -266,9 +475,8 @@ function getOpenAIApiKey() {
   return loadOpenAIKeyFromConfig() || process.env.OPENAI_API_KEY || '';
 }
 
-function openAIKeyForRealtimeRequest(req) {
-  const forwarded = String(req.headers['x-openai-api-key'] || req.headers['x-voiceclaw-openai-key'] || '').trim();
-  return forwarded || getOpenAIApiKey();
+function openAIKeyForRealtimeRequest(_req) {
+  return getOpenAIApiKey();
 }
 
 function loadVoiceClawBridgeConfig() {
@@ -312,7 +520,7 @@ function setupPayloadFromBridgeConfig(options = {}) {
 }
 
 function companionVoiceRuntimeProfileFromPayload(payload = {}) {
-  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-0.8b');
   return {
     brainMode,
     sttProfile: String(payload.sttProfile || payload.sttQualityProfile || 'parakeet-live').trim() || 'parakeet-live',
@@ -374,7 +582,7 @@ const IPHONE_TOOL_CAPABILITY_SUMMARY = `
 - iphone_prepare_voice_route_switch is legacy compatibility only for route switches; prefer iphone_confirm_voice_route_switch for new calls.
 - iphone_confirm_voice_route_switch changes VoiceClaw's selected route after an explicit user request to switch VoiceClaw mode or route. Do not ask a confirmation question. Say briefly that VoiceClaw is switching, then use the tool immediately. There is no stop-to-cancel window.
 - iphone_confirm_voice_engine_switch changes VoiceClaw's selected voice engine after an explicit user request to switch voice engine to GPT-Realtime-2, STT + GPT + TTS, or Companion Realtime Voice. Do not ask a confirmation question when the target is clear. Say briefly that VoiceClaw is switching engines, then use the tool immediately.
-- iphone_set_companion_middle_brain changes the Companion Realtime Voice LLM when the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, GPT-5.4, GPT-5.4-mini, or Cerebras.
+- iphone_set_companion_middle_brain changes the Companion Realtime Voice LLM when the user explicitly asks to use Local Qwen 3.5 0.8B, GPT-5.5, GPT-5.4, GPT-5.4-mini, or Cerebras.
 - iphone_set_cerebras_model changes the Cerebras model used by the Companion Realtime Voice LLM when the user explicitly asks for Gemma 4 31B, GPT OSS 120B, or Z.ai GLM 4.7.
 - iphone_cancel_voice_route_switch is legacy compatibility only. Route switches and restarts normally happen immediately, so there should not be a pending switch or restart to cancel.
 - iphone_open_voiceclaw_tab opens the Live, Settings, or Diagnostics tab inside VoiceClaw when the user asks to show a VoiceClaw screen.
@@ -906,12 +1114,12 @@ const IPHONE_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'iphone_set_companion_middle_brain',
-    description: 'Set the Companion Realtime Voice LLM after the user explicitly asks to use Local Qwen 3.5 2B, GPT-5.5, GPT-5.4, GPT-5.4-mini, or Cerebras for the Companion Realtime Voice voice engine. Do not use this for ordinary route switches or model-answer questions.',
+    description: 'Set the Companion Realtime Voice LLM after the user explicitly asks to use Local Qwen 3.5 0.8B, GPT-5.5, GPT-5.4, GPT-5.4-mini, or Cerebras for the Companion Realtime Voice voice engine. Do not use this for ordinary route switches or model-answer questions.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        brain_mode: { type: 'string', enum: ['qwen3.5-2b', 'gpt55-fast-low', 'gpt-5.4', 'gpt-5.4-mini', 'cerebras'], description: 'Target Companion Realtime Voice LLM.' },
+        brain_mode: { type: 'string', enum: ['qwen3.5-0.8b', 'gpt55-fast-low', 'gpt-5.4', 'gpt-5.4-mini', 'cerebras'], description: 'Target Companion Realtime Voice LLM.' },
         reason: { type: 'string', description: 'Brief reason the user requested this Companion Realtime Voice LLM change.' }
       },
       required: ['brain_mode']
@@ -1279,11 +1487,28 @@ const COMPANION_SERVER_VAD_MAX_TURN_MS = Number(process.env.VB_COMPANION_SERVER_
 const COMPANION_SERVER_VAD_MAX_PRE_SPEECH_MS = Number(process.env.VB_COMPANION_SERVER_VAD_MAX_PRE_SPEECH_MS || 3500);
 const REALTIME_SIDEBAND_ENABLED = !['0', 'false', 'off'].includes(String(process.env.REALTIME_SIDEBAND_ENABLED || '1').toLowerCase());
 const REALTIME_SIDEBAND_OPEN_TIMEOUT_MS = Number(process.env.REALTIME_SIDEBAND_OPEN_TIMEOUT_MS || 2500);
-const REALTIME_RESPONSE_CREATE_RETRY_MS = Number(process.env.REALTIME_RESPONSE_CREATE_RETRY_MS || 1700);
 const REALTIME_RESPONSE_CREATE_ACK_TIMEOUT_MS = Number(process.env.REALTIME_RESPONSE_CREATE_ACK_TIMEOUT_MS || 5000);
+const REALTIME_MAX_PENDING_RESPONSE_INTENTS = Math.round(boundedNumber(
+  process.env.REALTIME_MAX_PENDING_RESPONSE_INTENTS,
+  32,
+  1,
+  256,
+));
+const REALTIME_MAX_RESPONSE_INTENT_BYTES = Math.round(boundedNumber(
+  process.env.REALTIME_MAX_RESPONSE_INTENT_BYTES,
+  64_000,
+  1_024,
+  1_000_000,
+));
+const REALTIME_MAX_PENDING_RESPONSE_INTENT_BYTES = Math.round(boundedNumber(
+  process.env.REALTIME_MAX_PENDING_RESPONSE_INTENT_BYTES,
+  512_000,
+  8_192,
+  8_000_000,
+));
 const realtimeSidebands = new Map();
 const realtimeSidebandStates = new Map();
-const realtimeSidebandRetryTimers = new Map();
+const realtimeSidebandReconciliationTimers = new Map();
 const realtimePendingCounts = new Map();
 const realtimeCancelTombstones = new Map();
 const realtimeSessionConfigs = new Map();
@@ -1792,12 +2017,14 @@ function realtimeSidebandStateFor(sessionToken) {
     state = {
       activeResponseId: null,
       pendingResponseCreates: [],
+      pendingResponseIntentBytes: 0,
       lastResponseCreate: null,
       lastResponseCreateReason: '',
       lastResponseCreateAt: null,
-      nextResponseRetryAt: null,
+      responseCreateOutcomeUnknownAt: null,
       responseCreateAttempts: 0,
       responseCreateCollisions: 0,
+      responseIntentOverflowCount: 0,
       handledCallIds: new Set(),
       lastToolCallId: '',
       lastError: '',
@@ -1812,44 +2039,51 @@ function realtimeSidebandStateFor(sessionToken) {
 
 function resetRealtimeSidebandState(sessionToken) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
-  clearSidebandResponseRetry(key);
+  clearSidebandResponseReconciliationTimer(key);
   realtimeSidebandStates.delete(key);
 }
 
-function clearSidebandResponseRetry(sessionToken) {
+function clearSidebandResponseReconciliationTimer(sessionToken) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
-  const timer = realtimeSidebandRetryTimers.get(key);
+  const timer = realtimeSidebandReconciliationTimers.get(key);
   if (timer) clearTimeout(timer);
-  realtimeSidebandRetryTimers.delete(key);
+  realtimeSidebandReconciliationTimers.delete(key);
   const state = realtimeSidebandStates.get(key);
-  if (state) state.nextResponseRetryAt = null;
+  if (state) state.responseCreateOutcomeUnknownAt = null;
 }
 
-function scheduleSidebandResponseRetry(ws, sessionToken, reason = 'retry', delayMs = REALTIME_RESPONSE_CREATE_RETRY_MS) {
+function scheduleSidebandResponseReconciliationTimeout(ws, sessionToken, delayMs = REALTIME_RESPONSE_CREATE_ACK_TIMEOUT_MS) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
   const state = realtimeSidebandStateFor(key);
-  clearSidebandResponseRetry(key);
-  state.nextResponseRetryAt = new Date(Date.now() + delayMs).toISOString();
+  clearSidebandResponseReconciliationTimer(key);
   const timer = setTimeout(() => {
-    realtimeSidebandRetryTimers.delete(key);
+    realtimeSidebandReconciliationTimers.delete(key);
     const latest = realtimeSidebandStateFor(key);
-    latest.nextResponseRetryAt = null;
     const currentWs = realtimeSidebands.get(key);
     if (currentWs !== ws || ws?.readyState !== WebSocket.OPEN) return;
-    if (latest.activeResponseId === 'requested' || latest.activeResponseId === 'collision-wait') {
-      if (latest.lastResponseCreate) queueSidebandResponseCreate(ws, key, latest.lastResponseCreate, `${reason}-retry`);
-      latest.activeResponseId = null;
-    }
-    appendRealtimeLog({ kind: 'sideband_response_create_retry', sessionToken: key, reason, pending: latest.pendingResponseCreates.length });
-    flushSidebandResponseCreates(ws, key);
+    if (latest.activeResponseId !== 'requested') return;
+    latest.responseCreateOutcomeUnknownAt = new Date().toISOString();
+    appendRealtimeLog({
+      kind: 'sideband_response_create_outcome_unknown',
+      sessionToken: key,
+      eventID: latest.lastResponseCreate?.event_id || '',
+      pending: latest.pendingResponseCreates.length,
+    });
   }, delayMs);
-  realtimeSidebandRetryTimers.set(key, timer);
-  appendRealtimeLog({ kind: 'sideband_response_create_retry_scheduled', sessionToken: key, reason, delayMs, activeResponseId: state.activeResponseId, pending: state.pendingResponseCreates.length });
+  timer.unref?.();
+  realtimeSidebandReconciliationTimers.set(key, timer);
+  appendRealtimeLog({
+    kind: 'sideband_response_create_reconciliation_scheduled',
+    sessionToken: key,
+    delayMs,
+    activeResponseId: state.activeResponseId,
+    pending: state.pendingResponseCreates.length,
+  });
 }
 
 function closeRealtimeSideband(sessionToken, reason = 'client disconnect', { clearSession = true, clearQueue = true } = {}) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
-  clearSidebandResponseRetry(key);
+  clearSidebandResponseReconciliationTimer(key);
   const ws = realtimeSidebands.get(key);
   if (ws) {
     try { ws.close(1000, reason); } catch {}
@@ -1881,6 +2115,7 @@ function bridgeStatusSnapshot(sessionToken = '') {
     sidebandDiagnostics: sidebandDiagnostics ? {
       activeResponseId: sidebandDiagnostics.activeResponseId,
       pendingResponseCreates: sidebandDiagnostics.pendingResponseCreates.length,
+      pendingResponseIntentBytes: sidebandDiagnostics.pendingResponseIntentBytes,
       handledToolCalls: sidebandDiagnostics.handledCallIds.size,
       lastToolCallId: sidebandDiagnostics.lastToolCallId,
       lastError: sidebandDiagnostics.lastError,
@@ -1889,9 +2124,10 @@ function bridgeStatusSnapshot(sessionToken = '') {
       connectedAt: sidebandDiagnostics.connectedAt,
       responseCreateAttempts: sidebandDiagnostics.responseCreateAttempts,
       responseCreateCollisions: sidebandDiagnostics.responseCreateCollisions,
+      responseIntentOverflowCount: sidebandDiagnostics.responseIntentOverflowCount,
       lastResponseCreateReason: sidebandDiagnostics.lastResponseCreateReason,
       lastResponseCreateAt: sidebandDiagnostics.lastResponseCreateAt,
-      nextResponseRetryAt: sidebandDiagnostics.nextResponseRetryAt,
+      responseCreateOutcomeUnknownAt: sidebandDiagnostics.responseCreateOutcomeUnknownAt,
     } : null,
     sessionConfig,
     lastResult: latestRealtimeResult(key),
@@ -1901,8 +2137,12 @@ function bridgeStatusSnapshot(sessionToken = '') {
 
 function sendSidebandEvent(ws, event) {
   if (ws?.readyState !== WebSocket.OPEN) return false;
-  ws.send(JSON.stringify(event));
-  return true;
+  try {
+    ws.send(JSON.stringify(event));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function queueSidebandResponseCreate(ws, sessionToken, event, reason = 'queued') {
@@ -1910,9 +2150,33 @@ function queueSidebandResponseCreate(ws, sessionToken, event, reason = 'queued')
   const state = realtimeSidebandStateFor(key);
   const eventId = String(event?.event_id || '');
   const alreadyQueued = eventId && state.pendingResponseCreates.some((queued) => queued.event_id === eventId);
-  if (!alreadyQueued) state.pendingResponseCreates.push(event);
+  const eventBytes = Buffer.byteLength(JSON.stringify(event || {}));
+  if (!alreadyQueued && (
+    state.pendingResponseCreates.length >= REALTIME_MAX_PENDING_RESPONSE_INTENTS
+      || eventBytes > REALTIME_MAX_RESPONSE_INTENT_BYTES
+      || state.pendingResponseIntentBytes + eventBytes > REALTIME_MAX_PENDING_RESPONSE_INTENT_BYTES
+  )) {
+    state.responseIntentOverflowCount += 1;
+    appendRealtimeLog({
+      kind: 'sideband_response_intent_rejected_capacity',
+      sessionToken: key,
+      reason,
+      maxPending: REALTIME_MAX_PENDING_RESPONSE_INTENTS,
+      maxIntentBytes: REALTIME_MAX_RESPONSE_INTENT_BYTES,
+      maxPendingBytes: REALTIME_MAX_PENDING_RESPONSE_INTENT_BYTES,
+      pendingBytes: state.pendingResponseIntentBytes,
+      eventBytes,
+      eventID: eventId,
+    });
+    return false;
+  }
+  if (!alreadyQueued) {
+    state.pendingResponseCreates.push(event);
+    state.pendingResponseIntentBytes += eventBytes;
+  }
   appendRealtimeLog({ kind: 'sideband_response_create_queued', sessionToken: key, reason, pending: state.pendingResponseCreates.length, activeResponseId: state.activeResponseId });
   flushSidebandResponseCreates(ws, key);
+  return true;
 }
 
 function requestSidebandResponseCreate(ws, sessionToken, response = {}, reason = 'tool-output') {
@@ -1938,10 +2202,10 @@ function requestSidebandResponseCreate(ws, sessionToken, response = {}, reason =
   appendRealtimeLog({ kind: sent ? 'sideband_response_create_sent' : 'sideband_response_create_send_failed', sessionToken: key, reason, attempts: state.responseCreateAttempts, pending: state.pendingResponseCreates.length });
   if (!sent) {
     state.activeResponseId = null;
-    clearSidebandResponseRetry(key);
+    clearSidebandResponseReconciliationTimer(key);
     queueSidebandResponseCreate(ws, key, event, 'send-failed');
   } else {
-    scheduleSidebandResponseRetry(ws, key, 'ack-timeout', REALTIME_RESPONSE_CREATE_ACK_TIMEOUT_MS);
+    scheduleSidebandResponseReconciliationTimeout(ws, key);
   }
   return sent;
 }
@@ -1951,6 +2215,10 @@ function flushSidebandResponseCreates(ws, sessionToken) {
   const state = realtimeSidebandStateFor(key);
   if (state.activeResponseId || ws?.readyState !== WebSocket.OPEN || !state.pendingResponseCreates.length) return false;
   const event = state.pendingResponseCreates.shift();
+  state.pendingResponseIntentBytes = Math.max(
+    0,
+    state.pendingResponseIntentBytes - Buffer.byteLength(JSON.stringify(event || {})),
+  );
   state.lastResponseCreate = event;
   state.lastResponseCreateReason = 'queued';
   state.lastResponseCreateAt = new Date().toISOString();
@@ -1960,10 +2228,11 @@ function flushSidebandResponseCreates(ws, sessionToken) {
   appendRealtimeLog({ kind: sent ? 'sideband_response_create_flushed' : 'sideband_response_create_flush_failed', sessionToken: key, attempts: state.responseCreateAttempts, pending: state.pendingResponseCreates.length });
   if (!sent) {
     state.activeResponseId = null;
-    clearSidebandResponseRetry(key);
+    clearSidebandResponseReconciliationTimer(key);
     state.pendingResponseCreates.unshift(event);
+    state.pendingResponseIntentBytes += Buffer.byteLength(JSON.stringify(event || {}));
   } else {
-    scheduleSidebandResponseRetry(ws, key, 'ack-timeout', REALTIME_RESPONSE_CREATE_ACK_TIMEOUT_MS);
+    scheduleSidebandResponseReconciliationTimeout(ws, key);
   }
   return sent;
 }
@@ -2112,7 +2381,7 @@ async function handleRealtimeSidebandEvent(ws, event, sessionToken) {
   const type = event?.type || '';
 
   if (type === 'response.created') {
-    clearSidebandResponseRetry(key);
+    clearSidebandResponseReconciliationTimer(key);
     state.activeResponseId = event.response?.id || event.response_id || event.id || 'active';
     await appendRealtimeLog({ kind: 'sideband_response_active', sessionToken: key, responseId: state.activeResponseId });
     return;
@@ -2120,7 +2389,7 @@ async function handleRealtimeSidebandEvent(ws, event, sessionToken) {
 
   if (type === 'response.done' || type === 'response.cancelled' || type === 'response.failed') {
     const toolEvents = normalizeSidebandToolCallEvents(event);
-    clearSidebandResponseRetry(key);
+    clearSidebandResponseReconciliationTimer(key);
     const responseId = state.activeResponseId;
     state.activeResponseId = null;
     await appendRealtimeLog({ kind: 'sideband_response_done', sessionToken: key, responseId, pending: state.pendingResponseCreates.length, type, functionCalls: toolEvents.length });
@@ -2136,10 +2405,27 @@ async function handleRealtimeSidebandEvent(ws, event, sessionToken) {
     state.lastError = event?.error?.message || event?.message || JSON.stringify(event).slice(0, 500);
     if (collision) {
       state.responseCreateCollisions += 1;
-      if (state.lastResponseCreate) queueSidebandResponseCreate(ws, key, state.lastResponseCreate, 'active-response-retry');
-      state.activeResponseId = 'collision-wait';
-      scheduleSidebandResponseRetry(ws, key, 'active-response-collision', REALTIME_RESPONSE_CREATE_RETRY_MS);
+      if (state.lastResponseCreate) queueSidebandResponseCreate(ws, key, state.lastResponseCreate, 'active-response-rejected');
+      clearSidebandResponseReconciliationTimer(key);
+      state.activeResponseId = 'provider-active';
       await appendRealtimeLog({ kind: 'sideband_active_response_collision', sessionToken: key, collisions: state.responseCreateCollisions, pending: state.pendingResponseCreates.length });
+      return;
+    }
+    const rejectedEventID = String(event?.event_id || event?.error?.event_id || '').trim();
+    const activeEventID = String(state.lastResponseCreate?.event_id || '').trim();
+    if (state.activeResponseId === 'requested'
+        && rejectedEventID
+        && activeEventID
+        && rejectedEventID === activeEventID) {
+      clearSidebandResponseReconciliationTimer(key);
+      state.activeResponseId = null;
+      await appendRealtimeLog({
+        kind: 'sideband_response_create_explicitly_rejected',
+        sessionToken: key,
+        eventID: activeEventID,
+        error: state.lastError,
+      });
+      flushSidebandResponseCreates(ws, key);
       return;
     }
     await appendRealtimeLog({ kind: 'sideband_error_event', sessionToken: key, error: state.lastError });
@@ -2236,6 +2522,7 @@ function realtimeRoutingMode(req) {
   if (['gpt56-sol-direct', 'gpt56soldirect', 'gpt-5.6-sol-direct', 'gpt-5.6-sol', 'gpt56sol'].includes(value)) return 'gpt56-sol-direct';
   if (['gpt56-terra-direct', 'gpt56terradirect', 'gpt-5.6-terra-direct', 'gpt-5.6-terra', 'gpt56terra'].includes(value)) return 'gpt56-terra-direct';
   if (['gpt56-luna-direct', 'gpt56lunadirect', 'gpt-5.6-luna-direct', 'gpt-5.6-luna', 'gpt56luna'].includes(value)) return 'gpt56-luna-direct';
+  if (['codex', 'codex-app-server', 'codex-route', 'codex-thread'].includes(value)) return 'codex';
   if (['hermes', 'hermes-bridge', 'hermes-tailscale', 'hermes-public-tunnel', 'hermes-tunnel', 'hermes-https-tunnel'].includes(value)) return 'hermes';
   return value === 'direct' || value === 'pure' || value === 'realtime-only' ? 'direct' : 'openclaw';
 }
@@ -2253,7 +2540,7 @@ function isHermesRealtimeRoute(routeMode = '') {
 }
 
 function isAgentRealtimeRoute(routeMode = '') {
-  return isOpenClawRealtimeRoute(routeMode) || isHermesRealtimeRoute(routeMode);
+  return isOpenClawRealtimeRoute(routeMode) || isHermesRealtimeRoute(routeMode) || routeMode === 'codex';
 }
 
 function hasServerOwnedRealtimeTools(routeMode = '') {
@@ -2280,7 +2567,9 @@ function realtimeInstructionsForRoute(routeMode = '') {
     : '';
   const runtimeNote = isHermesRealtimeRoute(routeMode)
     ? '\n# Selected agent runtime\n- This route uses Hermes Agent as the selected core resource instead of OpenClaw. The OpenClaw-named tool schemas are compatibility shims; when you call openclaw_turn, steer_openclaw, stop_openclaw, or bridge_status in this route, VoiceClaw routes that work to Hermes Agent through the Companion.\n- Say "Hermes" to the user, not "OpenClaw", when describing the selected route or background work.\n'
-    : '';
+    : (routeMode === 'codex'
+      ? '\n# Selected Codex runtime\n- This route uses the locally installed Codex app-server as a persistent typed-work route. The openclaw_turn tool name is a compatibility surface; its requests go to Codex, not OpenClaw. Say "Codex" when describing routed work.\n'
+      : '');
   return `${base.trim()}${directModelNote}${runtimeNote}\n${realtimeCurrentContext()}`.trim();
 }
 
@@ -2299,7 +2588,7 @@ function watchRealtimeToolsForRoute(routeMode = '') {
 function realtimeRouteForCompanionPayload(payload = {}) {
   const route = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
   if (route === 'standalone') return 'direct';
-  return ['direct', 'instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw', 'hermes'].includes(route) ? route : 'gpt55-direct';
+  return ['direct', 'instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'codex', 'openclaw', 'hermes'].includes(route) ? route : 'gpt55-direct';
 }
 
 function hfRealtimeToolsForCompanionPayload(payload = {}) {
@@ -2308,7 +2597,7 @@ function hfRealtimeToolsForCompanionPayload(payload = {}) {
 
 function hfRealtimeInstructionsForCompanionPayload(payload = {}) {
   const routeMode = realtimeRouteForCompanionPayload(payload);
-  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-0.8b');
   const context = String(payload.context || '').trim();
   const companionLLMNote = `\n# Companion Realtime Voice engine\n- You are running inside VoiceClaw's Companion Realtime Voice engine, using the Hugging Face speech-to-speech realtime pipeline for VAD, STT, the selected Companion Realtime Voice LLM, and TTS.\n- Preserve VoiceClaw live voice semantics: listen continuously, allow interruption, answer directly when appropriate, use iPhone tools for phone/device actions, and use the selected bottom route only when that route is the right tool for the user's request.\n- Selected Companion Realtime Voice LLM: ${brainMode}.\n- Do not claim an iPhone action, OpenClaw/Hermes action, GPT-5.5 route, mute, route switch, engine switch, or model switch has happened unless you call the matching tool.\n- If audio is silence, typing sounds, [no audio], [BLANK_AUDIO], or not addressed to VoiceClaw, call wait_for_user and do not speak.\n`;
   const contextNote = context ? `\n# Recent iOS context\n${context}\n` : '';
@@ -2324,19 +2613,119 @@ function parseToolArgumentsJSON(argumentsJSON = '') {
   }
 }
 
-async function handleHFRealtimeCompanionToolCall({ name = '', callID = '', argumentsJSON = '{}', bridge, payload = {} } = {}) {
+function realtimeOperationDeadlineError() {
+  const error = new Error('Operation deadline exceeded');
+  error.name = 'TimeoutError';
+  error.code = 'DEADLINE_EXCEEDED';
+  return error;
+}
+
+function realtimeOperationCancelled(signal, deadlineAt = 0) {
+  return !!signal?.aborted || (!!deadlineAt && Date.now() >= Number(deadlineAt));
+}
+
+function realtimeCancellationError(signal, deadlineAt = 0) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  if (deadlineAt && Date.now() >= Number(deadlineAt)) return realtimeOperationDeadlineError();
+  const error = new Error('aborted');
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+function isRealtimeCancellationError(error) {
+  return error?.name === 'AbortError'
+    || error?.name === 'TimeoutError'
+    || error?.code === 'ABORT_ERR'
+    || error?.code === 'DEADLINE_EXCEEDED'
+    || error?.cancelled === true
+    || error?.detached === true
+    || error?.message === 'aborted';
+}
+
+function linkedRealtimeOperation(signal = null, deadlineAt = 0) {
+  const controller = new AbortController();
+  const abort = (reason) => {
+    if (!controller.signal.aborted) controller.abort(reason instanceof Error ? reason : realtimeCancellationError(signal, deadlineAt));
+  };
+  const onAbort = () => abort(signal?.reason);
+  if (signal?.aborted) abort(signal.reason);
+  else signal?.addEventListener?.('abort', onAbort, { once: true });
+  let timer = null;
+  if (!controller.signal.aborted && deadlineAt) {
+    timer = setTimeout(() => abort(realtimeOperationDeadlineError()), Math.max(0, Number(deadlineAt) - Date.now()));
+    timer.unref?.();
+  }
+  return {
+    controller,
+    cleanup() {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
+    },
+  };
+}
+
+function waitForRealtimeOperation(operation, signal) {
+  if (!signal) return Promise.resolve(operation);
+  if (signal.aborted) return Promise.reject(realtimeCancellationError(signal));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const onAbort = () => finish(reject, realtimeCancellationError(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(operation).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
+}
+
+function hfRealtimeToolRequestID({ hfSessionID = '', hfGenerationID = '', hfConfigID = '', hfTurnID = '', hfResponseID = '', callID = '' } = {}) {
+  const identity = [hfSessionID, hfGenerationID, hfConfigID, hfTurnID, hfResponseID, callID]
+    .map((value) => String(value || '').trim());
+  const digest = createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0, 32);
+  const stableCallID = String(callID || 'unknown-call').trim().replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 96) || 'unknown-call';
+  return `voiceclaw-hf-tool:${stableCallID}:${digest}`;
+}
+
+async function handleHFRealtimeCompanionToolCall({
+  name = '',
+  callID = '',
+  argumentsJSON = '{}',
+  bridge,
+  payload = {},
+  signal = null,
+  deadlineAt = 0,
+  hfSessionID = '',
+  hfGenerationID = '',
+  hfConfigID = '',
+  hfTurnID = '',
+  hfResponseID = '',
+  replyGenerator = generateReply,
+} = {}) {
   const toolName = String(name || '').trim();
   const id = String(callID || '').trim();
   if (!id || !bridge) return;
+  if (realtimeOperationCancelled(signal, deadlineAt)) return;
   const args = parseToolArgumentsJSON(argumentsJSON);
   const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || `hf-${Date.now().toString(36)}`);
   const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
-  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-0.8b');
+  const requestId = hfRealtimeToolRequestID({ hfSessionID, hfGenerationID, hfConfigID, hfTurnID, hfResponseID, callID: id });
+  const resultIdentity = { hfGenerationID, hfConfigID, hfTurnID, hfResponseID };
 
   const sendResult = (result) => {
-    bridge.sendToolResult({
+    if (realtimeOperationCancelled(signal, deadlineAt)) return false;
+    return bridge.sendToolResult({
       callID: id,
       output: typeof result === 'string' ? result : JSON.stringify(result),
+      ...resultIdentity,
     });
   };
 
@@ -2347,8 +2736,16 @@ async function handleHFRealtimeCompanionToolCall({ name = '', callID = '', argum
     brainMode,
     name: toolName,
     callID: id,
+    requestId,
+    hfSessionID,
+    hfGenerationID,
+    hfConfigID,
+    hfTurnID,
+    hfResponseID,
+    deadlineAt: Number(deadlineAt) || 0,
     args,
   });
+  if (realtimeOperationCancelled(signal, deadlineAt)) return;
 
   if (toolName === 'wait_for_user') {
     sendResult({ ok: true, summary: 'Waiting silently for the user.' });
@@ -2377,6 +2774,9 @@ async function handleHFRealtimeCompanionToolCall({ name = '', callID = '', argum
       sessionToken,
       urgency: args.urgency || 'normal',
       processing: args.processing || {},
+      signal,
+      deadlineAt,
+      requestId,
     });
     sendResult({
       ...result,
@@ -2394,7 +2794,7 @@ async function handleHFRealtimeCompanionToolCall({ name = '', callID = '', argum
     const context = String(args.context || '').trim();
     const text = context ? `Conversation and web-search context:\n${context}\n\nUser request:\n${requestText}` : requestText;
     const reasoning = ['low', 'medium', 'high', 'xhigh'].includes(String(args.reasoning || '').trim()) ? String(args.reasoning).trim() : 'medium';
-    const turnId = `hf-${toolName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const turnId = requestId || `hf-${toolName}-${id}`;
     const processing = toolName === 'gpt55_instant'
       ? { agent: 'chat-latest', thinking: 'off', fastMode: 'on' }
       : { agent: 'gpt55-direct', thinking: reasoning, fastMode: 'on' };
@@ -2404,6 +2804,10 @@ async function handleHFRealtimeCompanionToolCall({ name = '', callID = '', argum
       turnId,
       urgency: 'normal',
       processing,
+      signal,
+      deadlineAt,
+      requestId,
+      replyGenerator,
     });
     sendResult({
       ok: !!result.ok,
@@ -2430,7 +2834,7 @@ async function handleHFRealtimeCompanionToolCall({ name = '', callID = '', argum
     sendResult({ ok: false, error: `The OpenClaw queue is full (${MAX_REALTIME_PENDING_TURNS} waiting).` });
     return;
   }
-  const turnId = `hf-openclaw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const turnId = requestId || `hf-openclaw-${id}`;
   try {
     const processing = companionVoiceProcessingForRoute(routeMode, payload, `${sessionToken}-route`);
     const result = await runRealtimeOpenClawTurn({
@@ -2439,6 +2843,10 @@ async function handleHFRealtimeCompanionToolCall({ name = '', callID = '', argum
       turnId,
       urgency: args.urgency || 'normal',
       processing: { ...processing, ...(args.processing || {}) },
+      signal,
+      deadlineAt,
+      requestId,
+      replyGenerator,
     });
     sendResult({
       ok: !!result.ok,
@@ -2500,18 +2908,75 @@ function normalizeRealtimeProcessingPayload(payload = {}) {
 }
 
 
-async function steerRealtimeOpenClawTurn({ text, sessionToken, urgency, processing }) {
+async function steerRealtimeOpenClawTurn({
+  text,
+  sessionToken,
+  urgency,
+  processing,
+  signal = null,
+  deadlineAt = 0,
+  requestId = '',
+}) {
   const cleanedText = String(text || '').trim();
   if (!cleanedText) return { ok: false, error: 'empty steer text' };
+  if (realtimeOperationCancelled(signal, deadlineAt)) return { ok: false, cancelled: true, error: 'turn cancelled' };
   const key = sanitizeRealtimeSessionToken(sessionToken);
   const current = realtimeTurns.get(key);
   if (!current) return { ok: false, error: 'no active OpenClaw turn to steer' };
   const startedAt = Date.now();
-  const runtime = String(processing?.runtime || processing?.agentRuntime || '').toLowerCase() === 'hermes' ? 'hermes' : 'openclaw';
-  const result = await steerActiveReply(cleanedText, { processing: { ...(processing || {}), sessionToken: realtimeOpenClawSessionToken(key), fastMode: 'on', runtime }, timeoutMs: MIN_REALTIME_REPLY_TIMEOUT_MS });
-  await appendRealtimeLog({ kind: 'steer', sessionToken: key, turnId: current.turnId, urgency: urgency || 'normal', ok: !!result.ok, elapsedMs: Date.now() - startedAt, text: cleanedText, error: result.error || '' });
-  const label = runtime === 'hermes' ? 'Hermes' : 'OpenClaw';
-  return { ok: !!result.ok, steered: !!result.ok, reply: result.ok ? `Added that to the active ${label} request.` : undefined, sessionToken: key, turnId: current.turnId, activeSinceMs: Date.now() - current.startedAt, summary: result.ok ? `Added that to the active ${label} request.` : `${label} steering failed: ${result.error || 'unknown error'}`, error: result.error || undefined };
+  const boundRemoteSession = await voiceRemoteSessionService.findBySessionKey(sessionToken);
+  const runtime = boundRemoteSession?.runtime
+    || (String(processing?.runtime || processing?.agentRuntime || '').toLowerCase() === 'hermes' ? 'hermes' : 'openclaw');
+  const boundProcessing = boundRemoteSession ? {
+    sessionToken: boundRemoteSession.agent.sessionKey,
+    sessionKey: boundRemoteSession.agent.sessionKey,
+    sessionId: boundRemoteSession.binding?.dialogueSessionID || boundRemoteSession.sessionID,
+    runtimeSessionID: boundRemoteSession.binding?.runtimeSessionID || boundRemoteSession.sessionID,
+    runtimeAgentID: boundRemoteSession.agent.id,
+    sessionMode: 'resume',
+    sessionSource: 'voice-remote-session',
+  } : {
+    sessionToken: realtimeOpenClawSessionToken(key),
+  };
+  const linked = linkedRealtimeOperation(signal, deadlineAt);
+  try {
+    const timeoutMs = deadlineAt
+      ? Math.max(1, Math.min(MIN_REALTIME_REPLY_TIMEOUT_MS, Number(deadlineAt) - Date.now()))
+      : MIN_REALTIME_REPLY_TIMEOUT_MS;
+    const remoteRequestID = String(
+      requestId || `${current.requestId || current.turnId || 'voice'}-steer-${Date.now()}`,
+    ).replace(/[^A-Za-z0-9._:-]+/g, '-').slice(0, 256);
+    const result = await waitForRealtimeOperation(
+      boundRemoteSession
+        ? voiceRemoteSessionService.steer({
+            sessionKey: boundRemoteSession.agent.sessionKey,
+            text: cleanedText,
+            requestID: remoteRequestID,
+          })
+        : steerActiveReply(cleanedText, {
+            processing: { ...(processing || {}), ...boundProcessing, fastMode: 'on', runtime },
+            timeoutMs,
+            signal: linked.controller.signal,
+            requestId: remoteRequestID,
+            deadlineAt: Number(deadlineAt) || 0,
+          }),
+      linked.controller.signal,
+    );
+    if (linked.controller.signal.aborted || realtimeOperationCancelled(signal, deadlineAt)) {
+      return { ok: false, cancelled: true, error: 'turn cancelled' };
+    }
+    await appendRealtimeLog({ kind: 'steer', sessionToken: key, turnId: current.turnId, requestId, urgency: urgency || 'normal', ok: !!result.ok, elapsedMs: Date.now() - startedAt, text: cleanedText, error: result.error || '' });
+    const label = runtime === 'hermes' ? 'Hermes' : 'OpenClaw';
+    return { ok: !!result.ok, steered: !!result.ok, reply: result.ok ? `Added that to the active ${label} request.` : undefined, sessionToken: boundRemoteSession?.agent.sessionKey || key, turnId: current.turnId, activeSinceMs: Date.now() - current.startedAt, summary: result.ok ? `Added that to the active ${label} request.` : `${label} steering failed: ${result.error || 'unknown error'}`, error: result.error || undefined };
+  } catch (error) {
+    if (isRealtimeCancellationError(error) || realtimeOperationCancelled(signal, deadlineAt)) {
+      await appendRealtimeLog({ kind: 'steer_cancelled', sessionToken: key, turnId: current.turnId, requestId });
+      return { ok: false, cancelled: true, error: 'turn cancelled' };
+    }
+    throw error;
+  } finally {
+    linked.cleanup();
+  }
 }
 
 function userFacingOpenClawTurnError(err) {
@@ -2537,51 +3002,121 @@ function userFacingOpenClawTurnError(err) {
   return { code: 'openclaw_turn_failed', error: 'OpenClaw turn failed' };
 }
 
-async function runRealtimeOpenClawTurn({ text, sessionToken, turnId, urgency, processing }) {
+async function runRealtimeOpenClawTurn({
+  text,
+  sessionToken,
+  turnId,
+  urgency,
+  processing,
+  signal = null,
+  deadlineAt = 0,
+  requestId = '',
+  replyGenerator = generateReply,
+}) {
   const cleanedText = String(text || '').trim();
   if (!cleanedText) return { ok: false, error: 'empty text' };
+  if (realtimeOperationCancelled(signal, deadlineAt)) return { ok: false, cancelled: true, error: 'turn cancelled' };
 
+  const suppliedSessionKey = String(sessionToken || '').trim();
+  const boundRemoteSession = await voiceRemoteSessionService.findBySessionKey(suppliedSessionKey);
   const key = sanitizeRealtimeSessionToken(sessionToken);
-  if (realtimeTurns.has(key)) return await steerRealtimeOpenClawTurn({ text: cleanedText, sessionToken: key, urgency, processing });
+  const requestedRuntime = String(processing?.runtime || processing?.agentRuntime || '').toLowerCase() === 'codex'
+    ? 'codex'
+    : (String(processing?.runtime || processing?.agentRuntime || '').toLowerCase() === 'hermes' ? 'hermes' : 'openclaw');
+  if (realtimeTurns.has(key)) {
+    if (requestedRuntime === 'codex') {
+      return { ok: false, code: 'codex_turn_active', error: 'A Codex App-Server turn is already active for this VoiceClaw session.' };
+    }
+    return await steerRealtimeOpenClawTurn({
+      text: cleanedText,
+      sessionToken: suppliedSessionKey || key,
+      urgency,
+      processing,
+      signal,
+      deadlineAt,
+      requestId,
+    });
+  }
   clearRealtimeResults(key);
-  const controller = new AbortController();
-  const openclawToken = realtimeOpenClawSessionToken(key);
-  const runtime = String(processing?.runtime || processing?.agentRuntime || '').toLowerCase() === 'hermes' ? 'hermes' : 'openclaw';
-  const runtimeLabel = runtime === 'hermes' ? 'Hermes' : 'OpenClaw';
+  const linked = linkedRealtimeOperation(signal, deadlineAt);
+  const controller = linked.controller;
+  const openclawToken = boundRemoteSession?.agent?.sessionKey || realtimeOpenClawSessionToken(key);
+  const runtime = boundRemoteSession?.runtime || requestedRuntime;
+  const runtimeLabel = runtime === 'hermes' ? 'Hermes' : (runtime === 'codex' ? 'Codex' : 'OpenClaw');
   const effectiveTurnId = String(turnId || `rt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-  realtimeTurns.set(key, { controller, turnId: effectiveTurnId, startedAt: Date.now() });
+  const effectiveRequestId = String(requestId || effectiveTurnId).slice(0, 256);
+  const record = { controller, turnId: effectiveTurnId, requestId: effectiveRequestId, startedAt: Date.now() };
+  realtimeTurns.set(key, record);
+  const detachOwnership = () => {
+    if (realtimeTurns.get(key) === record) realtimeTurns.delete(key);
+  };
+  controller.signal.addEventListener('abort', detachOwnership, { once: true });
 
-  await appendRealtimeLog({ kind: 'user', runtime, sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, urgency: urgency || 'normal', text: cleanedText });
+  await appendRealtimeLog({ kind: 'user', runtime, sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, requestId: effectiveRequestId, urgency: urgency || 'normal', deadlineAt: Number(deadlineAt) || 0, text: cleanedText });
 
   try {
+    if (controller.signal.aborted) throw realtimeCancellationError(controller.signal, deadlineAt);
     const gatewayStartedAt = Date.now();
-    const reply = await generateReply(cleanedText, {
-      signal: controller.signal,
-      processing: { ...(processing || {}), sessionToken: openclawToken, fastMode: 'on', runtime },
-      timeoutMs: realtimeVoiceTimeoutMs(urgency, processing || {}),
-    });
-    const timings = { gatewayMs: Date.now() - gatewayStartedAt, totalMs: Date.now() - realtimeTurns.get(key)?.startedAt };
-    if (controller.signal.aborted || realtimeTurns.get(key)?.turnId !== effectiveTurnId) {
-      await appendRealtimeLog({ kind: 'stale_reply_suppressed', sessionToken: key, turnId: effectiveTurnId });
+    const configuredTimeoutMs = realtimeVoiceTimeoutMs(urgency, processing || {});
+    const timeoutMs = deadlineAt
+      ? Math.max(1, Math.min(configuredTimeoutMs, Number(deadlineAt) - Date.now()))
+      : configuredTimeoutMs;
+    let reply;
+    let remoteSession = null;
+    if (runtime === 'codex') {
+      const codexResult = await waitForRealtimeOperation(codexAppServerBridge.runTurn({
+        sessionKey: suppliedSessionKey || key,
+        sessionMode: 'attach',
+        text: cleanedText,
+        reasoningEffort: String(processing?.thinking || processing?.reasoning || 'medium'),
+        timeoutMs,
+      }), controller.signal);
+      reply = codexResult.text;
+    } else if (boundRemoteSession) {
+      const remoteResult = await waitForRealtimeOperation(voiceRemoteSessionService.runTurn({
+        sessionKey: suppliedSessionKey,
+        text: cleanedText,
+        processing: { ...(processing || {}), fastMode: 'on', runtime },
+        signal: controller.signal,
+        timeoutMs,
+        requestID: effectiveRequestId,
+      }), controller.signal);
+      reply = remoteResult.reply;
+      remoteSession = remoteResult.session;
+    } else {
+      reply = await waitForRealtimeOperation(replyGenerator(cleanedText, {
+        signal: controller.signal,
+        processing: { ...(processing || {}), sessionToken: openclawToken, fastMode: 'on', runtime },
+        timeoutMs,
+        requestId: effectiveRequestId,
+        deadlineAt: Number(deadlineAt) || 0,
+      }), controller.signal);
+    }
+    const timings = { gatewayMs: Date.now() - gatewayStartedAt, totalMs: Date.now() - record.startedAt };
+    if (controller.signal.aborted || realtimeTurns.get(key) !== record) {
+      await appendRealtimeLog({ kind: 'stale_reply_suppressed', sessionToken: key, turnId: effectiveTurnId, requestId: effectiveRequestId });
       return { ok: false, cancelled: true, error: 'turn cancelled' };
     }
-    if (realtimeTurns.get(key)?.turnId === effectiveTurnId) realtimeTurns.delete(key);
+    realtimeTurns.delete(key);
     const answer = reply || "I didn't catch that. Say it again.";
-    await appendRealtimeLog({ kind: 'assistant', runtime, sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, timings, text: answer });
+    await appendRealtimeLog({ kind: 'assistant', runtime, sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, requestId: effectiveRequestId, timings, text: answer });
     rememberRealtimeResult(key, { ok: true, reply: answer, turnId: effectiveTurnId, timings });
-    return { ok: true, reply: answer, sessionToken: key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, timings };
+    return { ok: true, reply: answer, sessionToken: boundRemoteSession?.agent.sessionKey || key, openclawSessionToken: openclawToken, turnId: effectiveTurnId, requestId: effectiveRequestId, timings, ...(remoteSession ? { remoteSession } : {}) };
   } catch (err) {
-    if (realtimeTurns.get(key)?.turnId === effectiveTurnId) realtimeTurns.delete(key);
-    if (err.message === 'aborted') {
-      await appendRealtimeLog({ kind: 'cancelled', sessionToken: key, turnId: effectiveTurnId });
+    if (realtimeTurns.get(key) === record) realtimeTurns.delete(key);
+    if (isRealtimeCancellationError(err) || controller.signal.aborted || realtimeOperationCancelled(signal, deadlineAt)) {
+      await appendRealtimeLog({ kind: 'cancelled', sessionToken: key, turnId: effectiveTurnId, requestId: effectiveRequestId, deadlineExceeded: err?.code === 'DEADLINE_EXCEEDED' });
       return { ok: false, cancelled: true, error: 'turn cancelled' };
     }
     console.error(`[realtime-${runtime}]`, err.message);
     const userFacing = userFacingOpenClawTurnError(err);
     const errorText = runtime === 'hermes' ? (err?.message || `${runtimeLabel} turn failed`) : userFacing.error;
-    await appendRealtimeLog({ kind: 'error', runtime, sessionToken: key, turnId: effectiveTurnId, code: userFacing.code, error: err.message });
+    await appendRealtimeLog({ kind: 'error', runtime, sessionToken: key, turnId: effectiveTurnId, requestId: effectiveRequestId, code: userFacing.code, error: err.message });
     rememberRealtimeResult(key, { ok: false, code: userFacing.code, error: errorText, turnId: effectiveTurnId });
     return { ok: false, code: userFacing.code, error: errorText };
+  } finally {
+    controller.signal.removeEventListener('abort', detachOwnership);
+    linked.cleanup();
   }
 }
 
@@ -2674,7 +3209,12 @@ function watchRealtimeSessionConfig({ routeMode = 'openclaw', model = REALTIME_M
 }
 
 async function mintWatchRealtimeBearer({ req, session, apiKey }) {
-  const resolved = await resolveRealtimeBearer({ req, session, apiKey });
+  const resolved = await resolveRealtimeBearer({
+    req,
+    session,
+    apiKey,
+    credentialDelegation: credentialDelegationsByRequest.get(req) || null,
+  });
   if (resolved.source === REALTIME_AUTH_MODE_OPENCLAW_OAUTH && resolved.bearer) {
     return resolved;
   }
@@ -2800,10 +3340,15 @@ ${fileLines}
 
 Use OpenClaw/local tools and model vision as appropriate. If the attachment is an image, inspect it directly when possible. If a file type cannot be read directly, explain that plainly and suggest the most useful next step.
 `.trim();
-  const reply = await generateReply(prompt, {
-    processing: { ...(processing || {}), sessionToken: realtimeOpenClawSessionToken(key), fastMode: 'on' },
-    timeoutMs: realtimeVoiceTimeoutMs(urgency, processing || {}),
+  const turn = await runRealtimeOpenClawTurn({
+    text: prompt,
+    sessionToken: sessionToken || key,
+    turnId: `attachment-${Date.now().toString(36)}`,
+    urgency,
+    processing: { ...(processing || {}), fastMode: 'on' },
   });
+  if (!turn.ok) throw new Error(turn.error || 'Attachment analysis failed.');
+  const reply = turn.reply;
   await appendRealtimeLog({
     kind: 'attachment_analysis',
     sessionToken: key,
@@ -2912,7 +3457,12 @@ async function getWatchRealtimeSession({ req, routeMode, model, voice, session, 
   }
   if (existing) closeWatchRealtimeSession(key, 'watch realtime route changed');
 
-  const realtimeBearer = await resolveRealtimeBearer({ req, session, apiKey });
+  const realtimeBearer = await resolveRealtimeBearer({
+    req,
+    session,
+    apiKey,
+    credentialDelegation: credentialDelegationsByRequest.get(req) || null,
+  });
   const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
   const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${realtimeBearer.bearer}` } });
   const state = {
@@ -2972,6 +3522,7 @@ async function getWatchRealtimeSession({ req, routeMode, model, voice, session, 
 }
 
 async function runWatchRealtimeTurn({ req, payload }) {
+  bindRequestCredentialDelegation(req, payload);
   const routeMode = realtimeRoutingMode({ ...req, url: `${BASE_PATH}/realtime/watch-turn?route=${encodeURIComponent(payload.routeMode || 'openclaw')}`, headers: { ...req.headers, 'x-openclaw-route': payload.routeMode || 'openclaw' } });
   const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || req.headers['x-voice-session-token'] || `watch-${Date.now().toString(36)}`);
   const model = String(payload.model || REALTIME_MODEL).trim() || REALTIME_MODEL;
@@ -3154,8 +3705,9 @@ function cancelWatchRealtimeJob({ jobID = '', sessionToken = '', turnId = '', re
     const state = realtimeSidebandStates.get(key);
     if (state) {
       state.pendingResponseCreates = [];
+      state.pendingResponseIntentBytes = 0;
       state.activeResponseId = null;
-      clearSidebandResponseRetry(key);
+      clearSidebandResponseReconciliationTimer(key);
     }
   }
   if (job) {
@@ -3168,6 +3720,7 @@ function cancelWatchRealtimeJob({ jobID = '', sessionToken = '', turnId = '', re
 }
 
 function startWatchRealtimeJob({ req, payload }) {
+  bindRequestCredentialDelegation(req, payload);
   cleanupWatchRealtimeJobs();
   const jobID = `watch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
   const reqForJob = {
@@ -3175,6 +3728,10 @@ function startWatchRealtimeJob({ req, payload }) {
     url: `${BASE_PATH}/realtime/watch-turn/start`,
     headers: { ...req.headers },
   };
+  const credentialDelegation = credentialDelegationsByRequest.get(req);
+  if (credentialDelegation) {
+    credentialDelegationsByRequest.set(reqForJob, credentialDelegation);
+  }
   const job = {
     id: jobID,
     status: 'running',
@@ -3234,7 +3791,9 @@ async function readRealtimeSessionRequest(req) {
     if (fields.session) {
       try {
         const parsed = JSON.parse(fields.session);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) providedSession = parsed;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          providedSession = credentialBoundHTTPControlPayload(parsed, req);
+        }
       } catch (error) {
         throw new Error(`realtime session multipart request has invalid session JSON: ${error.message}`);
       }
@@ -3247,7 +3806,9 @@ async function readRealtimeSessionRequest(req) {
     try {
       const decoded = decodeURIComponent(debugSessionHeader);
       const parsed = JSON.parse(decoded);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) providedSession = parsed;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        providedSession = credentialBoundHTTPControlPayload(parsed, req);
+      }
     } catch (error) {
       throw new Error(`realtime debug session header has invalid JSON: ${error.message}`);
     }
@@ -3260,6 +3821,15 @@ async function readRealtimeSessionRequest(req) {
 }
 
 async function readRequestBuffer(req, limitBytes = 200_000_000) {
+  if (credentialBoundRequestBodies.has(req)) {
+    const body = credentialBoundRequestBodies.get(req);
+    if (body.length > limitBytes) throw new Error('request body too large');
+    return body;
+  }
+  return await readRawRequestBuffer(req, limitBytes);
+}
+
+async function readRawRequestBuffer(req, limitBytes = 200_000_000) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -3355,6 +3925,7 @@ function normalizeCompanionVoiceRoute(raw = '') {
   if (['gpt56-sol-direct', 'gpt56soldirect', 'gpt-5.6-sol-direct', 'gpt-5.6-sol', 'gpt56sol'].includes(value)) return 'gpt56-sol-direct';
   if (['gpt56-terra-direct', 'gpt56terradirect', 'gpt-5.6-terra-direct', 'gpt-5.6-terra', 'gpt56terra'].includes(value)) return 'gpt56-terra-direct';
   if (['gpt56-luna-direct', 'gpt56lunadirect', 'gpt-5.6-luna-direct', 'gpt-5.6-luna', 'gpt56luna'].includes(value)) return 'gpt56-luna-direct';
+  if (['codex', 'codex-app-server', 'codex-route', 'codex-thread'].includes(value)) return 'codex';
   if (['hermes', 'hermes-bridge', 'hermes-public-tunnel', 'hermes-tunnel', 'hermes-https'].includes(value)) return 'hermes';
   if (['openclaw', 'openclaw-bridge', 'openclaw-public-tunnel', 'openclaw-tunnel', 'bridge', 'tunnel'].includes(value)) return 'openclaw';
   return 'gpt55-direct';
@@ -3362,6 +3933,15 @@ function normalizeCompanionVoiceRoute(raw = '') {
 
 function companionVoiceProcessingForRoute(routeMode, payload = {}, sessionToken = '') {
   const route = normalizeCompanionVoiceRoute(routeMode);
+  if (route === 'codex') {
+    return {
+      agent: 'codex-app-server',
+      thinking: String(payload.gpt55DirectReasoning || payload.reasoning || 'medium'),
+      fastMode: 'on',
+      runtime: 'codex',
+      sessionToken,
+    };
+  }
   if (isDirectCodexRoute(route)) {
     return {
       agent: route,
@@ -3389,7 +3969,7 @@ function normalizeCompanionVoiceBrainMode(raw = '') {
   if (value === 'cerebras') return `cerebras:${COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL}`;
   if (value.startsWith('cerebras:') || value.startsWith('cerebras-')) return `cerebras:${normalizeCerebrasModelID(value)}`;
   if (['local', 'local-router', 'deterministic'].includes(value)) return 'local';
-  return 'qwen3.5-2b';
+  return 'qwen3.5-0.8b';
 }
 
 function isCompanionVoiceOpenAIBrainMode(brainMode = '') {
@@ -3411,15 +3991,157 @@ function companionVoiceQwenThinkingEnabled(payload = {}) {
   return parseRealtimeBoolean(payload.qwenThinking ?? payload.qwenThinkingEnabled ?? payload.qwenThinkingMode, false);
 }
 
-function companionVoiceHFBridgeConfigKey(payload = {}, serverVad = {}) {
-  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+function companionVoiceCredentialFingerprint(value = '') {
+  const text = String(value || '');
+  return text ? createHash('sha256').update(text).digest('hex').slice(0, 24) : 'none';
+}
+
+function companionVoiceExplicitAuthRevision(payload = {}) {
+  return payload.hfAuthRevision
+    ?? payload.providerAuthRevision
+    ?? payload.credentialRevision
+    ?? payload.authRevision
+    ?? '';
+}
+
+function openAIKeyForCompanionHFIdentity(payload = {}) {
+  const forwarded = String(
+    payload.openAIAPIKey
+    || payload.openAIApiKey
+    || payload.openaiAPIKey
+    || payload.openaiApiKey
+    || payload.openaiKey
+    || '',
+  ).trim();
+  if (forwarded) return forwarded;
+  const config = loadVoiceClawBridgeConfig();
+  const configured = String(
+    config.openAIAPIKey
+    || config.OpenAIAPIKey
+    || config.openAIApiKey
+    || config.openaiAPIKey
+    || config.openaiApiKey
+    || config.apiKey
+    || '',
+  ).trim();
+  return configured || String(process.env.OPENAI_API_KEY || '').trim();
+}
+
+function companionVoiceOpenAIAPIFallbackEnabled(payload = {}) {
+  const config = loadVoiceClawBridgeConfig();
+  return parseRealtimeBoolean(
+    payload.realtimeAuthFallbackToAPIKey
+      ?? payload.openAIAPIKeyFallback
+      ?? payload.apiKeyFallback
+      ?? process.env.VOICECLAW_REALTIME_AUTH_FALLBACK_TO_API_KEY,
+    parseRealtimeBoolean(config.realtimeAuthFallbackToAPIKey, false),
+  );
+}
+
+function unresolvedOpenAIAuthMaterial(payload = {}) {
+  const config = loadVoiceClawBridgeConfig();
+  return [
+    payload.ChatGPTOAuthAccessToken,
+    payload.openAIChatGPTOAuthAccessToken,
+    payload.openAIOAuthAccessToken,
+    payload.ChatGPTOAuthRefreshToken,
+    payload.openAIChatGPTOAuthRefreshToken,
+    payload.openAIOAuthRefreshToken,
+    payload.ChatGPTOAuthAccountID,
+    payload.openAIChatGPTOAuthAccountID,
+    payload.openAIOAuthAccountID,
+    config.ChatGPTOAuthAccessToken,
+    config.openAIChatGPTOAuthAccessToken,
+    config.openAIOAuthAccessToken,
+    config.ChatGPTOAuthRefreshToken,
+    config.openAIChatGPTOAuthRefreshToken,
+    config.openAIOAuthRefreshToken,
+    config.ChatGPTOAuthAccountID,
+    config.openAIChatGPTOAuthAccountID,
+    config.openAIOAuthAccountID,
+  ].map((value) => String(value || '')).join('\0');
+}
+
+async function companionVoiceHFProviderAuthIdentity(brainMode, payload = {}) {
+  const revisionFingerprint = companionVoiceCredentialFingerprint(companionVoiceExplicitAuthRevision(payload));
+  if (String(brainMode).startsWith('cerebras:')) {
+    return {
+      source: 'cerebras',
+      credentialFingerprint: companionVoiceCredentialFingerprint(cerebrasKeyForCompanionVoice(payload)),
+      revisionFingerprint,
+    };
+  }
+  if (isCompanionVoiceOpenAIBrainMode(brainMode)) {
+    try {
+      const bearer = await resolveOpenAIChatGPTOAuthBearer(undefined, payload);
+      if (bearer) {
+        return {
+          source: 'companion-oauth',
+          credentialFingerprint: companionVoiceCredentialFingerprint(bearer),
+          revisionFingerprint,
+        };
+      }
+    } catch {}
+    if (companionVoiceOpenAIAPIFallbackEnabled(payload)) {
+      const apiKey = openAIKeyForCompanionHFIdentity(payload);
+      if (apiKey) {
+        return {
+          source: 'api-key-fallback',
+          credentialFingerprint: companionVoiceCredentialFingerprint(apiKey),
+          revisionFingerprint,
+        };
+      }
+    }
+    return {
+      source: 'unavailable',
+      credentialFingerprint: companionVoiceCredentialFingerprint(unresolvedOpenAIAuthMaterial(payload)),
+      revisionFingerprint,
+    };
+  }
+  return { source: 'none', credentialFingerprint: 'none', revisionFingerprint };
+}
+
+async function companionVoiceHFBridgeConfigKey(payload = {}, serverVad = {}) {
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-0.8b');
   const localVoice = String(payload.localVoice || payload.companionTTSVoice || payload.voice || '').trim();
+  const providerAuth = await companionVoiceHFProviderAuthIdentity(brainMode, payload);
   return JSON.stringify({
     brainMode,
     cerebrasModel: companionVoiceCerebrasModelID(brainMode, payload),
     sttProfile: String(payload.sttProfile || payload.sttQualityProfile || ''),
     localVoice,
+    providerAuth,
   });
+}
+
+function dispatchHFCompanionConfigTransition({
+  bridge,
+  record,
+  currentConfigKey = '',
+  nextConfigKey = '',
+  context,
+  restart,
+  update,
+}) {
+  if (!bridge || !record || record.configuring) {
+    return {
+      action: 'restart',
+      label: 'hf-config-update',
+      operation: restart('config_update', context),
+    };
+  }
+  if (nextConfigKey !== currentConfigKey) {
+    return {
+      action: 'restart',
+      label: 'hf-config-update-runtime-change',
+      operation: restart('config_update-runtime-change', context),
+    };
+  }
+  return {
+    action: 'update',
+    label: 'hf-config-update-no-restart',
+    operation: update(record, context),
+  };
 }
 
 function companionVoiceLooksLikeIPhoneAction(text = '') {
@@ -3473,7 +4195,7 @@ function companionVoiceFallbackIPhoneTool(text = '') {
   if (/\b(?:companion\s+(?:realtime\s+voice\s+)?llm|companion\s+middle\s*brain|middle\s*brain|llm|brain)\b/i.test(normalized) && /\b(switch|change|set|use)\b/i.test(normalized)) {
     let brainMode = '';
     if (/\b(qwen|local)\b/i.test(normalized)) {
-      brainMode = 'qwen3.5-2b';
+      brainMode = 'qwen3.5-0.8b';
     } else if (/\b(gpt[-\s]*5\.?5|gpt55|gpt[-\s]*55)\b/i.test(normalized)) {
       brainMode = 'gpt55-fast-low';
     } else if (/\b(gpt[-\s]*5\.?4|gpt54)\b/i.test(normalized) && /\bmini|min\b/i.test(normalized)) {
@@ -4109,7 +4831,7 @@ Decision policy:
 - Useful iPhone tools: iphone_external_action for app-opening or system-surface requests; iphone_open_url for complete web URLs; iphone_search_web for explicit web searches; iphone_open_maps for Maps/directions; iphone_current_location for current location; iphone_list_calendar_events and iphone_create_calendar_event for Calendar; iphone_list_reminders and iphone_create_reminder for Reminders; iphone_draft_message and iphone_draft_email for drafts; iphone_start_phone_call for calls; iphone_run_shortcut for named Shortcuts; iphone_share for share-sheet/Notes handoff; iphone_read_clipboard and iphone_copy_text for clipboard; iphone_set_transcript_visible and iphone_clear_transcript for transcript controls; iphone_restart_voice_session, iphone_confirm_voice_route_switch, iphone_confirm_voice_engine_switch, iphone_set_companion_middle_brain, iphone_set_cerebras_model, and iphone_end_voice_session for VoiceClaw session/route/engine/LLM controls.
 - For text/message drafts, only set iphone_tool_name when the recipient is clear. If the user asks to draft or send a text but does not say who it is for, leave iphone_tool_name empty and ask: "Who should I send the text to?"
 - If the user asks what voice engines are available, answer concisely: GPT-Realtime-2, STT + GPT + TTS, and Companion Realtime Voice. If the user asks what voice routes are available, answer concisely: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, GPT-5.6 Sol/Terra/Luna without OpenClaw preview routes, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, and Hermes HTTPS Tunnel.
-- If the user asks what Companion Realtime Voice LLMs are available, answer concisely: Local Qwen 3.5 2B, GPT-5.5, GPT-5.4, GPT-5.4-mini, and Cerebras. If the user asks what Cerebras models are available, answer concisely: Gemma 4 31B, GPT OSS 120B, and Z.ai GLM 4.7.
+- If the user asks what Companion Realtime Voice LLMs are available, answer concisely: Local Qwen 3.5 0.8B, GPT-5.5, GPT-5.4, GPT-5.4-mini, and Cerebras. If the user asks what Cerebras models are available, answer concisely: Gemma 4 31B, GPT OSS 120B, and Z.ai GLM 4.7.
 - Location, nearby, Maps, route, and directions requests are iPhone-side actions. Do not send them to OpenClaw/Hermes unless the user explicitly asks the Mac agent to handle them.
 - For directions from "here", "my current location", or "where I am", use iphone_external_action or iphone_open_maps with mode "directions", destination set to the actual destination only, and origin omitted so Apple Maps uses the iPhone's current location.
 - Use call_route=true for explicit OpenClaw/Hermes/computer work, private/current/user-specific state, files/attachments, Mac/computer control, long research/analysis, or when the user explicitly asks to use the selected route.
@@ -4161,7 +4883,7 @@ Rules:
 - If using an iPhone tool: call_route=false, route_message="", final_answer=brief acknowledgement.
 - Engine options: GPT-Realtime-2, STT + GPT + TTS, Companion Realtime Voice.
 - Route options: Voice Engine Standalone, GPT-5.5 Instant, GPT-5.5 without OpenClaw, GPT-5.6 Sol/Terra/Luna without OpenClaw preview routes, OpenClaw Bridge, OpenClaw HTTPS Tunnel, Hermes Bridge, Hermes HTTPS Tunnel.
-- Companion Realtime Voice LLM options: Local Qwen 3.5 2B, GPT-5.5, GPT-5.4, GPT-5.4-mini, and Cerebras.`;
+- Companion Realtime Voice LLM options: Local Qwen 3.5 0.8B, GPT-5.5, GPT-5.4, GPT-5.4-mini, and Cerebras.`;
 }
 
 async function runQwen35Planner(prompt, { signal, timeoutMs = 12000, qwenThinking = false } = {}) {
@@ -4344,7 +5066,7 @@ async function prewarmCompanionVoiceTts() {
 
 async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken, context, payload, signal } = {}) {
   const localPlan = companionVoiceLocalPlan(text, routeMode);
-  const localPreflightAllowed = brainMode === 'qwen3.5-2b'
+  const localPreflightAllowed = brainMode === 'qwen3.5-0.8b'
     || brainMode === 'local'
     || !!String(localPlan.iphoneToolName || '').trim();
   if (localPreflightAllowed && localPlan.callRoute === false && String(localPlan.finalAnswer || '').trim()) {
@@ -4359,7 +5081,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
       planner: 'local-router',
     };
   }
-  const prompt = brainMode === 'qwen3.5-2b'
+  const prompt = brainMode === 'qwen3.5-0.8b'
     ? companionVoiceCompactPlannerPrompt(text, { routeMode, context })
     : companionVoicePlannerPrompt(text, { routeMode, context });
   const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
@@ -4368,7 +5090,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
   const plannerTimeoutMs = Number.isFinite(requestedPlannerTimeoutMs)
     ? Math.max(requestedPlannerTimeoutMs, 3000)
     : defaultPlannerTimeoutMs;
-  if (brainMode === 'qwen3.5-2b') {
+  if (brainMode === 'qwen3.5-0.8b') {
     try {
       const raw = await runQwen35Planner(prompt, {
         signal,
@@ -4377,9 +5099,9 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
       });
       const plan = extractCompanionVoicePlan(raw);
       if (plan.callRoute !== false && !plan.routeMessage) {
-        return finalizeCompanionVoicePlan(localPlan, text, routeMode, 'local-after-empty-qwen35-2b-planner');
+        return finalizeCompanionVoicePlan(localPlan, text, routeMode, 'local-after-empty-qwen35-800m-planner');
       }
-      return finalizeCompanionVoicePlan(plan, text, routeMode, 'qwen3.5-2b');
+      return finalizeCompanionVoicePlan(plan, text, routeMode, 'qwen3.5-0.8b');
     } catch (error) {
       await appendRealtimeLog({
         kind: 'companion_realtime_voice_planner_fallback',
@@ -4393,7 +5115,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
       const fallbackPlan = localPlan.callRoute === true || String(localPlan.finalAnswer || '').trim()
         ? localPlan
         : { callRoute: false, routeMessage: '', finalAnswer: "I heard you, but my local voice brain had trouble answering that. Try that again." };
-      return finalizeCompanionVoicePlan(fallbackPlan, text, routeMode, 'local-after-qwen35-2b-error');
+      return finalizeCompanionVoicePlan(fallbackPlan, text, routeMode, 'local-after-qwen35-800m-error');
     }
   }
   if (String(brainMode || '').startsWith('cerebras:')) {
@@ -4507,6 +5229,10 @@ async function synthesizeCompanionVoiceReply(reply, payload = {}, options = {}) 
 
 async function streamCompanionVoiceReplyToWebSocket(ws, send, reply, payload = {}, options = {}) {
   const turnId = options.turnId;
+  const textSegmentID = String(options.textSegmentID || '').trim();
+  const writeAudio = typeof options.sendBinary === 'function'
+    ? options.sendBinary
+    : () => false;
   let streamedAudioStarted = false;
   let streamedAudioEnded = false;
   let streamedAudioBytes = 0;
@@ -4536,9 +5262,7 @@ async function streamCompanionVoiceReplyToWebSocket(ws, send, reply, payload = {
       onChunk: async (chunk) => {
         if (!chunk?.length) return;
         streamedAudioBytes += chunk.length;
-        if (ws.readyState === ws.OPEN) {
-          ws.send(chunk);
-        }
+        writeAudio(chunk);
       },
       onEnd: async (meta = {}) => {
         if (!streamedAudioStarted) return;
@@ -4576,9 +5300,7 @@ async function streamCompanionVoiceReplyToWebSocket(ws, send, reply, payload = {
 
   if (summary?.streamed === false && summary.audio?.length) {
     send({ type: 'tts_start', turnId, streamed: false });
-    if (ws.readyState === ws.OPEN) {
-      ws.send(summary.audio);
-    }
+    writeAudio(summary.audio);
     send({ type: 'tts_end', turnId, streamed: false });
     return {
       audioBase64: summary.audio.toString('base64'),
@@ -4600,6 +5322,16 @@ async function streamCompanionVoiceReplyToWebSocket(ws, send, reply, payload = {
       contentType: summary?.audioContentType || 'audio/pcm',
     });
     send({ type: 'tts_end', turnId, streamed: true });
+  }
+
+  if (streamedAudioStarted && streamedAudioBytes > 0 && !summary?.aborted && textSegmentID) {
+    send({
+      type: 'text_audio_alignment',
+      turnId,
+      text: String(reply || ''),
+      textSegmentID,
+      final: true,
+    });
   }
 
   return {
@@ -4656,10 +5388,21 @@ function startCompanionVoiceRouteJob({ sessionToken, routeMode, brainMode, plann
   (async () => {
     const routeStartedAt = Date.now();
     try {
-      const routeReply = await generateReply(routeMessage, {
+      const routeTurn = await runRealtimeOpenClawTurn({
+        text: routeMessage,
+        sessionToken,
+        turnId: jobID,
+        requestId: jobID,
         processing,
-        timeoutMs: timeoutAtLeastTenMinutes(process.env.COMPANION_VOICE_ROUTE_TIMEOUT_MS, DEFAULT_WATCH_REALTIME_TURN_TIMEOUT_MS),
+        deadlineAt: Date.now() + timeoutAtLeastTenMinutes(
+          process.env.COMPANION_VOICE_ROUTE_TIMEOUT_MS,
+          DEFAULT_WATCH_REALTIME_TURN_TIMEOUT_MS,
+        ),
       });
+      if (!routeTurn.ok) {
+        throw new Error(routeTurn.error || 'The selected agent route failed.');
+      }
+      const routeReply = routeTurn.reply;
       const routeMs = Date.now() - routeStartedAt;
       const reply = String(routeReply || '').trim() || "The selected route finished without a readable response.";
       const ttsStartedAt = Date.now();
@@ -4733,10 +5476,11 @@ function startCompanionVoiceRouteJob({ sessionToken, routeMode, brainMode, plann
 }
 
 async function runCompanionVoiceTurn({ req, payload, signal } = {}) {
+  bindRequestCredentialDelegation(req, payload);
   const startedAt = Date.now();
   const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || req.headers['x-voice-session-token'] || `companion-voice-${Date.now().toString(36)}`);
   const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
-  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-0.8b');
   const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
   const context = String(payload.context || '').trim();
   const textInput = String(payload.text || '').trim();
@@ -4874,6 +5618,7 @@ async function runCompanionVoiceTurn({ req, payload, signal } = {}) {
 }
 
 async function runCompanionVoiceTranscription({ req, payload }) {
+  bindRequestCredentialDelegation(req, payload);
   const startedAt = Date.now();
   const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || req.headers['x-voice-session-token'] || `companion-voice-${Date.now().toString(36)}`);
   const audioBuffer = payload.audioBuffer || (payload.audioBase64 ? Buffer.from(String(payload.audioBase64), 'base64') : null);
@@ -4917,13 +5662,20 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
+    await prepareCredentialBoundRequestBody(req, urlPath);
+
+    if (await voiceRemoteSessionHTTP.handle(credentialBoundReplayRequest(req), res, urlPath)) {
+      return;
+    }
+
     if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/setup-payload`) {
       const setupURL = new URL(req.url, `http://localhost:${PORT}`);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(setupPayloadFromBridgeConfig({
+      const setupPayload = sanitizeVoiceControlPayload(setupPayloadFromBridgeConfig({
         includeOpenAIAPIKey: setupURL.searchParams.get('include_openai_key') !== '0',
         includeCerebrasAPIKey: setupURL.searchParams.get('include_cerebras_key') !== '0',
-      })));
+      })).payload;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(setupPayload));
       return;
     }
 
@@ -4932,7 +5684,7 @@ const httpServer = createServer(async (req, res) => {
       const configURL = new URL(req.url, `http://localhost:${PORT}`);
       const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
       const hfRealtime = await getHFRealtimeStatus({
-        brainMode: configURL.searchParams.get('brainMode') || primaryProfile.brainMode || 'qwen3.5-2b',
+        brainMode: configURL.searchParams.get('brainMode') || primaryProfile.brainMode || 'qwen3.5-0.8b',
         sttProfile: configURL.searchParams.get('sttProfile') || primaryProfile.sttProfile || 'parakeet-live',
         localVoice: configURL.searchParams.get('localVoice') || primaryProfile.localVoice || 'kokoro-af-heart',
         cerebrasModel: configURL.searchParams.get('cerebrasModel') || primaryProfile.cerebrasModel || '',
@@ -4955,8 +5707,8 @@ const httpServer = createServer(async (req, res) => {
         hfRealtime,
         powerhouse,
         powerhouseModes: powerhouseModes(),
-        brainModes: ['qwen3.5-2b', ...Object.keys(COMPANION_VOICE_OPENAI_BRAIN_MODES), ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)],
-        defaultBrainMode: primaryProfile.brainMode || 'qwen3.5-2b',
+        brainModes: ['qwen3.5-0.8b', ...Object.keys(COMPANION_VOICE_OPENAI_BRAIN_MODES), ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)],
+        defaultBrainMode: primaryProfile.brainMode || 'qwen3.5-0.8b',
         qwenModel: COMPANION_VOICE_QWEN_MODEL,
         qwenThinkingDefault: false,
         cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL,
@@ -4989,6 +5741,17 @@ const httpServer = createServer(async (req, res) => {
         routeModes: ['direct', 'instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw', 'hermes'],
         companionVoice: companionVoiceConfig,
         auth: realtimeAuthPreferences(req),
+        codexAppServer: {
+          statusPath: `${BASE_PATH}/realtime/codex/status`,
+          turnPath: `${BASE_PATH}/realtime/codex/turn`,
+          webRTCPath: `${BASE_PATH}/realtime/codex/webrtc`,
+          webSocketPath: `${BASE_PATH}/realtime/codex/ws`,
+          textTurns: 'supported',
+          realtime: {
+            v2WebSocket: 'verified-api-key-path',
+            v3Live: 'experimental-capability-gated',
+          },
+        },
         openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })),
         gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })),
       };
@@ -5073,7 +5836,7 @@ const httpServer = createServer(async (req, res) => {
         const statusURL = new URL(req.url, `http://localhost:${PORT}`);
         const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
         const status = await getHFRealtimeStatus({
-          brainMode: statusURL.searchParams.get('brainMode') || primaryProfile.brainMode || 'qwen3.5-2b',
+          brainMode: statusURL.searchParams.get('brainMode') || primaryProfile.brainMode || 'qwen3.5-0.8b',
           sttProfile: statusURL.searchParams.get('sttProfile') || primaryProfile.sttProfile || 'parakeet-live',
           localVoice: statusURL.searchParams.get('localVoice') || primaryProfile.localVoice || 'kokoro-af-heart',
           cerebrasModel: statusURL.searchParams.get('cerebrasModel') || primaryProfile.cerebrasModel || '',
@@ -5096,7 +5859,7 @@ const httpServer = createServer(async (req, res) => {
         const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
         const prewarmPayload = {
           ...payload,
-          brainMode: payload.brainMode || primaryProfile.brainMode || 'qwen3.5-2b',
+          brainMode: payload.brainMode || primaryProfile.brainMode || 'qwen3.5-0.8b',
           sttProfile: payload.sttProfile || primaryProfile.sttProfile || 'parakeet-live',
           localVoice: payload.localVoice || primaryProfile.localVoice || 'kokoro-af-heart',
           cerebrasAPIKey: payload.cerebrasAPIKey || '',
@@ -5121,7 +5884,7 @@ const httpServer = createServer(async (req, res) => {
         try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
         const status = await installHFRealtimeRuntime({
           ...payload,
-          brainMode: payload.brainMode || 'qwen3.5-2b',
+          brainMode: payload.brainMode || 'qwen3.5-0.8b',
           sttProfile: payload.sttProfile || '',
           localVoice: payload.localVoice || '',
           prepareSet: payload.prepareSet || 'recommended',
@@ -5171,11 +5934,15 @@ const httpServer = createServer(async (req, res) => {
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/companion-voice-turn-file`) {
       try {
         const body = await readRequestBuffer(req, Number(process.env.COMPANION_VOICE_MAX_MULTIPART_BYTES || 200_000_000));
-        const payload = companionVoicePayloadFromMultipart(body, req.headers['content-type'] || '');
+        const payload = credentialBoundHTTPControlPayload(
+          companionVoicePayloadFromMultipart(body, req.headers['content-type'] || ''),
+          req,
+        );
         const result = await runCompanionVoiceTurn({ req, payload });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ...result, transport: 'multipart-file' }));
       } catch (error) {
+        if (error instanceof VoiceCredentialBoundaryError) throw error;
         await appendRealtimeLog({ kind: 'companion_realtime_voice_turn_file_error', error: error?.message || String(error) });
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
@@ -5186,11 +5953,15 @@ const httpServer = createServer(async (req, res) => {
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/companion-voice-transcribe-file`) {
       try {
         const body = await readRequestBuffer(req, Number(process.env.COMPANION_VOICE_MAX_MULTIPART_BYTES || 200_000_000));
-        const payload = companionVoicePayloadFromMultipart(body, req.headers['content-type'] || '');
+        const payload = credentialBoundHTTPControlPayload(
+          companionVoicePayloadFromMultipart(body, req.headers['content-type'] || ''),
+          req,
+        );
         const result = await runCompanionVoiceTranscription({ req, payload });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ...result, transport: 'multipart-file' }));
       } catch (error) {
+        if (error instanceof VoiceCredentialBoundaryError) throw error;
         await appendRealtimeLog({ kind: 'companion_realtime_voice_transcription_error', error: error?.message || String(error) });
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
@@ -5382,6 +6153,67 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/codex/status`) {
+      try {
+        const url = new URL(req.url, `http://localhost:${PORT}`);
+        const status = await codexAppServerBridge.status({
+          refreshToken: ['1', 'true', 'yes'].includes(String(url.searchParams.get('refresh') || '').toLowerCase()),
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, ...status }));
+      } catch (error) {
+        res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, state: 'unavailable', error: error?.message || String(error) }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/codex/turn`) {
+      const body = await readRequestBody(req, 1_000_000).catch(() => '{}');
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const result = await codexAppServerBridge.runTurn({
+          sessionKey: payload.sessionKey || payload.sessionToken || req.headers['x-voice-session-token'] || '',
+          sessionMode: payload.sessionMode || 'attach',
+          text: payload.text || payload.transcript || '',
+          model: payload.model || '',
+          reasoningEffort: payload.reasoningEffort || payload.effort || '',
+          timeoutMs: payload.timeoutMs,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (error) {
+        res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error), code: error?.code || null }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/codex/webrtc`) {
+      const body = await readRequestBody(req, 2_100_000).catch(() => '{}');
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const result = await codexAppServerBridge.startRealtimeWebRTC({
+          sessionKey: payload.sessionKey || payload.sessionToken || req.headers['x-voice-session-token'] || '',
+          sessionMode: payload.sessionMode || 'attach',
+          sdp: payload.sdp || '',
+          model: payload.model || '',
+          version: payload.version || 'v3',
+          voice: payload.voice || '',
+          outputModality: payload.outputModality || 'audio',
+          timeoutMs: payload.timeoutMs,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, experimental: true, ...result }));
+      } catch (error) {
+        res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, experimental: true, error: error?.message || String(error), code: error?.code || null }));
+      }
+      return;
+    }
+
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-client-secret`) {
       const body = await readRequestBody(req).catch(() => '{}');
       let payload;
@@ -5437,11 +6269,15 @@ const httpServer = createServer(async (req, res) => {
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn/start-file`) {
       try {
         const body = await readRequestBuffer(req, Number(process.env.WATCH_REALTIME_MAX_MULTIPART_BYTES || 200_000_000));
-        const payload = watchRealtimePayloadFromMultipart(body, req.headers['content-type'] || '');
+        const payload = credentialBoundHTTPControlPayload(
+          watchRealtimePayloadFromMultipart(body, req.headers['content-type'] || ''),
+          req,
+        );
         const jobID = startWatchRealtimeJob({ req, payload });
         res.writeHead(202, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, jobID, status: 'running', transport: 'multipart-file' }));
       } catch (error) {
+        if (error instanceof VoiceCredentialBoundaryError) throw error;
         await appendRealtimeLog({ kind: 'watch_realtime_job_start_file_error', error: error?.message || String(error) });
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
@@ -5519,11 +6355,15 @@ const httpServer = createServer(async (req, res) => {
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/watch-turn-file`) {
       try {
         const body = await readRequestBuffer(req, Number(process.env.WATCH_REALTIME_MAX_MULTIPART_BYTES || 200_000_000));
-        const payload = watchRealtimePayloadFromMultipart(body, req.headers['content-type'] || '');
+        const payload = credentialBoundHTTPControlPayload(
+          watchRealtimePayloadFromMultipart(body, req.headers['content-type'] || ''),
+          req,
+        );
         const result = await runWatchRealtimeTurn({ req, payload });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ...result, transport: 'multipart-file' }));
       } catch (error) {
+        if (error instanceof VoiceCredentialBoundaryError) throw error;
         await appendRealtimeLog({ kind: 'watch_realtime_turn_file_error', error: error?.message || String(error) });
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
@@ -5569,6 +6409,7 @@ const httpServer = createServer(async (req, res) => {
           req,
           session: realtimeSession,
           apiKey,
+          credentialDelegation: credentialDelegationsByRequest.get(req) || null,
         });
       } catch (error) {
         realtimeSessionConfigs.set(options.sessionToken, {
@@ -5591,7 +6432,7 @@ const httpServer = createServer(async (req, res) => {
       }
 
       const usesClientSecretSignaling = realtimeBearer.source === REALTIME_AUTH_MODE_OPENCLAW_OAUTH
-        || realtimeBearer.source === 'paired-phone-oauth';
+        || realtimeBearer.source === 'paired-phone-delegation';
       const upstream = await fetch('https://api.openai.com/v1/realtime/calls', {
         method: 'POST',
         headers: {
@@ -5716,6 +6557,12 @@ const httpServer = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': contentType });
     res.end(body);
   } catch (err) {
+    if (err instanceof VoiceCredentialBoundaryError) {
+      console.warn(`[credential-boundary] HTTP control rejected code=${err.code} path=${err.path || '/'}`);
+      if (!res.headersSent) writeVoiceCredentialBoundaryHTTPError(res, err);
+      else res.destroy();
+      return;
+    }
     console.error('[http]', err.message);
     res.writeHead(500); res.end();
   }
@@ -5729,16 +6576,213 @@ httpServer.timeout = 0;
 // ── WebSocket server ────────────────────────────────────────────────
 
 const WS_PATH = `${BASE_PATH}/ws` || '/ws';
-const wss = new WebSocketServer({ server: httpServer, path: WS_PATH });
+const CODEX_REALTIME_WS_PATH = `${BASE_PATH}/realtime/codex/ws`;
+const wss = new WebSocketServer({
+  noServer: true,
+  maxPayload: COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES,
+  perMessageDeflate: false,
+});
+const codexRealtimeWss = new WebSocketServer({
+  noServer: true,
+  maxPayload: COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES,
+  perMessageDeflate: false,
+});
+
+function rejectWebSocketUpgrade(socket, statusCode, statusText) {
+  if (!socket?.writable) return;
+  const body = `${statusText}\n`;
+  socket.end([
+    `HTTP/1.1 ${statusCode} ${statusText}`,
+    'Connection: close',
+    'Content-Type: text/plain; charset=utf-8',
+    `Content-Length: ${Buffer.byteLength(body)}`,
+    '',
+    body,
+  ].join('\r\n'));
+}
+
+function requestHasBridgeAuthHeaders(req) {
+  return !!String(req.headers.authorization || '').trim()
+    || !!String(req.headers['x-openclaw-gateway-password'] || '').trim();
+}
+
+function hasBridgeMessageAuth(msg = {}) {
+  if (!bridgeAuthEnabled()) return true;
+  const token = String(msg.token || msg.gatewayToken || msg.bearerToken || '').trim();
+  if (VOICECLAW_BRIDGE_TOKEN && timingSafeStringEqual(token, VOICECLAW_BRIDGE_TOKEN)) return true;
+  const password = String(msg.gatewayPassword || msg.password || msg.sessionCode || '').trim();
+  return !!VOICECLAW_BRIDGE_PASSWORD && timingSafeStringEqual(password, VOICECLAW_BRIDGE_PASSWORD);
+}
+
+function isBridgeAuthFirstMessage(msg = {}) {
+  const type = String(msg.type || '').trim().toLowerCase();
+  return type === 'auth'
+    || type === 'authenticate'
+    || type === 'start_session'
+    || type === 'resume_session';
+}
+
+function webSocketRequestPath(req) {
+  try {
+    return new URL(req.url || '/', 'http://localhost').pathname;
+  } catch {
+    return '';
+  }
+}
+
+httpServer.on('upgrade', (req, socket, head) => {
+  const requestPath = webSocketRequestPath(req);
+  const isCompanionVoiceSocket = requestPath === WS_PATH;
+  const isCodexRealtimeSocket = requestPath === CODEX_REALTIME_WS_PATH;
+  if (!isCompanionVoiceSocket && !isCodexRealtimeSocket) {
+    rejectWebSocketUpgrade(socket, 404, 'Not Found');
+    return;
+  }
+
+  const authenticated = hasBridgeAuth(req);
+  if (!authenticated && requestHasBridgeAuthHeaders(req)) {
+    rejectWebSocketUpgrade(socket, 401, 'Unauthorized');
+    return;
+  }
+
+  // The general Companion socket supports authenticated first-message setup for
+  // legacy clients. The Codex media relay requires authentication at upgrade so
+  // no app-server process or durable thread is allocated before authorization.
+  if (isCodexRealtimeSocket && !authenticated) {
+    rejectWebSocketUpgrade(socket, 401, 'Unauthorized');
+    return;
+  }
+
+  const targetServer = isCodexRealtimeSocket ? codexRealtimeWss : wss;
+  targetServer.handleUpgrade(req, socket, head, (ws) => {
+    ws.voiceClawUpgradeAuthenticated = authenticated;
+    ws.voiceClawAuthenticatedClientIdentity = authenticated
+      ? authenticatedBridgeClientIdentityFromRequest(req)
+      : '';
+    credentialTransportsByWebSocket.set(
+      ws,
+      voiceCredentialTransportFromNodeRequest(req, { webSocket: true }),
+    );
+    targetServer.emit('connection', ws, req);
+  });
+});
 
 function markWebSocketAlive() {
   this.isAlive = true;
 }
 
-wss.on('connection', (ws) => {
+function sendPendingWebSocketEvent(ws, event) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify(event)); } catch {}
+}
+
+function closePendingWebSocket(ws, code, message) {
+  sendPendingWebSocketEvent(ws, { type: 'error', code, message });
+  try { ws.close(1008, String(code || 'AUTH_FAILED').slice(0, 123)); } catch { ws.terminate(); }
+}
+
+function beginPendingWebSocketAuth(ws, req) {
+  console.log(`[ws] transport connected auth=AUTH_PENDING remote=${req.socket?.remoteAddress || 'unknown'}`);
+  let settled = false;
+  const timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    closePendingWebSocket(ws, 'AUTH_TIMEOUT', 'VoiceClaw Companion WebSocket authentication timed out.');
+  }, COMPANION_VOICE_WS_AUTH_DEADLINE_MS);
+  timer.unref?.();
+
+  const cleanup = () => {
+    clearTimeout(timer);
+    ws.off('message', onFirstMessage);
+    ws.off('close', cleanup);
+    ws.off('error', cleanup);
+  };
+  const onFirstMessage = (data, isBinary) => {
+    if (settled) return;
+    const byteLength = Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data || '');
+    if (isBinary || byteLength > COMPANION_VOICE_WS_AUTH_MAX_BYTES) {
+      settled = true;
+      cleanup();
+      closePendingWebSocket(ws, 'AUTH_MESSAGE_INVALID', `The first WebSocket message must be authenticated JSON no larger than ${COMPANION_VOICE_WS_AUTH_MAX_BYTES} bytes.`);
+      return;
+    }
+
+    let authMessage;
+    try {
+      authMessage = JSON.parse(data.toString('utf8'));
+    } catch {
+      settled = true;
+      cleanup();
+      closePendingWebSocket(ws, 'AUTH_MESSAGE_INVALID', 'The first WebSocket message must be valid authenticated JSON.');
+      return;
+    }
+    if (!authMessage
+      || typeof authMessage !== 'object'
+      || Array.isArray(authMessage)
+      || !isBridgeAuthFirstMessage(authMessage)) {
+      settled = true;
+      cleanup();
+      closePendingWebSocket(ws, 'AUTH_FAILED', 'VoiceClaw Companion WebSocket authorization failed.');
+      return;
+    }
+
+    let msg;
+    try {
+      msg = credentialBoundWebSocketControlPayload(authMessage, ws, {
+        allowBridgeAuthenticationFields: true,
+      });
+    } catch (error) {
+      settled = true;
+      cleanup();
+      const code = error instanceof VoiceCredentialBoundaryError
+        ? error.code
+        : 'VOICE_CREDENTIAL_BOUNDARY_FAILED';
+      closePendingWebSocket(ws, code, error?.message || 'The WebSocket credential boundary rejected the first control message.');
+      return;
+    }
+    if (!hasBridgeMessageAuth(authMessage)) {
+      settled = true;
+      cleanup();
+      closePendingWebSocket(ws, 'AUTH_FAILED', 'VoiceClaw Companion WebSocket authorization failed.');
+      return;
+    }
+
+    settled = true;
+    cleanup();
+    ws.voiceClawMessageAuthenticated = true;
+    ws.voiceClawAuthenticatedClientIdentity = authenticatedBridgeClientIdentityFromMessage(authMessage);
+    sendPendingWebSocketEvent(ws, { type: 'status', status: 'authenticated', code: 'AUTHENTICATED' });
+    const firstControlMessage = ['auth', 'authenticate'].includes(String(msg.type || '').toLowerCase()) ? null : msg;
+    initializeWebSocketSession(ws, req, firstControlMessage);
+  };
+
+  ws.on('message', onFirstMessage);
+  ws.once('close', cleanup);
+  ws.once('error', cleanup);
+  sendPendingWebSocketEvent(ws, {
+    type: 'status',
+    status: 'auth_pending',
+    code: 'AUTH_PENDING',
+    deadlineMs: COMPANION_VOICE_WS_AUTH_DEADLINE_MS,
+    maxBytes: COMPANION_VOICE_WS_AUTH_MAX_BYTES,
+  });
+}
+
+function initializeWebSocketSession(initialWS, req, firstControlMessage = null) {
+  if (bridgeAuthEnabled() && !initialWS.voiceClawUpgradeAuthenticated && !initialWS.voiceClawMessageAuthenticated) {
+    closePendingWebSocket(initialWS, 'AUTH_REQUIRED_BEFORE_ALLOCATION', 'VoiceClaw Companion WebSocket authorization is required before session allocation.');
+    return;
+  }
+  if (initialWS.voiceClawSessionAllocated || initialWS.readyState !== WebSocket.OPEN) return;
+  let ws = initialWS;
+  ws.voiceClawSessionAllocated = true;
+  credentialBoundaryRuntimeMetrics.webSocketSessionAllocations += 1;
   console.log('[ws] client connected');
   ws.isAlive = true;
-  ws.on('pong', markWebSocketAlive);
+  let resumeSession = null;
+  let resumableInputFramingRequired = false;
+  let handedOff = false;
+  let tornDown = false;
 
   // Per-session state
   const sessionId = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -5747,7 +6791,9 @@ wss.on('connection', (ws) => {
     audioChunks: [],          // collected binary audio buffers for real turns
     audioBytesReceived: 0,
     wakeProbeChunks: [],      // short hands-free wake probe buffers
+    wakeProbeBytes: 0,
     bargeProbeChunks: [],     // short probes while response generation/playback is active
+    bargeProbeBytes: 0,
     bargeMode: 'generation',
     collectingWakeProbe: false,
     collectingBargeProbe: false,
@@ -5759,30 +6805,479 @@ wss.on('connection', (ws) => {
     asrAbort: null,           // AbortController for current ASR job
     dialogueAbort: null,      // AbortController for current dialogue/LLM call
     processing: false,        // true while ASR+TTS pipeline is running
+    started: false,
+    configuring: false,
+    generation: 0,
+    configRevision: 0,
+    wireFormat: null,
+    protocolVersion: 0,
+    clientSessionID: '',
+    clientGeneration: '',
+    clientTurnID: '',
+    audioSequence: null,
+    clientTurnContexts: new Map(),
+    committedClientTurnIDs: new Set(),
     turnSeq: 0,
+    responseSeq: 0,
     activeTurnId: 0,
+    activeResponseId: '',
+    turnContexts: new Map(),
     cancelledThroughTurnId: 0,
     processingConfig: resolveProcessingConfig({ sessionToken: `ws-${sessionId}` }),
     voiceConfig: null,
     companionVoiceMode: false,
     companionVoicePayload: null,
     hfBridge: null,
+    hfBridgeRecord: null,
+    hfStartingRecord: null,
     hfBridgeConfigKey: '',
+    hfReconnectTimer: null,
+    hfReconnectAttempts: 0,
+    hfActiveTurnId: 0,
+    hfFallbackActive: false,
+    hfInputQueue: [],
+    hfInputBytes: 0,
+    hfInputCommitPending: false,
+    hfInputFlushTimer: null,
+    pendingIPhoneToolCalls: new Map(),
+    profilePersistQueue: Promise.resolve(),
     serverVad: buildCompanionServerVADState({ companionVoice: false, serverVad: { enabled: false } }),
     pendingTextTurns: [],      // queued user turns captured while a prior turn is still running
     busyQueueSeq: 0,
     busyQueueEpoch: 0,
     busyAsrControllers: new Set(),
+    clientAudioCommit: null,
+    controlQueue: Promise.resolve(),
+    pendingControlCount: 0,
+    pendingInputBytes: 0,
+    inputBackpressure: null,
+    inputGap: null,
+    inputGapSeq: 0,
+    inputPressureTimer: null,
+    closing: false,
+    audioGap: null,
+    audioGapSeq: 0,
+    outputBackpressureTimer: null,
+    outputFailure: false,
+  };
+  const initialCredentialDelegation = credentialDelegationsByWebSocket.get(initialWS);
+  if (initialCredentialDelegation) {
+    credentialDelegationsBySession.set(session, initialCredentialDelegation);
+  }
+  const audioAlignment = new CompanionVoiceAudioAlignmentProducer(session.id);
+  const resumeOwner = {
+    attach(nextWS, prepared) {
+      attachRetainedSocket(nextWS, prepared);
+    },
+    attachStartDuplicate(nextWS, receipt) {
+      attachDuplicateStartSocket(nextWS, receipt);
+    },
+    isAvailable() {
+      return !tornDown && session.started;
+    },
+    onExpire(reason) {
+      teardownRuntime(reason, { removeResumeSession: false });
+    },
   };
 
-  function send(obj) {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify(obj));
+  function contextForEvent(obj = {}, explicitContext = null) {
+    if (explicitContext) return explicitContext;
+    if (obj.turnId !== undefined && obj.turnId !== null) {
+      return session.turnContexts.get(obj.turnId)
+        || session.turnContexts.get(Number(obj.turnId))
+        || captureSessionContext(session, { turnId: obj.turnId, responseId: obj.responseId || '' });
+    }
+    if (obj.type === 'interrupted' && session.activeTurnId) {
+      return session.turnContexts.get(session.activeTurnId) || captureSessionContext(session);
+    }
+    if ((session.processing || session.hfActiveTurnId) && session.activeTurnId) {
+      return session.turnContexts.get(session.activeTurnId) || captureSessionContext(session);
+    }
+    return captureSessionContext(session);
+  }
+
+  function lifecycleEvent(obj, context) {
+    const event = {
+      ...obj,
+      sessionId: session.id,
+      sessionGeneration: context.generation,
+      configRevision: context.configRevision,
+    };
+    if (context.protocolVersion && !Object.hasOwn(event, 'protocolVersion')) event.protocolVersion = context.protocolVersion;
+    if (context.clientSessionID && !Object.hasOwn(event, 'clientSessionID')) event.clientSessionID = context.clientSessionID;
+    if (context.clientGeneration !== '' && context.clientGeneration !== undefined && !Object.hasOwn(event, 'clientGeneration')) {
+      event.clientGeneration = context.clientGeneration;
+    }
+    if (context.turnID && !Object.hasOwn(event, 'turnID')) event.turnID = context.turnID;
+    if (context.audioSequence !== null && context.audioSequence !== undefined && !Object.hasOwn(event, 'audioSequence')) {
+      event.audioSequence = context.audioSequence;
+    }
+    if (context.turnId && !Object.hasOwn(event, 'turnId')) event.turnId = context.turnId;
+    if (context.responseId && !Object.hasOwn(event, 'responseId')) event.responseId = context.responseId;
+    return audioAlignment.decorate(event, context);
+  }
+
+  function sendRawEvent(event) {
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(JSON.stringify(event), (error) => {
+        if (error && !session.closing) console.warn(`[ws] output send failed session=${session.id}: ${error.message}`);
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function journalOutboundEvent(event) {
+    if (!resumeSession) return event;
+    try {
+      return resumeSession.recordEvent(event);
+    } catch (error) {
+      console.warn(`[ws-resume] journal failed session=${session.id}: ${error.code || error.message}`);
+      return event;
+    }
+  }
+
+  function sendJournaledEvent(event) {
+    return sendRawEvent(journalOutboundEvent(event));
+  }
+
+  function failOutputBackpressure(context, bufferedAmount) {
+    if (session.outputFailure || session.closing) return;
+    session.outputFailure = true;
+    const base = context || captureSessionContext(session);
+    if (session.audioGap) {
+      finishAudioGap('output-backpressure-hard-limit', { bufferedAmount, failed: true });
+    }
+    sendJournaledEvent(lifecycleEvent({
+      type: 'error',
+      code: 'WS_OUTPUT_BACKPRESSURE',
+      message: 'VoiceClaw Companion output could not keep up with the client; reconnect the live session.',
+      recoverable: false,
+      bufferedAmount,
+      hardLimitBytes: COMPANION_VOICE_WS_OUTPUT_HARD_LIMIT_BYTES,
+    }, base));
+    sendJournaledEvent(lifecycleEvent({
+      type: 'status',
+      status: 'output_backpressure_failed',
+      code: 'WS_OUTPUT_BACKPRESSURE',
+      bufferedAmount,
+    }, base));
+    try { ws.close(1013, 'output backpressure'); } catch { ws.terminate(); }
+    const terminateTimer = setTimeout(() => {
+      if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
+    }, 250);
+    terminateTimer.unref?.();
+  }
+
+  function finishAudioGap(reason = 'recovered', details = {}) {
+    const gap = session.audioGap;
+    if (!gap) return;
+    session.audioGap = null;
+    sendJournaledEvent(lifecycleEvent({
+      type: 'audio_gap',
+      direction: 'output',
+      phase: 'complete',
+      reason,
+      gapId: gap.id,
+      droppedFrames: gap.droppedFrames,
+      droppedBytes: gap.droppedBytes,
+      droppedFrameRange: {
+        from: 1,
+        through: gap.droppedFrames,
+      },
+      bufferedAmount: details.bufferedAmount ?? ws.bufferedAmount,
+      failed: details.failed === true || undefined,
+    }, gap.context));
+  }
+
+  function scheduleOutputBackpressureCheck() {
+    if (session.outputBackpressureTimer || session.closing) return;
+    session.outputBackpressureTimer = setTimeout(() => {
+      session.outputBackpressureTimer = null;
+      if (session.closing || ws.readyState !== WebSocket.OPEN || !session.audioGap) return;
+      if (ws.bufferedAmount >= COMPANION_VOICE_WS_OUTPUT_HARD_LIMIT_BYTES) {
+        failOutputBackpressure(session.audioGap.context, ws.bufferedAmount);
+      } else if (ws.bufferedAmount <= COMPANION_VOICE_WS_OUTPUT_LOW_WATER_BYTES) {
+        finishAudioGap('buffer-drained');
+      } else {
+        scheduleOutputBackpressureCheck();
+      }
+    }, 25);
+    session.outputBackpressureTimer.unref?.();
+  }
+
+  function recordAudioGap(buffer, context) {
+    if (session.audioGap && session.audioGap.context.responseId !== context.responseId) {
+      finishAudioGap('response-changed');
+    }
+    if (!session.audioGap) {
+      session.audioGap = {
+        id: `gap-${session.id}-${++session.audioGapSeq}`,
+        context,
+        droppedFrames: 0,
+        droppedBytes: 0,
+      };
+    }
+    session.audioGap.droppedFrames += 1;
+    session.audioGap.droppedBytes += buffer.length;
+    scheduleOutputBackpressureCheck();
+  }
+
+  function send(obj, explicitContext = null) {
+    const context = contextForEvent(obj, explicitContext);
+    if (!isSessionContextCurrent(session, context)) return false;
+    if (context.turnId && isTurnStale(session, context.turnId) && obj.type !== 'interrupted') return false;
+    const event = lifecycleEvent(obj, context);
+    const encodedBytes = Buffer.byteLength(JSON.stringify(event));
+    const projected = ws.bufferedAmount + encodedBytes;
+    if (projected >= COMPANION_VOICE_WS_OUTPUT_HARD_LIMIT_BYTES) {
+      failOutputBackpressure(context, projected);
+      return false;
+    }
+    return sendJournaledEvent(event);
+  }
+
+  function sendBinary(buffer, explicitContext = null) {
+    const chunk = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+    if (!chunk.length) return false;
+    const context = contextForEvent({}, explicitContext);
+    if (!isSessionContextCurrent(session, context)) return false;
+    if (context.turnId && isTurnStale(session, context.turnId)) return false;
+    if (ws.readyState !== WebSocket.OPEN) {
+      journalOutboundEvent(lifecycleEvent({
+        type: 'audio_gap',
+        direction: 'output',
+        phase: 'complete',
+        reason: 'socket-detached',
+        droppedFrames: 1,
+        droppedBytes: chunk.length,
+        droppedFrameRange: { from: 1, through: 1 },
+      }, context));
+      return false;
+    }
+    if (session.audioGap && ws.bufferedAmount <= COMPANION_VOICE_WS_OUTPUT_LOW_WATER_BYTES) {
+      finishAudioGap('buffer-drained');
+    }
+    const admission = voiceStreamOutputCapacityDecision({
+      bufferedAmount: ws.bufferedAmount,
+      binaryByteCount: chunk.length,
+      eventBudgetByteCount: COMPANION_VOICE_AUDIO_CHUNK_EVENT_BUDGET_BYTES,
+      highWaterBytes: COMPANION_VOICE_WS_OUTPUT_HIGH_WATER_BYTES,
+      hardLimitBytes: COMPANION_VOICE_WS_OUTPUT_HARD_LIMIT_BYTES,
+    });
+    if (admission.hardFailure) {
+      recordAudioGap(chunk, context);
+      failOutputBackpressure(context, admission.projectedBytes);
+      return false;
+    }
+    if (!admission.admitted) {
+      recordAudioGap(chunk, context);
+      return false;
+    }
+    const preparedAudioChunk = audioAlignment.prepareAudioChunk(chunk, context);
+    const rawAudioChunkEvent = preparedAudioChunk
+      ? lifecycleEvent(preparedAudioChunk, context)
+      : null;
+    const audioChunkEventBytes = rawAudioChunkEvent
+      ? Buffer.byteLength(JSON.stringify(rawAudioChunkEvent))
+      : 0;
+    if (audioChunkEventBytes > COMPANION_VOICE_AUDIO_CHUNK_EVENT_BUDGET_BYTES) {
+      recordAudioGap(chunk, context);
+      failOutputBackpressure(
+        context,
+        ws.bufferedAmount + audioChunkEventBytes + chunk.length,
+      );
+      return false;
+    }
+    const audioChunkEvent = rawAudioChunkEvent
+      ? journalOutboundEvent(rawAudioChunkEvent)
+      : null;
+    try {
+      if (audioChunkEvent && !sendRawEvent(audioChunkEvent)) {
+        recordAudioGap(chunk, context);
+        return false;
+      }
+      ws.send(chunk, { binary: true }, (error) => {
+        if (error && !session.closing) console.warn(`[ws] binary output failed session=${session.id}: ${error.message}`);
+      });
+      return true;
+    } catch {
+      recordAudioGap(chunk, context);
+      return false;
+    }
+  }
+  send.binary = (buffer, turnId = 0) => sendBinary(
+    buffer,
+    turnId ? session.turnContexts.get(turnId) : null,
+  );
+
+  function correlationValue(value) {
+    if (value === undefined || value === null) return '';
+    return String(value).trim();
+  }
+
+  function rejectClientControl(msg, code, message, expected = {}) {
+    send({
+      type: 'error',
+      code,
+      message,
+      rejectedType: String(msg?.type || ''),
+      expected,
+      received: {
+        protocolVersion: msg?.protocolVersion,
+        clientSessionID: msg?.clientSessionID,
+        clientGeneration: msg?.clientGeneration,
+        sessionGeneration: msg?.sessionGeneration ?? msg?.generation,
+        configRevision: msg?.configRevision,
+        turnID: msg?.turnID,
+        turnId: msg?.turnId,
+        responseId: msg?.responseId,
+        audioSequence: msg?.audioSequence,
+      },
+    });
+    return false;
+  }
+
+  function validateClientControl(msg) {
+    const type = String(msg?.type || '');
+    if (type === 'start_session' || type === 'auth' || type === 'authenticate') return true;
+    if (!session.started) {
+      return rejectClientControl(msg, 'SESSION_NOT_STARTED', `${type || 'control message'} requires start_session first.`);
+    }
+
+    if (msg.protocolVersion !== undefined
+        && session.protocolVersion
+        && Number(msg.protocolVersion) !== Number(session.protocolVersion)) {
+      return rejectClientControl(msg, 'STALE_CLIENT_PROTOCOL', 'Ignored a control from a different client protocol version.', {
+        protocolVersion: session.protocolVersion,
+      });
+    }
+    if (msg.clientSessionID !== undefined
+        && session.clientSessionID
+        && correlationValue(msg.clientSessionID) !== session.clientSessionID) {
+      return rejectClientControl(msg, 'STALE_CLIENT_SESSION', 'Ignored a control from a stale client session.', {
+        clientSessionID: session.clientSessionID,
+      });
+    }
+    if (msg.clientGeneration !== undefined
+        && session.clientGeneration !== ''
+        && correlationValue(msg.clientGeneration) !== correlationValue(session.clientGeneration)) {
+      return rejectClientControl(msg, 'STALE_CLIENT_GENERATION', 'Ignored a control from a stale client generation.', {
+        clientGeneration: session.clientGeneration,
+      });
+    }
+
+    const suppliedServerGeneration = msg.sessionGeneration ?? msg.generation;
+    if (suppliedServerGeneration !== undefined
+        && correlationValue(suppliedServerGeneration) !== correlationValue(session.generation)) {
+      return rejectClientControl(msg, 'STALE_SESSION_GENERATION', 'Ignored a control from a stale server session generation.', {
+        sessionGeneration: session.generation,
+      });
+    }
+
+    if (msg.configRevision !== undefined) {
+      const suppliedRevision = Number(msg.configRevision);
+      const currentRevision = Number(session.configRevision);
+      if (!Number.isSafeInteger(suppliedRevision) || suppliedRevision < 0) {
+        return rejectClientControl(msg, 'INVALID_CONFIG_REVISION', 'configRevision must be a non-negative integer.');
+      }
+      if (type === 'config_update') {
+        if (suppliedRevision <= currentRevision) {
+          return rejectClientControl(msg, 'STALE_CONFIG_REVISION', 'Ignored a duplicate or stale config update.', {
+            configRevisionGreaterThan: session.configRevision,
+          });
+        }
+      } else if (suppliedRevision !== currentRevision) {
+        return rejectClientControl(msg, 'STALE_CONFIG_REVISION', 'Ignored a control from a stale configuration revision.', {
+          configRevision: session.configRevision,
+        });
+      }
+    }
+
+    if (msg.turnId !== undefined
+        && session.activeTurnId
+        && correlationValue(msg.turnId) !== correlationValue(session.activeTurnId)) {
+      return rejectClientControl(msg, 'STALE_TURN', 'Ignored a control for a stale server turn.', {
+        turnId: session.activeTurnId,
+      });
+    }
+    if (msg.responseId !== undefined
+        && session.activeResponseId
+        && correlationValue(msg.responseId) !== correlationValue(session.activeResponseId)) {
+      return rejectClientControl(msg, 'STALE_RESPONSE', 'Ignored a control for a stale response.', {
+        responseId: session.activeResponseId,
+      });
+    }
+
+    const suppliedTurnID = correlationValue(msg.turnID);
+    const knownTurn = suppliedTurnID ? session.clientTurnContexts.get(suppliedTurnID) : null;
+    if (knownTurn && !isSessionContextCurrent(session, knownTurn)) {
+      return rejectClientControl(msg, 'STALE_CLIENT_TURN', 'Ignored a control for a stale client turn.', {
+        turnID: session.clientTurnID || undefined,
+      });
+    }
+    if (knownTurn && session.clientTurnID && suppliedTurnID !== session.clientTurnID) {
+      return rejectClientControl(msg, 'STALE_CLIENT_TURN', 'Ignored a control for a superseded client turn.', {
+        turnID: session.clientTurnID,
+      });
+    }
+    if (type === 'audio_end'
+        && suppliedTurnID
+        && session.committedClientTurnIDs.has(suppliedTurnID)
+        && !(resumeSession && resumableInputFramingRequired)) {
+      return rejectClientControl(msg, 'DUPLICATE_AUDIO_COMMIT', 'Ignored a duplicate audio commit for this client turn.', {
+        turnID: suppliedTurnID,
+      });
+    }
+    if (suppliedTurnID && type === 'interrupt') {
+      const activeContext = session.activeTurnId ? session.turnContexts.get(session.activeTurnId) : null;
+      if (activeContext?.turnID && suppliedTurnID !== correlationValue(activeContext.turnID)) {
+        return rejectClientControl(msg, 'STALE_CLIENT_TURN', 'Ignored an interrupt for a stale client turn.', {
+          turnID: activeContext.turnID,
+        });
+      }
+    }
+
+    if (msg.audioSequence !== undefined) {
+      const suppliedSequence = Number(msg.audioSequence);
+      if (!Number.isSafeInteger(suppliedSequence) || suppliedSequence < 0) {
+        return rejectClientControl(msg, 'INVALID_AUDIO_SEQUENCE', 'audioSequence must be a non-negative integer.');
+      }
+      const sameClientTurn = !suppliedTurnID || !session.clientTurnID || suppliedTurnID === session.clientTurnID;
+      if (sameClientTurn && session.audioSequence !== null && suppliedSequence < Number(session.audioSequence)) {
+        return rejectClientControl(msg, 'STALE_AUDIO_SEQUENCE', 'Ignored a control with an older audio sequence.', {
+          audioSequenceAtLeast: session.audioSequence,
+        });
+      }
+    }
+    return true;
+  }
+
+  function bindClientControlContext(msg) {
+    if (msg.audioSequence !== undefined) session.audioSequence = Number(msg.audioSequence);
+    const turnID = correlationValue(msg.turnID);
+    if (!turnID) return;
+    session.clientTurnID = turnID;
+    const base = captureSessionContext(session, { turnID, audioSequence: session.audioSequence });
+    session.clientTurnContexts.set(turnID, base);
+    while (session.clientTurnContexts.size > 64) {
+      session.clientTurnContexts.delete(session.clientTurnContexts.keys().next().value);
+    }
+    if (session.hfActiveTurnId) {
+      const activeContext = session.turnContexts.get(session.hfActiveTurnId);
+      if (activeContext && isSessionContextCurrent(session, activeContext)) {
+        activeContext.turnID = turnID;
+        activeContext.audioSequence = session.audioSequence;
+        session.clientTurnContexts.set(turnID, activeContext);
+      }
     }
   }
 
   // Cancel any in-flight TTS, dialogue, and optionally ASR
   function cancelPipeline() {
+    finishAudioGap('pipeline-cancelled');
     session.cancelledThroughTurnId = Math.max(session.cancelledThroughTurnId, session.activeTurnId || session.turnSeq || 0);
     if (session.ttsAbort) {
       session.ttsAbort.abort();
@@ -5805,133 +7300,1086 @@ wss.on('connection', (ws) => {
     session.pendingTextTurns = [];
   }
 
-  async function restartHFCompanionBridge(reason = 'config') {
-    session.hfBridge?.close();
+  function prunePendingIPhoneToolCalls() {
+    const oldestAllowed = Date.now() - COMPANION_VOICE_IPHONE_TOOL_RESULT_TIMEOUT_MS;
+    for (const [callID, pending] of session.pendingIPhoneToolCalls) {
+      if (pending.createdAt < oldestAllowed || !isSessionContextCurrent(session, pending.context)) {
+        removePendingIPhoneToolCall(callID);
+      }
+    }
+  }
+
+  function removePendingIPhoneToolCall(callID) {
+    const pending = session.pendingIPhoneToolCalls.get(callID);
+    if (pending?.timer) clearTimeout(pending.timer);
+    session.pendingIPhoneToolCalls.delete(callID);
+    return pending;
+  }
+
+  function persistCurrentCompanionProfile(payload, source, context) {
+    const snapshot = { ...(payload || {}) };
+    session.profilePersistQueue = session.profilePersistQueue
+      .then(() => {
+        if (!isSessionContextCurrent(session, context)) return;
+        return persistLastCompanionVoiceRuntimeProfile(snapshot, source);
+      })
+      .catch(() => {});
+  }
+
+  function clearHFRecord(record) {
+    if (!record) return;
+    settleHFReady(record, false, new Error('HF bridge ownership changed.'));
+    try { record.bridge?.close(); } catch {}
+    if (session.hfBridgeRecord === record) session.hfBridgeRecord = null;
+    if (session.hfStartingRecord === record) session.hfStartingRecord = null;
+    if (session.hfBridge === record.bridge) session.hfBridge = null;
+    for (const [callID, pending] of session.pendingIPhoneToolCalls) {
+      if (pending.record === record) removePendingIPhoneToolCall(callID);
+    }
+  }
+
+  function closeHFCompanionBridge({ clearReconnect = true } = {}) {
+    const records = new Set([session.hfBridgeRecord, session.hfStartingRecord].filter(Boolean));
+    for (const record of records) clearHFRecord(record);
     session.hfBridge = null;
-    if (!session.companionVoiceMode) return false;
-    session.companionVoicePayload = {
+    session.hfBridgeRecord = null;
+    session.hfStartingRecord = null;
+    session.hfBridgeConfigKey = '';
+    session.hfActiveTurnId = 0;
+    if (clearReconnect && session.hfReconnectTimer) {
+      clearTimeout(session.hfReconnectTimer);
+      session.hfReconnectTimer = null;
+    }
+  }
+
+  function createHFReadyWaiter(record) {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    record.readyWaiter = { promise, resolve, settled: false, timer: null };
+    return record.readyWaiter;
+  }
+
+  function armHFReadyWaiter(record) {
+    const waiter = record.readyWaiter;
+    if (!waiter || waiter.settled || waiter.timer) return;
+    waiter.timer = setTimeout(() => {
+      settleHFReady(record, false, new Error('HF realtime session configuration timed out.'));
+    }, COMPANION_VOICE_HF_READY_TIMEOUT_MS);
+    waiter.timer.unref?.();
+  }
+
+  function settleHFReady(record, ok, error = null) {
+    const waiter = record?.readyWaiter;
+    if (!waiter || waiter.settled) return;
+    waiter.settled = true;
+    if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.resolve({ ok, error });
+  }
+
+  function isCurrentHFRecord(record) {
+    return !!record
+      && (session.hfBridgeRecord === record || session.hfStartingRecord === record)
+      && isSessionContextCurrent(session, record.context);
+  }
+
+  function currentHFEventContext(record) {
+    if (record.turnId) {
+      return session.turnContexts.get(record.turnId)
+        || { ...record.context, turnId: record.turnId, responseId: record.responseId || '' };
+    }
+    return record.context;
+  }
+
+  function scheduleHFReconnect(reason, context) {
+    if (session.closing || session.hfReconnectTimer || !session.companionVoiceMode || !isSessionContextCurrent(session, context)) return;
+    const attempt = ++session.hfReconnectAttempts;
+    const delayMs = Math.min(COMPANION_VOICE_HF_RECONNECT_MAX_DELAY_MS, 750 * (2 ** Math.min(5, attempt - 1)));
+    send({
+      type: 'status',
+      status: 'hf-runtime-reconnecting',
+      reason,
+      attempt,
+      retryInMs: delayMs,
+      fallback: true,
+    }, context);
+    session.hfReconnectTimer = setTimeout(() => {
+      session.hfReconnectTimer = null;
+      enqueueControl('hf-reconnect', () => {
+        if (session.hfBridge || session.hfStartingRecord || !isSessionContextCurrent(session, context)) return;
+        runDetached('hf-reconnect', restartHFCompanionBridge(`reconnect-${attempt}`, context));
+      });
+    }, delayMs);
+    session.hfReconnectTimer.unref?.();
+  }
+
+  function enterHFFallback(reason, context, message = '') {
+    if (!isSessionContextCurrent(session, context) || !session.companionVoiceMode) return;
+    if (message) {
+      send({
+        type: 'error',
+        code: 'HF_RUNTIME_UNAVAILABLE',
+        message,
+        recoverable: true,
+      }, context);
+    }
+    const fallbackReady = !!session.serverVad?.enabled;
+    session.hfFallbackActive = fallbackReady;
+    send({
+      type: 'status',
+      status: 'hf-runtime-fallback',
+      reason,
+      fallback: true,
+      fallbackReady,
+      reconnecting: true,
+    }, context);
+    if (fallbackReady) {
+      flushHFInputToFallback();
+      send({
+        type: 'status',
+        status: 'ready',
+        reason: 'hf-runtime-fallback',
+        fallback: true,
+        hf: false,
+        bridgeReady: false,
+        transport: 'companion-server-vad-fallback',
+      }, context);
+    } else {
+      send({ type: 'status', status: 'hf-runtime-unavailable', reason, fallback: false, bridgeReady: false }, context);
+    }
+    scheduleHFReconnect(reason, context);
+  }
+
+  function handleHFUnexpectedClose(record) {
+    if (!isCurrentHFRecord(record)) return;
+    const context = record.context;
+    const needsError = !record.lastErrorAt || Date.now() - record.lastErrorAt > 1_000;
+    clearHFRecord(record);
+    session.hfBridgeConfigKey = '';
+    session.hfActiveTurnId = 0;
+    finishAudioGap('hf-sidecar-closed');
+    enterHFFallback(
+      'hf-sidecar-closed',
+      context,
+      needsError ? 'Companion Realtime Voice HF websocket closed unexpectedly.' : '',
+    );
+  }
+
+  function observeHFBridgeClose(record) {
+    if (record.observingClose || !record.bridge?.hfWs) return;
+    record.observingClose = true;
+    record.bridge.hfWs.on('close', () => handleHFUnexpectedClose(record));
+  }
+
+  function beginHFTurn(record) {
+    if (record.turnOpen && record.turnId && !isTurnStale(session, record.turnId)) return;
+    const turnId = beginTurn(session);
+    const context = session.turnContexts.get(turnId);
+    record.turnId = turnId;
+    record.responseId = context?.responseId || '';
+    record.turnOpen = true;
+    session.hfActiveTurnId = turnId;
+  }
+
+  function finishHFTurn(record) {
+    if (!record) return;
+    record.turnOpen = false;
+    record.turnId = 0;
+    record.responseId = '';
+    if (session.hfBridgeRecord === record) session.hfActiveTurnId = 0;
+  }
+
+  function handleHFBridgeEvent(record, originalEvent = {}) {
+    if (!isCurrentHFRecord(record)) return false;
+    const event = { ...originalEvent };
+    const isConfigReady = event.type === 'status'
+      && event.status === 'ready'
+      && event.hf === true
+      && !!event.source;
+    if (event.type === 'status' && event.status === 'closed') {
+      handleHFUnexpectedClose(record);
+      return false;
+    }
+    if (event.type === 'error') record.lastErrorAt = Date.now();
+    // Reused sidecar sockets can finish an older turn while a session.update is pending.
+    if (record.configuring && !isConfigReady && event.type !== 'error') return false;
+
+    if (isConfigReady) {
+      record.configuring = false;
+      if (session.hfStartingRecord === record) {
+        session.hfStartingRecord = null;
+        session.hfBridgeRecord = record;
+        session.hfBridge = record.bridge;
+        session.hfBridgeConfigKey = record.configKey;
+      }
+      session.hfFallbackActive = false;
+      session.hfReconnectAttempts = 0;
+      settleHFReady(record, true);
+      flushHFInputQueue();
+    }
+
+    const opensTurn = event.type === 'status' && event.status === 'user-turn-open';
+    const beginsTurn = opensTurn
+      || ['transcript', 'reply', 'reply_delta', 'tts_audio_start', 'iphone_tool', 'companion_voice_result'].includes(event.type);
+    if (!record.configuring && opensTurn) beginHFTurn(record);
+    else if (!record.configuring && beginsTurn && !record.turnId) beginHFTurn(record);
+    if (event.responseID && !event.providerResponseId) event.providerResponseId = event.responseID;
+
+    const context = currentHFEventContext(record);
+    if (event.type === 'iphone_tool') {
+      const callID = String(event.callID || event.callId || '').trim();
+      if (!callID || !context.turnId) return false;
+      prunePendingIPhoneToolCalls();
+      while (session.pendingIPhoneToolCalls.size >= 64) {
+        removePendingIPhoneToolCall(session.pendingIPhoneToolCalls.keys().next().value);
+      }
+      const pending = {
+        callID,
+        record,
+        context,
+        createdAt: Date.now(),
+        timer: null,
+      };
+      pending.timer = setTimeout(() => {
+        if (session.pendingIPhoneToolCalls.get(callID) !== pending) return;
+        removePendingIPhoneToolCall(callID);
+        if (!isCurrentHFRecord(record) || !isSessionContextCurrent(session, context)) return;
+        record.bridge.sendToolResult({
+          callID,
+          output: JSON.stringify({ ok: false, error: 'The iPhone tool result timed out.' }),
+          continueResponse: false,
+        });
+        send({
+          type: 'error',
+          code: 'IPHONE_TOOL_RESULT_TIMEOUT',
+          message: 'The pending iPhone tool did not return a result before its deadline.',
+          callID,
+          recoverable: true,
+        }, context);
+      }, COMPANION_VOICE_IPHONE_TOOL_RESULT_TIMEOUT_MS);
+      pending.timer.unref?.();
+      session.pendingIPhoneToolCalls.set(callID, pending);
+      event.callID = callID;
+    }
+    const sent = send(event, context);
+    if (event.type === 'companion_voice_result' && event.done !== false) finishHFTurn(record);
+    return sent;
+  }
+
+  async function restartHFCompanionBridge(reason = 'config', expectedContext = captureSessionContext(session)) {
+    closeHFCompanionBridge({ clearReconnect: false });
+    if (!session.companionVoiceMode || !isSessionContextCurrent(session, expectedContext)) return false;
+    credentialBoundaryRuntimeMetrics.hfRuntimeStarts += 1;
+    session.companionVoicePayload = bindSessionCredentialDelegation(session, {
       ...(session.companionVoicePayload || {}),
       sessionToken: session.companionVoicePayload?.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
       voice: session.voiceConfig?.requested || session.voiceConfig?.id || REALTIME_VOICE,
       localVoice: session.companionVoicePayload?.localVoice || session.companionVoicePayload?.companionTTSVoice || session.voiceConfig?.id || '',
       serverVad: session.serverVad,
+    });
+    const payload = bindSessionCredentialDelegation(session, { ...session.companionVoicePayload });
+    const configKey = await companionVoiceHFBridgeConfigKey(payload, session.serverVad);
+    const record = {
+      bridge: null,
+      context: { ...expectedContext },
+      payload,
+      configKey,
+      configuring: true,
+      turnId: 0,
+      responseId: '',
+      turnOpen: false,
+      readyWaiter: null,
+      observingClose: false,
+      lastErrorAt: 0,
     };
-    session.hfBridgeConfigKey = companionVoiceHFBridgeConfigKey(session.companionVoicePayload, session.serverVad);
-    send({ type: 'status', status: 'preparing-hf-runtime', reason });
-    session.hfBridge = new HFRealtimeBridge({
-      clientWs: ws,
-      send,
-      payload: session.companionVoicePayload,
-      tools: hfRealtimeToolsForCompanionPayload(session.companionVoicePayload),
-      instructions: hfRealtimeInstructionsForCompanionPayload(session.companionVoicePayload),
+    let bridge;
+    const clientWs = {
+      get readyState() {
+        if (!isCurrentHFRecord(record)) return WebSocket.CLOSED;
+        return resumeSession?.state === 'detached' ? WebSocket.OPEN : ws.readyState;
+      },
+      send(data) {
+        return sendBinary(data, currentHFEventContext(record));
+      },
+    };
+    const guardedBridge = {
+      sendToolResult(result) {
+        if (!isCurrentHFRecord(record) || record.configuring) return false;
+        return bridge.sendToolResult(result);
+      },
+    };
+    bridge = new HFRealtimeBridge({
+      clientWs,
+      send: (event) => handleHFBridgeEvent(record, event),
+      payload,
+      tools: hfRealtimeToolsForCompanionPayload(payload),
+      instructions: hfRealtimeInstructionsForCompanionPayload(payload),
       toolHandler: (toolCall) => handleHFRealtimeCompanionToolCall({
         ...toolCall,
-        payload: session.companionVoicePayload,
+        bridge: guardedBridge,
+        payload,
       }),
     });
+    record.bridge = bridge;
+    session.hfStartingRecord = record;
+    createHFReadyWaiter(record);
+    send({ type: 'status', status: 'preparing-hf-runtime', reason }, expectedContext);
     try {
-      await session.hfBridge.start();
+      await bridge.start();
+      if (!isCurrentHFRecord(record)) {
+        clearHFRecord(record);
+        return false;
+      }
+      observeHFBridgeClose(record);
+      armHFReadyWaiter(record);
+      const ready = await record.readyWaiter.promise;
+      if (!ready.ok) throw ready.error || new Error('HF realtime session did not become ready.');
+      if (!isCurrentHFRecord(record) || session.hfBridgeRecord !== record) {
+        clearHFRecord(record);
+        return false;
+      }
       return true;
     } catch (error) {
       const message = error?.message || String(error);
+      const stale = !isCurrentHFRecord(record) || !isSessionContextCurrent(session, expectedContext);
       console.error('[hf-companion] start failed:', message);
-      session.hfBridge?.close();
-      session.hfBridge = null;
+      clearHFRecord(record);
       session.hfBridgeConfigKey = '';
-      send({ type: 'error', message: `Companion Realtime Voice HF runtime failed to start: ${message}` });
-      send({ type: 'status', status: 'hf-runtime-failed', reason });
+      if (stale) return false;
+      enterHFFallback(reason, expectedContext, `Companion Realtime Voice HF runtime failed to start: ${message}`);
       return false;
     }
   }
 
-  ws.on('message', async (data, isBinary) => {
+  async function updateSameProfileHFBridge(record, context) {
+    if (!isCurrentHFRecord(record) || record.configuring) {
+      await restartHFCompanionBridge('config_update-overlapping-runtime-change', context);
+      return;
+    }
+    record.context = { ...context };
+    record.payload = { ...session.companionVoicePayload };
+    record.configuring = true;
+    record.turnId = 0;
+    record.responseId = '';
+    record.turnOpen = false;
+    session.hfActiveTurnId = 0;
+    createHFReadyWaiter(record);
+    record.bridge.updateSession?.({
+      payload: record.payload,
+      tools: hfRealtimeToolsForCompanionPayload(record.payload),
+      instructions: hfRealtimeInstructionsForCompanionPayload(record.payload),
+    });
+    armHFReadyWaiter(record);
+    const ready = await record.readyWaiter.promise;
+    if (ready.ok || !isCurrentHFRecord(record)) return;
+    const message = ready.error?.message || 'HF realtime session reconfiguration failed.';
+    clearHFRecord(record);
+    session.hfBridgeConfigKey = '';
+    enterHFFallback('config_update-no-restart', context, message);
+  }
+
+  function runDetached(label, promise) {
+    // Control initiation is serialized; long model/audio work stays interruptible.
+    Promise.resolve(promise).catch((error) => {
+      if (error?.message === 'aborted') return;
+      console.error(`[ws] ${label} failed:`, error?.message || String(error));
+    });
+  }
+
+  function finishInputGap(reason = 'input-drained') {
+    const gap = session.inputGap;
+    if (!gap) return;
+    session.inputGap = null;
+    send({
+      type: 'audio_gap',
+      direction: 'input',
+      phase: 'end',
+      reason,
+      gapId: gap.id,
+      droppedFrames: gap.droppedFrames,
+      droppedBytes: gap.droppedBytes,
+    }, gap.context);
+  }
+
+  function finishInputBackpressure(reason = 'input-drained') {
+    const pressure = session.inputBackpressure;
+    if (!pressure) return;
+    session.inputBackpressure = null;
+    send({
+      type: 'status',
+      status: 'input_backpressure_recovered',
+      reason,
+      bufferedBytes: session.pendingInputBytes + session.hfInputBytes,
+    }, pressure.context);
+  }
+
+  function maybeFinishInputPressure(reason = 'input-drained') {
+    if (session.pendingInputBytes || session.hfInputBytes) return;
+    finishInputGap(reason);
+    finishInputBackpressure(reason);
+  }
+
+  function scheduleInputPressureCheck() {
+    if (session.inputPressureTimer || session.closing) return;
+    session.inputPressureTimer = setTimeout(() => {
+      session.inputPressureTimer = null;
+      if (session.closing) return;
+      maybeFinishInputPressure();
+      if ((session.inputGap || session.inputBackpressure) && (session.pendingInputBytes || session.hfInputBytes)) {
+        scheduleInputPressureCheck();
+      }
+    }, 25);
+    session.inputPressureTimer.unref?.();
+  }
+
+  function startInputBackpressure(reason, context = captureSessionContext(session)) {
+    if (!session.inputBackpressure) {
+      session.inputBackpressure = { reason, context };
+      send({
+        type: 'status',
+        status: 'input_backpressure',
+        direction: 'input',
+        reason,
+        bufferedBytes: session.pendingInputBytes + session.hfInputBytes,
+        maxBufferedBytes: COMPANION_VOICE_WS_MAX_PENDING_INPUT_BYTES,
+      }, context);
+    }
+    scheduleInputPressureCheck();
+  }
+
+  function recordInputGap(buffer, reason, context = captureSessionContext(session)) {
+    const bytes = Buffer.isBuffer(buffer) ? buffer.length : Number(buffer || 0);
+    if (!session.inputGap || session.inputGap.reason !== reason) {
+      finishInputGap('gap-replaced');
+      session.inputGap = {
+        id: `input-gap-${session.id}-${++session.inputGapSeq}`,
+        reason,
+        context,
+        droppedFrames: 0,
+        droppedBytes: 0,
+      };
+      send({
+        type: 'audio_gap',
+        direction: 'input',
+        phase: 'start',
+        reason,
+        gapId: session.inputGap.id,
+        bufferedBytes: session.pendingInputBytes + session.hfInputBytes,
+      }, context);
+    }
+    session.inputGap.droppedFrames += 1;
+    session.inputGap.droppedBytes += Math.max(0, bytes);
+    startInputBackpressure(reason, context);
+  }
+
+  function enqueueSocketTask(label, task, { control = false, inputBytes = 0, droppedBuffer = null } = {}) {
+    if (session.closing) return session.controlQueue;
+    if (control && session.pendingControlCount >= COMPANION_VOICE_WS_MAX_PENDING_CONTROLS) {
+      send({
+        type: 'error',
+        code: 'WS_CONTROL_QUEUE_FULL',
+        message: 'Too many WebSocket control messages are pending; reconnect the live session.',
+        recoverable: false,
+      });
+      send({ type: 'status', status: 'control_queue_failed' });
+      try { ws.close(1008, 'control queue full'); } catch { ws.terminate(); }
+      return session.controlQueue;
+    }
+    if (inputBytes > 0 && session.pendingInputBytes + inputBytes > COMPANION_VOICE_WS_MAX_PENDING_INPUT_BYTES) {
+      recordInputGap(droppedBuffer || inputBytes, 'dispatch-queue-overflow');
+      return session.controlQueue;
+    }
+    if (control) session.pendingControlCount += 1;
+    if (inputBytes > 0) session.pendingInputBytes += inputBytes;
+    session.controlQueue = session.controlQueue
+      .then(async () => {
+        if (!session.closing) await task();
+      })
+      .catch((error) => {
+        if (!session.closing) {
+          console.error(`[ws] control=${label} failed:`, error?.message || String(error));
+          send({ type: 'error', code: 'WS_CONTROL_FAILED', message: error?.message || String(error), control: label });
+        }
+      })
+      .finally(() => {
+        if (control) session.pendingControlCount = Math.max(0, session.pendingControlCount - 1);
+        if (inputBytes > 0) session.pendingInputBytes = Math.max(0, session.pendingInputBytes - inputBytes);
+        maybeFinishInputPressure('dispatch-queue-drained');
+      });
+    return session.controlQueue;
+  }
+
+  function enqueueControl(label, task) {
+    return enqueueSocketTask(label, task, { control: true });
+  }
+
+  function enqueueBinaryFrame(chunk) {
+    return enqueueSocketTask('binary-audio', () => handleBinaryFrame(chunk), {
+      inputBytes: chunk.length,
+      droppedBuffer: chunk,
+    });
+  }
+
+  function resetHFInputBuffer(reason = 'input-reset', { reportGap = true } = {}) {
+    if (session.hfInputFlushTimer) clearTimeout(session.hfInputFlushTimer);
+    session.hfInputFlushTimer = null;
+    if (reportGap && session.hfInputBytes) recordInputGap(session.hfInputBytes, reason);
+    session.hfInputQueue = [];
+    session.hfInputBytes = 0;
+    session.hfInputCommitPending = false;
+    maybeFinishInputPressure(reason);
+  }
+
+  function scheduleHFInputFlush() {
+    if (session.hfInputFlushTimer || session.closing || session.hfFallbackActive) return;
+    session.hfInputFlushTimer = setTimeout(() => {
+      session.hfInputFlushTimer = null;
+      flushHFInputQueue();
+    }, 20);
+    session.hfInputFlushTimer.unref?.();
+  }
+
+  function queueHFInput(chunk, reason = 'hf-not-ready') {
+    const context = captureSessionContext(session);
+    if (chunk.length > COMPANION_VOICE_WS_MAX_BUFFERED_AUDIO_BYTES) {
+      recordInputGap(chunk, 'hf-input-frame-too-large', context);
+      return false;
+    }
+    while (session.hfInputBytes + chunk.length > COMPANION_VOICE_WS_MAX_BUFFERED_AUDIO_BYTES && session.hfInputQueue.length) {
+      const removed = session.hfInputQueue.shift();
+      session.hfInputBytes -= removed.chunk.length;
+      recordInputGap(removed.chunk, 'hf-input-buffer-overflow', removed.context);
+    }
+    if (session.hfInputBytes + chunk.length > COMPANION_VOICE_WS_MAX_BUFFERED_AUDIO_BYTES) {
+      recordInputGap(chunk, 'hf-input-buffer-overflow', context);
+      return false;
+    }
+    session.hfInputQueue.push({ chunk, context });
+    session.hfInputBytes += chunk.length;
+    startInputBackpressure(reason, context);
+    scheduleHFInputFlush();
+    return true;
+  }
+
+  function flushHFInputQueue() {
+    if (session.closing) return;
+    if (session.hfFallbackActive) {
+      flushHFInputToFallback();
+      return;
+    }
+    const record = session.hfBridgeRecord;
+    const bridge = record?.bridge;
+    if (!record || !isCurrentHFRecord(record) || record.configuring || bridge?.closed
+        || !bridge?.connected || !bridge?.configured || bridge.hfWs?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    while (session.hfInputQueue.length) {
+      if (bridge.hfWs.bufferedAmount >= COMPANION_VOICE_HF_INPUT_HIGH_WATER_BYTES) {
+        startInputBackpressure('hf-upstream-backpressure', currentHFEventContext(record));
+        scheduleHFInputFlush();
+        return;
+      }
+      const pending = session.hfInputQueue.shift();
+      session.hfInputBytes -= pending.chunk.length;
+      if (!isSessionContextCurrent(session, pending.context)) {
+        recordInputGap(pending.chunk, 'stale-hf-input', pending.context);
+        continue;
+      }
+      beginHFTurn(record);
+      bridge.sendAudio(pending.chunk);
+    }
+    session.hfInputBytes = 0;
+    if (session.hfInputCommitPending) {
+      session.hfInputCommitPending = false;
+      bridge.commit();
+    }
+    if (bridge.hfWs.bufferedAmount > COMPANION_VOICE_HF_INPUT_LOW_WATER_BYTES) {
+      scheduleHFInputFlush();
+      return;
+    }
+    maybeFinishInputPressure('hf-input-drained');
+  }
+
+  function sendHFInput(chunk) {
+    const record = session.hfBridgeRecord;
+    const bridge = record?.bridge;
+    if (!record || !isCurrentHFRecord(record) || record.configuring || bridge?.closed
+        || !bridge?.connected || !bridge?.configured || bridge.hfWs?.readyState !== WebSocket.OPEN) {
+      return queueHFInput(chunk, 'hf-pre-open-buffering');
+    }
+    if (session.hfInputQueue.length || bridge.hfWs.bufferedAmount >= COMPANION_VOICE_HF_INPUT_HIGH_WATER_BYTES) {
+      return queueHFInput(chunk, 'hf-upstream-backpressure');
+    }
+    beginHFTurn(record);
+    bridge.sendAudio(chunk);
+    maybeFinishInputPressure('hf-input-flowing');
+    return true;
+  }
+
+  function routeFallbackInput(chunk) {
+    if (session.audioBytesReceived + chunk.length > COMPANION_VOICE_WS_MAX_BUFFERED_AUDIO_BYTES) {
+      recordInputGap(chunk, 'session-audio-buffer-overflow');
+      return false;
+    }
+    if (session.companionVoiceMode && session.serverVad?.enabled) {
+      handleCompanionServerVADChunk(session, chunk, send, cancelPipeline, (reason) => {
+        runDetached('companion-vad-commit', commitCompanionServerVADTurn(session, ws, send, cancelPipeline, reason));
+      });
+    } else {
+      appendCompanionServerVADTurnAudio(session, chunk);
+    }
+    maybeFinishInputPressure('input-flowing');
+    return true;
+  }
+
+  function flushHFInputToFallback() {
+    if (!session.hfFallbackActive || !session.serverVad?.enabled) return;
+    const pending = session.hfInputQueue.splice(0);
+    session.hfInputBytes = 0;
+    for (const item of pending) {
+      if (isSessionContextCurrent(session, item.context)) routeFallbackInput(item.chunk);
+      else recordInputGap(item.chunk, 'stale-fallback-input', item.context);
+    }
+    if (session.hfInputCommitPending) {
+      session.hfInputCommitPending = false;
+      runDetached('companion-vad-buffered-commit', commitCompanionServerVADTurn(
+        session,
+        ws,
+        send,
+        cancelPipeline,
+        'hf_fallback_buffered_commit',
+      ));
+    }
+    maybeFinishInputPressure('fallback-input-drained');
+  }
+
+  function commitHFInput(reason = 'client_audio_end') {
+    if (session.hfFallbackActive && session.serverVad?.enabled) {
+      flushHFInputToFallback();
+      runDetached('companion-vad-fallback-commit', commitCompanionServerVADTurn(session, ws, send, cancelPipeline, reason));
+      return;
+    }
+    const record = session.hfBridgeRecord;
+    if (record && isCurrentHFRecord(record) && !record.configuring && !record.bridge?.closed
+        && record.bridge?.configured && !session.hfInputQueue.length) {
+      record.bridge.commit();
+      return;
+    }
+    session.hfInputCommitPending = true;
+    startInputBackpressure('hf-commit-waiting-for-input');
+    scheduleHFInputFlush();
+  }
+
+  function appendProbeInput(kind, chunk) {
+    const chunksKey = kind === 'barge' ? 'bargeProbeChunks' : 'wakeProbeChunks';
+    const bytesKey = kind === 'barge' ? 'bargeProbeBytes' : 'wakeProbeBytes';
+    if (session[bytesKey] + chunk.length > COMPANION_VOICE_WS_MAX_BUFFERED_AUDIO_BYTES) {
+      recordInputGap(chunk, `${kind}-probe-buffer-overflow`);
+      return false;
+    }
+    session[chunksKey].push(chunk);
+    session[bytesKey] += chunk.length;
+    maybeFinishInputPressure(`${kind}-probe-flowing`);
+    return true;
+  }
+
+  function handleBinaryFrame(data) {
+    if (session.closing) return;
+    const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    if (resumeSession && resumableInputFramingRequired) {
+      try {
+        const admission = resumeSession.consumeAudioFrame(chunk.length);
+        if (admission.duplicate) return;
+      } catch (error) {
+        send({
+          type: 'error',
+          code: error.code || 'INPUT_AUDIO_PROTOCOL_ERROR',
+          message: error.message || 'Input audio frame was rejected.',
+          recoverable: false,
+          details: error.details || {},
+        });
+        return;
+      }
+    }
+    if (!session.started) {
+      recordInputGap(chunk, 'audio-before-start-session');
+      send({ type: 'error', code: 'SESSION_NOT_STARTED', message: 'Binary audio requires start_session first.' });
+      scheduleInputPressureCheck();
+      return;
+    }
+    if (session.configuring) {
+      if (session.companionVoiceMode) queueHFInput(chunk, 'session-configuring');
+      else recordInputGap(chunk, 'audio-during-configuration');
+      return;
+    }
     // Binary frames = audio data from client mic. A preceding control message
     // decides whether this frame belongs to a real utterance or a wake probe.
-    if (isBinary) {
-      if (session.collectingBargeProbe) {
-        session.bargeProbeChunks.push(Buffer.from(data));
-      } else if (session.collectingWakeProbe) {
-        session.wakeProbeChunks.push(Buffer.from(data));
-      } else {
-        const chunk = Buffer.from(data);
-        if (session.hfBridge) {
-          session.hfBridge.sendAudio(chunk);
-        } else if (session.companionVoiceMode && session.serverVad?.enabled) {
-          handleCompanionServerVADChunk(session, chunk, send, cancelPipeline, (reason) => {
-            commitCompanionServerVADTurn(session, ws, send, cancelPipeline, reason)
-              .catch((err) => console.error('[companion-vad] commit failed:', err.message));
-          });
-        } else {
-          appendCompanionServerVADTurnAudio(session, chunk);
+    if (session.collectingBargeProbe) {
+      appendProbeInput('barge', chunk);
+    } else if (session.collectingWakeProbe) {
+      appendProbeInput('wake', chunk);
+    } else if (session.hfFallbackActive) {
+      routeFallbackInput(chunk);
+    } else if (session.hfBridgeRecord && !session.hfBridgeRecord.configuring) {
+      if (session.hfBridge?.closed) handleHFUnexpectedClose(session.hfBridgeRecord);
+      else sendHFInput(chunk);
+    } else if (session.hfStartingRecord) {
+      queueHFInput(chunk, 'hf-pre-open-buffering');
+    } else {
+      routeFallbackInput(chunk);
+    }
+  }
+
+  function sendResumeProtocolError(error, rejectedType = '') {
+    const typed = error instanceof VoiceStreamResumeError;
+    send({
+      type: 'error',
+      code: typed ? error.code : 'VOICE_STREAM_RESUME_ERROR',
+      message: error?.message || 'The resumable voice protocol rejected this message.',
+      recoverable: typed ? error.recoverable : false,
+      rejectedType,
+      details: typed ? error.details : {},
+    });
+  }
+
+  function completeSequencedControl(handle, result) {
+    if (!resumeSession || !handle || handle.legacy || !handle.execute) return;
+    try {
+      const acknowledgement = resumeSession.completeControl(handle, result);
+      if (acknowledgement) sendRawEvent(acknowledgement);
+    } catch (error) {
+      sendResumeProtocolError(error, handle.controlType);
+    }
+  }
+
+  async function handleResumeControl(msg) {
+    const prepared = voiceStreamResumeRegistry.prepareResume(msg);
+    if (prepared.response.status !== 'resumed' || !prepared.owner?.attach) {
+      sendRawEvent(prepared.response);
+      return;
+    }
+    if (prepared.owner === resumeOwner) {
+      sendRawEvent(prepared.response);
+      for (const event of prepared.replay) sendRawEvent(event);
+      return;
+    }
+    const resumedWS = ws;
+    disposeForSocketHandoff();
+    prepared.owner.attach(resumedWS, prepared);
+  }
+
+  async function handleStartSession(msg) {
+    const resumableStartRequested = [
+      'protocolVersion',
+      'clientSessionID',
+      'clientGeneration',
+      'transportOperationID',
+      'wireFormat',
+      'resumeSchemaVersion',
+    ].some((field) => Object.hasOwn(msg, field));
+    const protocolVersion = msg.protocolVersion === undefined ? 0 : Number(msg.protocolVersion);
+    const suppliedRevision = msg.configRevision === undefined ? null : Number(msg.configRevision);
+    const suppliedAudioSequence = msg.audioSequence === undefined ? null : Number(msg.audioSequence);
+    const clientGeneration = msg.clientGeneration === undefined ? 0 : Number(msg.clientGeneration);
+    const clientSessionID = correlationValue(msg.clientSessionID).slice(0, 256);
+    const transportOperationID = correlationValue(msg.transportOperationID).slice(0, 256);
+    if (resumableStartRequested && (
+      !Number.isSafeInteger(protocolVersion)
+        || protocolVersion < 1
+        || (suppliedRevision !== null && (!Number.isSafeInteger(suppliedRevision) || suppliedRevision < 0))
+        || (suppliedAudioSequence !== null && (!Number.isSafeInteger(suppliedAudioSequence) || suppliedAudioSequence < 0))
+        || !Number.isSafeInteger(clientGeneration)
+        || clientGeneration < 0
+        || !clientSessionID
+        || !transportOperationID
+    )) {
+      rejectClientControl(
+        msg,
+        'INVALID_SESSION_CORRELATION',
+        'A resumable start_session requires valid protocol, client-session, generation, transport-operation, and wire-format fields.',
+      );
+      return;
+    }
+
+    let wireFormat = null;
+    if (resumableStartRequested) {
+      try {
+        wireFormat = Object.freeze(normalizeVoiceStreamWireFormat(msg.wireFormat));
+      } catch (error) {
+        sendResumeProtocolError(error, 'start_session');
+        return;
+      }
+    }
+    const authenticatedClientIdentity = String(ws.voiceClawAuthenticatedClientIdentity || '').trim();
+    if (!authenticatedClientIdentity) {
+      sendResumeProtocolError(new VoiceStreamResumeError(
+        'AUTHENTICATED_CLIENT_IDENTITY_MISSING',
+        'The authenticated WebSocket client identity is unavailable.',
+      ), 'start_session');
+      return;
+    }
+
+    let startHandle = null;
+    if (resumableStartRequested) {
+      try {
+        startHandle = voiceStartSessionRegistry.begin({
+          authenticatedClientIdentity,
+          transportOperationID,
+          request: { ...msg, wireFormat },
+          owner: resumeOwner,
+        });
+      } catch (error) {
+        sendResumeProtocolError(error, 'start_session');
+        return;
+      }
+    }
+
+    if (startHandle && !startHandle.execute) {
+      const completed = startHandle.receipt
+        ? { receipt: startHandle.receipt, owner: startHandle.owner }
+        : await startHandle.completion;
+      if (completed?.error || !completed?.receipt) {
+        sendResumeProtocolError(
+          completed?.error || new VoiceStreamResumeError(
+            'START_SESSION_OUTCOME_UNAVAILABLE',
+            'The original start_session attempt did not produce a durable receipt.',
+          ),
+          'start_session',
+        );
+        return;
+      }
+      const duplicateReceipt = { ...completed.receipt, idempotentReplay: true };
+      const owner = completed.owner || startHandle.owner;
+      if (!owner) {
+        sendResumeProtocolError(new VoiceStreamResumeError(
+          'START_SESSION_RUNTIME_EXPIRED',
+          'The idempotent start receipt exists, but its runtime is no longer retained.',
+        ), 'start_session');
+      } else if (owner !== resumeOwner) {
+        if (!owner.isAvailable?.() || !owner.attachStartDuplicate) {
+          sendResumeProtocolError(new VoiceStreamResumeError(
+            'START_SESSION_RUNTIME_EXPIRED',
+            'The idempotent start receipt exists, but its runtime is no longer retained.',
+          ), 'start_session');
+          return;
         }
+        const duplicateWS = ws;
+        disposeForSocketHandoff();
+        owner.attachStartDuplicate(duplicateWS, duplicateReceipt);
+      } else {
+        sendRawEvent(duplicateReceipt);
       }
       return;
     }
 
-    // Text frames = JSON control messages
-    let msg;
-    try { msg = JSON.parse(data.toString()); } catch { return; }
+    try {
+      const processingConfig = resolveProcessingConfig({
+        ...(msg.processing || {}),
+        sessionToken: msg.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
+      });
+      const voiceConfig = await resolveVoiceConfig(msg.voice);
 
-    switch (msg.type) {
-      case 'start_session': {
-        cancelPipeline();
-        session.hfBridge?.close();
-        session.hfBridge = null;
-        session.audioChunks = [];
-        session.audioBytesReceived = 0;
-        session.wakeProbeChunks = [];
-        session.bargeProbeChunks = [];
-        session.collectingWakeProbe = false;
-        session.collectingBargeProbe = false;
-        session.continuousTextBuffer = '';
-        session.continuousLastSpeechAt = 0;
-        session.turnSeq = 0;
-        session.activeTurnId = 0;
-        session.cancelledThroughTurnId = 0;
-        session.busyQueueSeq = 0;
-        session.pendingTextTurns = [];
-        session.processingConfig = resolveProcessingConfig({ ...(msg.processing || {}), sessionToken: msg.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}` });
-        session.voiceConfig = await resolveVoiceConfig(msg.voice);
-        session.companionVoiceMode = !!msg.companionVoice;
-        session.companionVoicePayload = session.companionVoiceMode && msg.companionVoicePayload && typeof msg.companionVoicePayload === 'object'
-          ? { ...msg.companionVoicePayload, sessionToken: msg.sessionToken || msg.companionVoicePayload.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}` }
-          : null;
-        if (session.companionVoicePayload) {
-          persistLastCompanionVoiceRuntimeProfile(session.companionVoicePayload, 'websocket-start-session').catch(() => {});
-        }
-        session.serverVad = buildCompanionServerVADState(msg);
-        session.ttsSpeed = getTtsSpeedOptions().defaultSpeed;
-        if (msg.ttsSpeed) session.ttsSpeed = msg.ttsSpeed;
-        send({ type: 'processing', processing: session.processingConfig });
-        send({
-          type: 'voice',
-          voice: {
-            id: session.voiceConfig.id,
-            label: session.voiceConfig.label,
-            engine: session.voiceConfig.engine,
-            fallbackUsed: session.voiceConfig.fallbackUsed,
-            requested: session.voiceConfig.requested,
-          }
-        });
-        if (session.companionVoiceMode) {
-          await restartHFCompanionBridge('start_session');
-        } else {
-          send({ type: 'status', status: 'ready' });
-        }
-        break;
+      voiceStartSessionRegistry.releaseOwner(resumeOwner, { exceptKey: startHandle?.key || '' });
+      finishAudioGap('session-reset');
+      session.hfBridge?.interrupt?.('start-session');
+      cancelPipeline();
+      closeHFCompanionBridge();
+      resetHFInputBuffer('session-reset');
+      session.hfFallbackActive = false;
+      session.pendingIPhoneToolCalls.clear();
+      session.generation += 1;
+      session.configRevision = suppliedRevision ?? (Number(session.configRevision) + 1);
+      session.protocolVersion = resumableStartRequested ? protocolVersion : 0;
+      session.clientSessionID = resumableStartRequested ? clientSessionID : '';
+      session.clientGeneration = resumableStartRequested ? clientGeneration : '';
+      session.clientTurnID = correlationValue(msg.turnID).slice(0, 256);
+      session.audioSequence = resumableStartRequested ? suppliedAudioSequence : null;
+      session.wireFormat = wireFormat;
+      session.clientTurnContexts.clear();
+      session.committedClientTurnIDs.clear();
+      resumableInputFramingRequired = resumableStartRequested;
+      if (resumeSession) {
+        const priorResumeSession = resumeSession;
+        resumeSession = null;
+        priorResumeSession.setOwner(null);
+        voiceStreamResumeRegistry.closeSession(priorResumeSession.sessionID, 'start-session-replaced');
       }
+      if (resumableStartRequested) {
+        resumeSession = voiceStreamResumeRegistry.createSession({
+          sessionID: session.id,
+          clientSessionID: session.clientSessionID,
+          clientGeneration: session.clientGeneration,
+          serverGeneration: session.generation,
+          configRevision: session.configRevision,
+          transportOperationID,
+          wireFormat,
+        }, { owner: resumeOwner });
+      }
+      if (session.clientTurnID) {
+        session.clientTurnContexts.set(session.clientTurnID, captureSessionContext(session));
+      }
+      session.started = true;
+      credentialBoundaryRuntimeMetrics.startSessionApplications += 1;
+      session.configuring = true;
+      const configContext = captureSessionContext(session);
+      session.audioChunks = [];
+      session.audioBytesReceived = 0;
+      session.wakeProbeChunks = [];
+      session.wakeProbeBytes = 0;
+      session.bargeProbeChunks = [];
+      session.bargeProbeBytes = 0;
+      session.collectingWakeProbe = false;
+      session.collectingBargeProbe = false;
+      session.wakeProbeProcessing = false;
+      session.wakeProbeToken = null;
+      session.continuousTextBuffer = '';
+      session.continuousLastSpeechAt = 0;
+      session.activeTurnId = 0;
+      session.activeResponseId = '';
+      session.cancelledThroughTurnId = session.turnSeq;
+      session.busyQueueSeq = 0;
+      session.pendingTextTurns = [];
+      session.clientAudioCommit = null;
+      session.processingConfig = processingConfig;
+      session.voiceConfig = voiceConfig;
+      session.companionVoiceMode = !!msg.companionVoice;
+      session.companionVoicePayload = session.companionVoiceMode && msg.companionVoicePayload && typeof msg.companionVoicePayload === 'object'
+        ? bindSessionCredentialDelegation(session, {
+            ...msg.companionVoicePayload,
+            sessionToken: msg.sessionToken || msg.companionVoicePayload.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
+          })
+        : null;
+      if (session.companionVoicePayload) {
+        persistCurrentCompanionProfile(session.companionVoicePayload, 'websocket-start-session', configContext);
+      }
+      session.serverVad = buildCompanionServerVADState(msg);
+      session.ttsSpeed = msg.ttsSpeed || getTtsSpeedOptions().defaultSpeed;
+      session.configuring = false;
 
+      const startReceiptPayload = lifecycleEvent({
+        type: 'start_session_ack',
+        status: 'accepted',
+        code: 'SESSION_STARTED',
+        transportOperationID: resumableStartRequested ? transportOperationID : undefined,
+        clientSessionID: session.clientSessionID || undefined,
+        clientGeneration: resumableStartRequested ? session.clientGeneration : undefined,
+        serverGeneration: session.generation,
+        configRevision: session.configRevision,
+        protocolVersion: session.protocolVersion,
+        protocolMode: resumableStartRequested ? 'resumable-v1' : 'legacy',
+        resumeSupported: resumableStartRequested,
+        inputAudioFraming: resumableStartRequested ? 'required' : 'legacy-unframed',
+        wireFormat: session.wireFormat ? { ...session.wireFormat } : null,
+        receiptDurable: resumableStartRequested,
+        idempotentReplay: false,
+      }, configContext);
+      const startReceipt = resumableStartRequested
+        ? journalOutboundEvent(startReceiptPayload)
+        : startReceiptPayload;
+      if (startHandle) {
+        voiceStartSessionRegistry.complete(startHandle, startReceipt, { owner: resumeOwner });
+      }
+      sendRawEvent(startReceipt);
+      send({ type: 'processing', processing: session.processingConfig }, configContext);
+      send({
+        type: 'voice',
+        voice: {
+          id: session.voiceConfig.id,
+          label: session.voiceConfig.label,
+          engine: session.voiceConfig.engine,
+          fallbackUsed: session.voiceConfig.fallbackUsed,
+          requested: session.voiceConfig.requested,
+        },
+      }, configContext);
+      if (session.companionVoiceMode) {
+        runDetached('hf-start-session', restartHFCompanionBridge('start_session', configContext));
+      } else {
+        send({ type: 'status', status: 'ready' }, configContext);
+      }
+    } catch (error) {
+      session.configuring = false;
+      voiceStartSessionRegistry.fail(startHandle, error);
+      sendResumeProtocolError(error, 'start_session');
+    }
+  }
+
+  async function handleControlMessage(msg) {
+    const credentialDelegation = credentialDelegationsByControlPayload.get(msg);
+    if (credentialDelegation) {
+      credentialDelegationsBySession.set(session, credentialDelegation);
+      bindSessionCredentialDelegation(session, session.companionVoicePayload);
+    }
+    if (msg.type === 'resume_session') {
+      await handleResumeControl(msg);
+      return;
+    }
+    if (msg.type === 'start_session') {
+      await handleStartSession(msg);
+      return;
+    }
+    let controlHandle = null;
+    if (resumeSession && msg.controlSequence !== undefined) {
+      try {
+        controlHandle = resumeSession.beginControl(msg);
+      } catch (error) {
+        sendResumeProtocolError(error, msg.type);
+        return;
+      }
+      if (!controlHandle.execute) {
+        if (controlHandle.event) sendRawEvent(controlHandle.event);
+        return;
+      }
+    }
+    if (!validateClientControl(msg)) {
+      completeSequencedControl(controlHandle, {
+        status: 'rejected',
+        code: 'CONTROL_REJECTED',
+        message: 'The control failed session or generation validation.',
+      });
+      return;
+    }
+    if (!['start_session', 'config_update', 'iphone_tool_result', 'input_audio_frame', 'rendered_audio_ack', 'auth', 'authenticate'].includes(msg.type)) {
+      bindClientControlContext(msg);
+    }
+    let controlResult = { status: 'applied' };
+    try {
+      switch (msg.type) {
       case 'config_update': {
-        session.processingConfig = resolveProcessingConfig({ ...(msg.processing || {}), sessionToken: msg.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}` });
-        session.voiceConfig = await resolveVoiceConfig(msg.voice || session.voiceConfig?.id);
+        if (!session.started) {
+          send({ type: 'error', code: 'SESSION_NOT_STARTED', message: 'config_update requires start_session first.' });
+          break;
+        }
+        session.hfBridge?.interrupt?.('config-update');
+        cancelPipeline();
+        resetHFInputBuffer('config-update');
+        session.hfFallbackActive = false;
+        session.clientAudioCommit = null;
+        if (session.hfReconnectTimer) {
+          clearTimeout(session.hfReconnectTimer);
+          session.hfReconnectTimer = null;
+        }
+        session.hfReconnectAttempts = 0;
+        session.configRevision = msg.configRevision === undefined
+          ? Number(session.configRevision) + 1
+          : Number(msg.configRevision);
+        resumeSession?.updateIdentity({ configRevision: session.configRevision });
+        session.clientTurnID = '';
+        session.clientTurnContexts.clear();
+        session.committedClientTurnIDs.clear();
+        session.audioSequence = msg.audioSequence === undefined ? null : Number(msg.audioSequence);
+        session.configuring = true;
+        const configContext = captureSessionContext(session);
+        const processingConfig = resolveProcessingConfig({ ...(msg.processing || {}), sessionToken: msg.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}` });
+        const voiceConfig = await resolveVoiceConfig(msg.voice || session.voiceConfig?.id);
+        if (!isSessionContextCurrent(session, configContext)) return;
+        session.processingConfig = processingConfig;
+        session.voiceConfig = voiceConfig;
         if (Object.hasOwn(msg, 'companionVoice')) session.companionVoiceMode = !!msg.companionVoice;
         if (msg.companionVoicePayload && typeof msg.companionVoicePayload === 'object') {
-          session.companionVoicePayload = {
+          session.companionVoicePayload = bindSessionCredentialDelegation(session, {
             ...(session.companionVoicePayload || {}),
             ...msg.companionVoicePayload,
             sessionToken: msg.sessionToken || msg.companionVoicePayload.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
-          };
-          persistLastCompanionVoiceRuntimeProfile(session.companionVoicePayload, 'websocket-config-update').catch(() => {});
+          });
         }
         session.serverVad = buildCompanionServerVADState({
           ...msg,
@@ -5940,7 +8388,8 @@ wss.on('connection', (ws) => {
           serverVad: msg.serverVad || msg.companionVoicePayload?.serverVad,
         });
         if (msg.ttsSpeed) session.ttsSpeed = msg.ttsSpeed;
-        send({ type: 'processing', processing: session.processingConfig });
+        session.configuring = false;
+        send({ type: 'processing', processing: session.processingConfig }, configContext);
         send({
           type: 'voice',
           voice: {
@@ -5950,40 +8399,72 @@ wss.on('connection', (ws) => {
             fallbackUsed: session.voiceConfig.fallbackUsed,
             requested: session.voiceConfig.requested,
           }
-        });
+        }, configContext);
         if (session.companionVoiceMode) {
-          session.companionVoicePayload = {
+          session.companionVoicePayload = bindSessionCredentialDelegation(session, {
             ...(session.companionVoicePayload || {}),
             sessionToken: session.companionVoicePayload?.sessionToken || session.processingConfig?.sessionToken || `ws-${session.id}`,
             voice: session.voiceConfig?.requested || session.voiceConfig?.id || REALTIME_VOICE,
             localVoice: session.companionVoicePayload?.localVoice || session.companionVoicePayload?.companionTTSVoice || session.voiceConfig?.id || '',
             serverVad: session.serverVad,
-          };
-          persistLastCompanionVoiceRuntimeProfile(session.companionVoicePayload, 'websocket-config-update-normalized').catch(() => {});
-          const nextBridgeConfigKey = companionVoiceHFBridgeConfigKey(session.companionVoicePayload, session.serverVad);
-          if (!session.hfBridge) {
-            await restartHFCompanionBridge('config_update');
-          } else if (nextBridgeConfigKey !== session.hfBridgeConfigKey) {
-            await restartHFCompanionBridge('config_update-runtime-change');
-          } else {
-            session.hfBridge.updateSession?.({
-              payload: session.companionVoicePayload,
-              tools: hfRealtimeToolsForCompanionPayload(session.companionVoicePayload),
-              instructions: hfRealtimeInstructionsForCompanionPayload(session.companionVoicePayload),
-            });
-            send({ type: 'status', status: 'ready', reason: 'config_update-no-restart' });
-          }
-        } else if (session.hfBridge) {
-          session.hfBridge.close();
-          session.hfBridge = null;
-          session.hfBridgeConfigKey = '';
+          });
+          persistCurrentCompanionProfile(session.companionVoicePayload, 'websocket-config-update', configContext);
+          const nextBridgeConfigKey = await companionVoiceHFBridgeConfigKey(session.companionVoicePayload, session.serverVad);
+          if (!isSessionContextCurrent(session, configContext)) return;
+          const transition = dispatchHFCompanionConfigTransition({
+            bridge: session.hfBridge,
+            record: session.hfBridgeRecord,
+            currentConfigKey: session.hfBridgeConfigKey,
+            nextConfigKey: nextBridgeConfigKey,
+            context: configContext,
+            restart: restartHFCompanionBridge,
+            update: updateSameProfileHFBridge,
+          });
+          runDetached(transition.label, transition.operation);
+        } else {
+          closeHFCompanionBridge();
+          send({ type: 'status', status: 'ready', reason: 'config_update' }, configContext);
         }
         break;
       }
 
+      case 'rendered_audio_ack': {
+        if (!resumeSession) {
+          throw new VoiceStreamResumeError(
+            'RESUME_NOT_REGISTERED',
+            'rendered_audio_ack requires a registered resumable transport operation.',
+          );
+        }
+        if (msg.controlSequence === undefined || msg.controlID === undefined) {
+          throw new VoiceStreamResumeError(
+            'RENDERED_AUDIO_ACK_REQUIRES_SEQUENCE',
+            'rendered_audio_ack must use the durable control sequence.',
+          );
+        }
+        const rendered = resumeSession.recordRenderedAudioAck(msg);
+        controlResult = {
+          status: rendered.duplicate ? 'duplicate' : 'applied',
+          code: rendered.duplicate ? 'RENDERED_AUDIO_ACK_DUPLICATE' : 'RENDERED_AUDIO_ACK_RETAINED',
+          renderedAudioAck: rendered.acknowledgement,
+        };
+        break;
+      }
+
+      case 'input_audio_frame':
+        if (!resumeSession) {
+          throw new VoiceStreamResumeError(
+            'RESUME_NOT_REGISTERED',
+            'input_audio_frame requires a registered resumable transport operation.',
+          );
+        }
+        resumeSession.declareAudioFrame(msg);
+        bindClientControlContext(msg);
+        break;
+
       case 'wake_probe_start':
         if (session.processing || session.wakeProbeProcessing) break;
         session.wakeProbeChunks = [];
+        session.wakeProbeBytes = 0;
         session.wakeProbeMode = msg.mode === 'continuous' ? 'continuous' : 'wake';
         session.collectingWakeProbe = true;
         break;
@@ -5992,13 +8473,13 @@ wss.on('connection', (ws) => {
         session.collectingWakeProbe = false;
         if (msg.mode === 'continuous') session.wakeProbeMode = 'continuous';
         if (session.wakeProbeChunks.length === 0 || session.processing || session.wakeProbeProcessing) break;
-        processWakeProbe(session, ws, send).catch((err) => {
-          console.error('[wake] probe failed:', err.message);
-        });
+        session.wakeProbeBytes = 0;
+        runDetached('wake-probe', processWakeProbe(session, ws, send));
         break;
 
       case 'barge_probe_start':
         session.bargeProbeChunks = [];
+        session.bargeProbeBytes = 0;
         session.bargeMode = msg.mode === 'playback' ? 'playback' : 'generation';
         session.collectingBargeProbe = true;
         break;
@@ -6007,69 +8488,131 @@ wss.on('connection', (ws) => {
         session.collectingBargeProbe = false;
         if (msg.mode === 'playback') session.bargeMode = 'playback';
         if (session.bargeProbeChunks.length === 0) break;
-        processBargeProbe(session, ws, send, cancelPipeline).catch((err) => {
-          console.error('[barge] probe failed:', err.message);
-        });
+        session.bargeProbeBytes = 0;
+        runDetached('barge-probe', processBargeProbe(session, ws, send, cancelPipeline));
         break;
 
       case 'audio_end':
         // Client finished recording an utterance — process it
+        if (resumeSession && resumableInputFramingRequired) {
+          const commitment = resumeSession.commitInput({
+            turnID: msg.turnID,
+            audioSequence: msg.audioSequence,
+          });
+          if (commitment.event) sendRawEvent(commitment.event);
+          if (commitment.duplicate) break;
+        }
+        if (msg.turnID !== undefined) session.committedClientTurnIDs.add(correlationValue(msg.turnID));
         session.collectingWakeProbe = false;
-        if (session.hfBridge) {
-          session.hfBridge.commit();
+        if (session.hfBridge || session.hfStartingRecord || session.hfFallbackActive) {
+          commitHFInput(msg.reason || 'client_audio_end');
           break;
         }
         if (session.companionVoiceMode && session.serverVad?.enabled) {
-          await commitCompanionServerVADTurn(session, ws, send, cancelPipeline, msg.reason || 'client_audio_end');
+          runDetached('companion-vad-audio-end', commitCompanionServerVADTurn(session, ws, send, cancelPipeline, msg.reason || 'client_audio_end'));
           break;
         }
-        {
-          const expectedBytes = Number(msg.audioBytes || 0);
-          if (expectedBytes > session.audioBytesReceived) {
-            const start = Date.now();
-            while (Date.now() - start < 650 && expectedBytes > session.audioBytesReceived) {
-              if (session.audioChunks.length === 0) {
-                console.log(`[ws] audio_end arrived before binary audio session=${session.id} clientBytes=${expectedBytes}; waiting for frames`);
-              }
-              await sleep(35);
-            }
+        if (session.clientAudioCommit) {
+          send({ type: 'status', status: 'audio_commit_pending', reason: 'duplicate-audio-end' });
+          break;
+        }
+        const commitToken = Symbol('client-audio-commit');
+        session.clientAudioCommit = commitToken;
+        runDetached('audio-end', (async () => {
+          const context = captureSessionContext(session);
+          try {
+            const expectedBytes = Number(msg.audioBytes || 0);
             if (expectedBytes > session.audioBytesReceived) {
-              console.warn(`[ws] audio_end byte mismatch session=${session.id} expected=${expectedBytes} received=${session.audioBytesReceived}`);
+              const start = Date.now();
+              while (Date.now() - start < 650
+                  && expectedBytes > session.audioBytesReceived
+                  && isSessionContextCurrent(session, context)) {
+                if (session.audioChunks.length === 0) {
+                  console.log(`[ws] audio_end arrived before binary audio session=${session.id} clientBytes=${expectedBytes}; waiting for frames`);
+                }
+                await sleep(35);
+              }
+              if (!isSessionContextCurrent(session, context)) return;
+              if (expectedBytes > session.audioBytesReceived) {
+                console.warn(`[ws] audio_end byte mismatch session=${session.id} expected=${expectedBytes} received=${session.audioBytesReceived}`);
+              }
             }
+            if (!isSessionContextCurrent(session, context)) return;
+            if (session.audioChunks.length === 0) {
+              send({ type: 'error', message: `No audio received for committed turn (clientBytes=${Number(msg.audioBytes || 0)})` }, context);
+              return;
+            }
+            console.log(`[ws] audio_end session=${session.id} chunks=${session.audioChunks.length} serverBytes=${session.audioBytesReceived} clientBytes=${Number(msg.audioBytes || 0)}`);
+            await processUtterance(session, ws, send, cancelPipeline);
+          } finally {
+            if (session.clientAudioCommit === commitToken) session.clientAudioCommit = null;
           }
-        }
-        if (session.audioChunks.length === 0) {
-          send({ type: 'error', message: `No audio received for committed turn (clientBytes=${Number(msg.audioBytes || 0)})` });
-          break;
-        }
-        console.log(`[ws] audio_end session=${session.id} chunks=${session.audioChunks.length} serverBytes=${session.audioBytesReceived} clientBytes=${Number(msg.audioBytes || 0)}`);
-        await processUtterance(session, ws, send, cancelPipeline);
+        })());
         break;
 
       case 'client_speech_end_hint':
-        if (session.hfBridge) {
-          session.hfBridge.commit();
+        if (resumeSession && resumableInputFramingRequired) {
+          const commitment = resumeSession.commitInput({
+            turnID: msg.turnID,
+            audioSequence: msg.audioSequence,
+          });
+          if (commitment.event) sendRawEvent(commitment.event);
+          if (commitment.duplicate) break;
+        }
+        if (session.hfBridge || session.hfStartingRecord || session.hfFallbackActive) {
+          commitHFInput(msg.reason || 'client_speech_end_hint');
         } else if (session.companionVoiceMode && session.serverVad?.enabled) {
-          await commitCompanionServerVADTurn(session, ws, send, cancelPipeline, msg.reason || 'client_speech_end_hint');
+          runDetached('companion-vad-speech-end', commitCompanionServerVADTurn(session, ws, send, cancelPipeline, msg.reason || 'client_speech_end_hint'));
         }
         break;
 
-      case 'iphone_tool_result':
-        if (session.hfBridge) {
-          session.hfBridge.sendToolResult({
-            callID: msg.callID || msg.callId || '',
-            output: typeof msg.output === 'string' ? msg.output : JSON.stringify(msg.output || {}),
-            continueResponse: false,
+      case 'iphone_tool_result': {
+        const callID = String(msg.callID || msg.callId || '').trim();
+        prunePendingIPhoneToolCalls();
+        const pending = callID ? session.pendingIPhoneToolCalls.get(callID) : null;
+        const suppliedGeneration = msg.sessionGeneration ?? msg.generation;
+        const suppliedClientSessionID = msg.clientSessionID;
+        const suppliedClientGeneration = msg.clientGeneration;
+        const suppliedRevision = msg.configRevision;
+        const suppliedTurnId = msg.turnId;
+        const suppliedTurnID = msg.turnID;
+        const suppliedResponseId = msg.responseId;
+        const suppliedAudioSequence = msg.audioSequence;
+        const matchesSuppliedOwnership = pending
+          && (suppliedGeneration === undefined || String(suppliedGeneration) === String(pending.context.generation))
+          && (suppliedClientSessionID === undefined || String(suppliedClientSessionID) === String(pending.context.clientSessionID))
+          && (suppliedClientGeneration === undefined || String(suppliedClientGeneration) === String(pending.context.clientGeneration))
+          && (suppliedRevision === undefined || String(suppliedRevision) === String(pending.context.configRevision))
+          && (suppliedTurnId === undefined || String(suppliedTurnId) === String(pending.context.turnId))
+          && (suppliedTurnID === undefined || String(suppliedTurnID) === String(pending.context.turnID))
+          && (suppliedResponseId === undefined || String(suppliedResponseId) === String(pending.context.responseId))
+          && (suppliedAudioSequence === undefined || String(suppliedAudioSequence) === String(pending.context.audioSequence));
+        if (!pending || !matchesSuppliedOwnership || pending.record !== session.hfBridgeRecord || !isSessionContextCurrent(session, pending.context)) {
+          send({
+            type: 'error',
+            code: pending ? 'STALE_IPHONE_TOOL_RESULT' : 'UNKNOWN_IPHONE_TOOL_CALL',
+            message: pending
+              ? 'Ignored an iPhone tool result from a stale session generation or response.'
+              : 'Ignored an iPhone tool result with no matching pending call.',
+            callID,
           });
+          break;
         }
+        removePendingIPhoneToolCall(callID);
+        pending.record.bridge.sendToolResult({
+          callID,
+          output: typeof msg.output === 'string' ? msg.output : JSON.stringify(msg.output || {}),
+          continueResponse: false,
+        });
         break;
+      }
 
       case 'companion_voice_text_turn':
         if (!session.companionVoiceMode) {
           send({ type: 'error', message: 'companion_voice_text_turn requires companionVoice mode' });
           break;
         }
-        await processCompanionVoiceStreamingTextTurn(session, ws, send, msg.text || '');
+        runDetached('companion-voice-text-turn', processCompanionVoiceStreamingTextTurn(session, ws, send, msg.text || ''));
         break;
 
       case 'client_event':
@@ -6079,37 +8622,209 @@ wss.on('connection', (ws) => {
       case 'interrupt':
         // Barge-in: kill current TTS immediately
         console.log('[ws] interrupt received');
+        finishAudioGap('client-interrupt');
         if (session.hfBridge) {
           session.hfBridge.interrupt(msg.reason || 'client-interrupt');
+          finishHFTurn(session.hfBridgeRecord);
+          resetHFInputBuffer('client-interrupt');
         } else {
+          resetHFInputBuffer('client-interrupt');
           cancelPipeline();
           send({ type: 'interrupted' });
         }
         break;
 
-      default:
-        break;
+        default:
+          break;
+      }
+    } catch (error) {
+      controlResult = {
+        status: 'rejected',
+        code: error.code || 'CONTROL_FAILED',
+        message: error.message || 'The control could not be applied.',
+      };
+      sendResumeProtocolError(error, msg.type);
+    } finally {
+      completeSequencedControl(controlHandle, controlResult);
     }
-  });
+  }
 
-  ws.on('close', () => {
-    console.log('[ws] client disconnected');
-    session.hfBridge?.close();
-    session.hfBridge = null;
+  function onSocketMessage(data, isBinary) {
+    if (this !== ws || handedOff || tornDown) return;
+    if (isBinary) {
+      enqueueBinaryFrame(Buffer.from(data));
+      return;
+    }
+    const text = data.toString('utf8');
+    enqueueControl('control-frame', async () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        send({ type: 'error', code: 'INVALID_CONTROL_JSON', message: 'WebSocket control messages must be valid JSON.' });
+        return;
+      }
+      let msg;
+      try {
+        msg = credentialBoundWebSocketControlPayload(parsed, ws, {
+          allowBridgeAuthenticationFields: ['start_session', 'resume_session', 'auth', 'authenticate']
+            .includes(String(parsed?.type || '').toLowerCase()),
+        });
+      } catch (error) {
+        const code = error instanceof VoiceCredentialBoundaryError
+          ? error.code
+          : 'VOICE_CREDENTIAL_BOUNDARY_FAILED';
+        send({
+          type: 'error',
+          code,
+          message: error?.message || 'The WebSocket credential boundary rejected the control message.',
+          ...(error?.path ? { path: error.path } : {}),
+        });
+        try { ws.close(1008, String(code).slice(0, 123)); } catch { ws.terminate(); }
+        return;
+      }
+      if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.type !== 'string') {
+        send({ type: 'error', code: 'INVALID_CONTROL_MESSAGE', message: 'WebSocket control messages require a string type.' });
+        return;
+      }
+      await handleControlMessage(msg);
+    });
+  }
+
+  function onSocketClose(code) {
+    if (this !== ws || handedOff || tornDown) return;
+    unbindSocket(this);
+    console.log(`[ws] client disconnected session=${session.id} code=${code}`);
+    if (session.outputBackpressureTimer) clearTimeout(session.outputBackpressureTimer);
+    if (session.inputPressureTimer) clearTimeout(session.inputPressureTimer);
+    session.outputBackpressureTimer = null;
+    session.inputPressureTimer = null;
+    const intentionalClose = code === 1000 || code === 1001;
+    if (!intentionalClose && resumeSession && session.started) {
+      resumeSession.detach('socket-closed');
+      return;
+    }
+    teardownRuntime(intentionalClose ? 'client-closed' : 'socket-closed');
+  }
+
+  function onSocketError(err) {
+    if (this !== ws || handedOff || tornDown) return;
+    console.error('[ws] error:', err.message);
+  }
+
+  function bindSocket(nextWS) {
+    ws = nextWS;
+    ws.voiceClawSessionAllocated = true;
+    ws.isAlive = true;
+    ws.on('pong', markWebSocketAlive);
+    ws.on('message', onSocketMessage);
+    ws.on('close', onSocketClose);
+    ws.on('error', onSocketError);
+  }
+
+  function unbindSocket(targetWS) {
+    targetWS?.off('pong', markWebSocketAlive);
+    targetWS?.off('message', onSocketMessage);
+    targetWS?.off('close', onSocketClose);
+    targetWS?.off('error', onSocketError);
+  }
+
+  function teardownRuntime(reason, { removeResumeSession = true } = {}) {
+    if (tornDown) return;
+    tornDown = true;
+    session.closing = true;
+    if (session.outputBackpressureTimer) clearTimeout(session.outputBackpressureTimer);
+    if (session.inputPressureTimer) clearTimeout(session.inputPressureTimer);
+    session.outputBackpressureTimer = null;
+    session.inputPressureTimer = null;
+    resetHFInputBuffer(reason, { reportGap: false });
+    closeHFCompanionBridge();
     cancelPipeline();
     clearHistory(sessionId);
-  });
+    voiceStartSessionRegistry.releaseOwner(resumeOwner);
+    if (removeResumeSession && resumeSession) {
+      const retained = resumeSession;
+      resumeSession = null;
+      retained.setOwner(null);
+      voiceStreamResumeRegistry.closeSession(retained.sessionID, reason);
+    }
+  }
 
-  ws.on('error', (err) => {
-    console.error('[ws] error:', err.message);
-    session.hfBridge?.close();
-    session.hfBridge = null;
-    cancelPipeline();
-  });
+  function disposeForSocketHandoff() {
+    if (handedOff || tornDown) return;
+    handedOff = true;
+    session.closing = true;
+    unbindSocket(ws);
+    if (session.outputBackpressureTimer) clearTimeout(session.outputBackpressureTimer);
+    if (session.inputPressureTimer) clearTimeout(session.inputPressureTimer);
+    if (session.started) {
+      resetHFInputBuffer('socket-handoff', { reportGap: false });
+      closeHFCompanionBridge();
+      cancelPipeline();
+      clearHistory(sessionId);
+    }
+    if (resumeSession) {
+      const provisional = resumeSession;
+      resumeSession = null;
+      provisional.setOwner(null);
+      voiceStreamResumeRegistry.closeSession(provisional.sessionID, 'socket-handoff');
+    }
+  }
+
+  function attachRetainedSocket(nextWS, prepared) {
+    if (tornDown || prepared?.response?.status !== 'resumed') {
+      try { nextWS.close(1012, 'retained runtime unavailable'); } catch { nextWS.terminate(); }
+      return;
+    }
+    const previousWS = ws;
+    unbindSocket(previousWS);
+    if (previousWS !== nextWS && previousWS.readyState === WebSocket.OPEN) {
+      try { previousWS.close(1012, 'superseded by resume'); } catch { previousWS.terminate(); }
+    }
+    session.closing = false;
+    handedOff = false;
+    bindSocket(nextWS);
+    sendRawEvent(prepared.response);
+    for (const event of prepared.replay || []) sendRawEvent(event);
+  }
+
+  function attachDuplicateStartSocket(nextWS, receipt) {
+    if (tornDown || !session.started) {
+      try { nextWS.close(1012, 'retained runtime unavailable'); } catch { nextWS.terminate(); }
+      return;
+    }
+    const previousWS = ws;
+    unbindSocket(previousWS);
+    if (previousWS !== nextWS && previousWS.readyState === WebSocket.OPEN) {
+      try { previousWS.close(1012, 'superseded by idempotent start'); } catch { previousWS.terminate(); }
+    }
+    session.closing = false;
+    handedOff = false;
+    bindSocket(nextWS);
+    sendRawEvent(receipt);
+  }
+
+  bindSocket(ws);
+
+  if (firstControlMessage) enqueueControl(firstControlMessage.type || 'first-message', () => handleControlMessage(firstControlMessage));
+}
+
+wss.on('connection', (ws, req) => {
+  if (ws.voiceClawUpgradeAuthenticated) {
+    initializeWebSocketSession(ws, req);
+  } else {
+    beginPendingWebSocketAuth(ws, req);
+  }
+});
+
+codexRealtimeWss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', markWebSocketAlive);
+  attachCodexRealtimeRelaySocket({ ws, bridge: codexAppServerBridge });
 });
 
 const wsHeartbeatTimer = setInterval(() => {
-  for (const ws of wss.clients) {
+  for (const ws of [...wss.clients, ...codexRealtimeWss.clients]) {
     if (ws.isAlive === false) {
       console.warn('[ws] client heartbeat missed; terminating stale socket');
       ws.terminate();
@@ -6121,6 +8836,7 @@ const wsHeartbeatTimer = setInterval(() => {
 }, COMPANION_VOICE_WS_HEARTBEAT_MS);
 wsHeartbeatTimer.unref?.();
 wss.on('close', () => clearInterval(wsHeartbeatTimer));
+codexRealtimeWss.on('close', () => clearInterval(wsHeartbeatTimer));
 
 // ── Pipeline: audio → ASR → dialogue → TTS → stream back ───────────
 
@@ -6159,27 +8875,62 @@ function parseWakeTurn(text = '') {
   return { matched: true, turnText: isWakeRemainderTurn(stripped) ? stripped : '', stripped };
 }
 
+function captureSessionContext(session, overrides = {}) {
+  return {
+    generation: session.generation || 0,
+    configRevision: session.configRevision || 0,
+    protocolVersion: overrides.protocolVersion ?? session.protocolVersion ?? 0,
+    clientSessionID: overrides.clientSessionID ?? session.clientSessionID ?? '',
+    clientGeneration: overrides.clientGeneration ?? session.clientGeneration ?? '',
+    turnID: overrides.turnID ?? session.clientTurnID ?? '',
+    audioSequence: overrides.audioSequence ?? session.audioSequence ?? null,
+    turnId: overrides.turnId ?? 0,
+    responseId: overrides.responseId || '',
+  };
+}
+
+function isSessionContextCurrent(session, context = {}) {
+  return !session.closing
+    && Number(context.generation ?? session.generation) === Number(session.generation)
+    && String(context.configRevision ?? session.configRevision) === String(session.configRevision)
+    && (!context.clientSessionID || !session.clientSessionID || context.clientSessionID === session.clientSessionID)
+    && (context.clientGeneration === ''
+      || context.clientGeneration === undefined
+      || session.clientGeneration === ''
+      || String(context.clientGeneration) === String(session.clientGeneration));
+}
+
 function beginTurn(session) {
   const turnId = ++session.turnSeq;
+  const responseId = `${session.id}:g${session.generation}:c${session.configRevision}:t${turnId}:r${++session.responseSeq}`;
   session.activeTurnId = turnId;
+  session.activeResponseId = responseId;
+  session.turnContexts.set(turnId, captureSessionContext(session, { turnId, responseId }));
+  while (session.turnContexts.size > 64) {
+    session.turnContexts.delete(session.turnContexts.keys().next().value);
+  }
   return turnId;
 }
 
 function isTurnStale(session, turnId) {
-  return turnId <= (session.cancelledThroughTurnId || 0) || turnId !== session.activeTurnId;
+  const context = session.turnContexts.get(turnId);
+  return !context
+    || !isSessionContextCurrent(session, context)
+    || turnId <= (session.cancelledThroughTurnId || 0)
+    || turnId !== session.activeTurnId;
 }
 
 async function processTranscribedUtterance(session, ws, send, text, turnStart = Date.now(), turnId = beginTurn(session), options = {}) {
   const cleanedText = stripWakePrefixFromTurn(text);
   if (!cleanedText || cleanedText.trim() === '' || cleanedText.trim() === '[BLANK_AUDIO]') {
-    send({ type: 'transcript', text: '(no speech detected)', final: true });
+    send({ type: 'transcript', text: '(no speech detected)', final: true, turnId });
     return;
   }
   const gate = actionability(cleanedText, { allowWake: false, allowShortCommand: true, context: options.queued ? 'queued' : 'turn' });
   if (!gate.actionable) {
     console.log(`[turn] filtered_non_actionable reason=${gate.reason} text=${JSON.stringify(cleanedText.slice(0, 80))}`);
     send({ type: 'transcript', text: gate.reason === 'noise-only' ? '(background noise ignored)' : '(unclear audio ignored)', rawText: text, final: true, filtered: true, reason: gate.reason, turnId });
-    send({ type: 'status', status: 'ready' });
+    send({ type: 'status', status: 'ready', turnId });
     return;
   }
 
@@ -6193,7 +8944,7 @@ async function processTranscribedUtterance(session, ws, send, text, turnStart = 
   const dialogueController = new AbortController();
   session.dialogueAbort = dialogueController;
 
-  send({ type: 'status', status: 'thinking' });
+  send({ type: 'status', status: 'thinking', turnId });
   const dialogueStart = Date.now();
   const reply = await generateReply(routedText, {
     sessionId: session.id,
@@ -6201,7 +8952,7 @@ async function processTranscribedUtterance(session, ws, send, text, turnStart = 
     processing: session.processingConfig,
   });
   console.log(`[turn] dialogue_ms=${Date.now() - dialogueStart} turn=${turnId}`);
-  session.dialogueAbort = null;
+  if (session.dialogueAbort === dialogueController) session.dialogueAbort = null;
 
   if (isTurnStale(session, turnId)) {
     console.log(`[turn] stale_after_dialogue turn=${turnId} active=${session.activeTurnId} cancelledThrough=${session.cancelledThroughTurnId}`);
@@ -6225,15 +8976,13 @@ async function processTranscribedUtterance(session, ws, send, text, turnStart = 
     speed: session.ttsSpeed,
   });
   console.log(`[turn] tts_ms=${Date.now() - ttsStart} audio_bytes=${wavBuf.length} turn=${turnId}`);
-  session.ttsAbort = null;
+  if (session.ttsAbort === ttsController) session.ttsAbort = null;
 
   if (isTurnStale(session, turnId)) {
     console.log(`[turn] stale_after_tts turn=${turnId} active=${session.activeTurnId} cancelledThrough=${session.cancelledThroughTurnId}`);
     return;
   }
-  if (ws.readyState === ws.OPEN) {
-    ws.send(wavBuf);
-  }
+  send.binary?.(wavBuf, turnId);
   send({ type: 'tts_end', turnId });
   console.log(`[turn] total_ms=${Date.now() - turnStart} turn=${turnId}`);
 }
@@ -6319,9 +9068,6 @@ async function drainPendingTextTurns(session, ws, send) {
     if (err.message !== 'aborted') console.error('[queue-drain]', err.message);
   } finally {
     if (session.activeTurnId === turnId) session.processing = false;
-    session.dialogueAbort = null;
-    session.ttsAbort = null;
-    session.asrAbort = null;
   }
   while (session.pendingTextTurns[0]?.dropped) session.pendingTextTurns.shift();
   if (session.pendingTextTurns.length && !session.processing && session.pendingTextTurns[0].ready) {
@@ -6354,7 +9100,7 @@ async function processUtterance(session, ws, send, cancelPipeline) {
   if (energy.skip) {
     console.log(`[turn] skipped low-energy audio turn=${turnId} rms=${Math.round(energy.rms)} threshold=${energy.threshold}`);
     send({ type: 'transcript', text: '(blank audio ignored)', final: true, filtered: true, reason: 'low-energy', turnId });
-    send({ type: 'status', status: 'ready' });
+    send({ type: 'status', status: 'ready', turnId });
     session.processing = false;
     return;
   }
@@ -6364,7 +9110,7 @@ async function processUtterance(session, ws, send, cancelPipeline) {
 
   try {
     // 1. ASR
-    send({ type: 'status', status: 'transcribing' });
+    send({ type: 'status', status: 'transcribing', turnId });
     const asrStart = Date.now();
     const { text } = await transcribe(rawAudio, {
       signal: asrController.signal,
@@ -6372,7 +9118,7 @@ async function processUtterance(session, ws, send, cancelPipeline) {
       authPayload: session.companionVoicePayload || {},
     });
     console.log(`[turn] asr_ms=${Date.now() - asrStart} turn=${turnId} text=${JSON.stringify((text || '').slice(0, 80))}`);
-    session.asrAbort = null;
+    if (session.asrAbort === asrController) session.asrAbort = null;
 
     if (isTurnStale(session, turnId)) {
       console.log(`[turn] stale_after_asr turn=${turnId} active=${session.activeTurnId} cancelledThrough=${session.cancelledThroughTurnId}`);
@@ -6385,13 +9131,11 @@ async function processUtterance(session, ws, send, cancelPipeline) {
       // Expected from interrupt — already handled
     } else {
       console.error('[pipeline]', err.message);
-      send({ type: 'error', message: 'Processing failed' });
+      send({ type: 'error', message: 'Processing failed', turnId });
     }
   } finally {
     if (session.activeTurnId === turnId) session.processing = false;
-    session.asrAbort = null;
-    session.dialogueAbort = null;
-    session.ttsAbort = null;
+    if (session.asrAbort === asrController) session.asrAbort = null;
     if (!session.processing) {
       drainPendingTextTurns(session, ws, send).catch((err) => console.error('[queue-drain]', err.message));
     }
@@ -6412,7 +9156,7 @@ function sendCompanionVoiceFilteredTerminal(send, session, {
   };
   const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || `companion-voice-${Date.now().toString(36)}`);
   const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
-  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+  const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-0.8b');
   send({
     type: 'companion_voice_result',
     turnId,
@@ -6528,7 +9272,7 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
     };
     const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || `companion-voice-${Date.now().toString(36)}`);
     const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
-    const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+    const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-0.8b');
     const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
     const context = String(payload.context || '').trim();
 
@@ -6586,12 +9330,16 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
     const routeReply = '';
     let reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : String(plan.finalAnswer || '').trim();
     if (!reply) reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : "I heard you.";
-    if (reply) send({ type: 'reply', text: reply, turnId });
+    const responseId = session.turnContexts.get(turnId)?.responseId || '';
+    const textSegmentID = companionVoiceTextSegmentID(responseId);
+    if (reply) send({ type: 'reply', text: reply, turnId, textSegmentID: textSegmentID || undefined, final: true });
 
     const ttsStart = Date.now();
     const audio = await streamCompanionVoiceReplyToWebSocket(ws, send, reply, payload, {
       turnId,
       signal: controller.signal,
+      textSegmentID,
+      sendBinary: (chunk) => send.binary?.(chunk, turnId),
     });
     const ttsMs = Date.now() - ttsStart;
     const elapsedMs = Date.now() - turnStart;
@@ -6671,9 +9419,9 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
     }
   } finally {
     if (session.activeTurnId === turnId) session.processing = false;
-    session.asrAbort = null;
-    session.dialogueAbort = null;
-    session.ttsAbort = null;
+    if (session.asrAbort === controller) session.asrAbort = null;
+    if (session.dialogueAbort === controller) session.dialogueAbort = null;
+    if (session.ttsAbort === controller) session.ttsAbort = null;
   }
 }
 
@@ -6719,7 +9467,7 @@ async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = 
     };
     const sessionToken = sanitizeRealtimeSessionToken(payload.sessionToken || `companion-voice-${Date.now().toString(36)}`);
     const routeMode = normalizeCompanionVoiceRoute(payload.routeMode || payload.route || 'gpt55-direct');
-    const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-2b');
+    const brainMode = normalizeCompanionVoiceBrainMode(payload.brainMode || 'qwen3.5-0.8b');
     const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
     const context = String(payload.context || '').trim();
     if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
@@ -6763,12 +9511,16 @@ async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = 
     const routeReply = '';
     let reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : String(plan.finalAnswer || '').trim();
     if (!reply) reply = shouldCallRoute ? companionVoiceRouteAck(routeMode, plan) : "I heard you.";
-    if (reply) send({ type: 'reply', text: reply, turnId });
+    const responseId = session.turnContexts.get(turnId)?.responseId || '';
+    const textSegmentID = companionVoiceTextSegmentID(responseId);
+    if (reply) send({ type: 'reply', text: reply, turnId, textSegmentID: textSegmentID || undefined, final: true });
 
     const ttsStart = Date.now();
     const audio = await streamCompanionVoiceReplyToWebSocket(ws, send, reply, payload, {
       turnId,
       signal: controller.signal,
+      textSegmentID,
+      sendBinary: (chunk) => send.binary?.(chunk, turnId),
     });
     const ttsMs = Date.now() - ttsStart;
     const elapsedMs = Date.now() - startedAt;
@@ -6839,8 +9591,8 @@ async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = 
     }
   } finally {
     if (session.activeTurnId === turnId) session.processing = false;
-    session.dialogueAbort = null;
-    session.ttsAbort = null;
+    if (session.dialogueAbort === controller) session.dialogueAbort = null;
+    if (session.ttsAbort === controller) session.ttsAbort = null;
   }
 }
 
@@ -6951,13 +9703,15 @@ function parseBargeIn(text = '', mode = 'generation') {
 }
 
 async function processBargeProbe(session, ws, send, cancelPipeline) {
+  const probeContext = captureSessionContext(session);
+  const probeMode = session.bargeMode;
   const rawAudio = Buffer.concat(session.bargeProbeChunks);
   session.bargeProbeChunks = [];
   if (!rawAudio.length) return;
   const energy = shouldSkipAudio(rawAudio, MIN_PROBE_RMS);
   if (energy.skip) {
     console.log(`[barge] skipped low-energy probe rms=${Math.round(energy.rms)} threshold=${energy.threshold}`);
-    send({ type: 'barge_probe_result', matched: false, text: '', reason: 'low-energy' });
+    send({ type: 'barge_probe_result', matched: false, text: '', reason: 'low-energy' }, probeContext);
     return;
   }
 
@@ -6969,28 +9723,27 @@ async function processBargeProbe(session, ws, send, cancelPipeline) {
       sampleRate: companionSessionSampleRate(session),
       authPayload: session.companionVoicePayload || {},
     });
+    if (!isSessionContextCurrent(session, probeContext)) return;
     const trimmed = String(text || '').trim();
-    const parsed = parseBargeIn(trimmed, session.bargeMode);
-    console.log(`[barge] mode=${session.bargeMode} probe_ms=${Date.now() - started} matched=${parsed.matched} phrase=${JSON.stringify(parsed.phrase || '')} remainder=${JSON.stringify(parsed.remainder || '')} text=${JSON.stringify(trimmed.slice(0, 120))}`);
-    send({ type: 'barge_probe_result', matched: parsed.matched, text: trimmed, remainder: parsed.remainder || '' });
+    const parsed = parseBargeIn(trimmed, probeMode);
+    console.log(`[barge] mode=${probeMode} probe_ms=${Date.now() - started} matched=${parsed.matched} phrase=${JSON.stringify(parsed.phrase || '')} remainder=${JSON.stringify(parsed.remainder || '')} text=${JSON.stringify(trimmed.slice(0, 120))}`);
+    send({ type: 'barge_probe_result', matched: parsed.matched, text: trimmed, remainder: parsed.remainder || '' }, probeContext);
     if (parsed.matched) {
       cancelPipeline();
-      send({ type: 'interrupted', reason: 'voice-barge-in', text: trimmed, remainder: parsed.remainder || '' });
+      send({ type: 'interrupted', reason: 'voice-barge-in', text: trimmed, remainder: parsed.remainder || '' }, probeContext);
       if (parsed.remainder) {
         setTimeout(async () => {
-          if (session.processing) return;
+          if (!isSessionContextCurrent(session, probeContext) || session.processing) return;
           session.processing = true;
+          let remainderTurnId = 0;
           try {
-            const remainderTurnId = beginTurn(session);
+            remainderTurnId = beginTurn(session);
             send({ type: 'barge_remainder_started', text: parsed.remainder, turnId: remainderTurnId });
             await processTranscribedUtterance(session, ws, send, parsed.remainder, started, remainderTurnId);
           } catch (err) {
             if (err.message !== 'aborted') console.error('[barge-remainder]', err.message);
           } finally {
-            if (!session.activeTurnId || session.activeTurnId <= session.cancelledThroughTurnId) session.processing = false;
-            session.dialogueAbort = null;
-            session.ttsAbort = null;
-            session.asrAbort = null;
+            if (remainderTurnId && session.activeTurnId === remainderTurnId) session.processing = false;
           }
         }, 150);
       }
@@ -7003,17 +9756,21 @@ async function processBargeProbe(session, ws, send, cancelPipeline) {
 async function processWakeProbe(session, ws, send) {
   if (session.wakeProbeProcessing) return;
   session.wakeProbeProcessing = true;
+  const probeContext = captureSessionContext(session);
+  const probeMode = session.wakeProbeMode;
+  const probeToken = Symbol('wake-probe');
+  session.wakeProbeToken = probeToken;
   const rawAudio = Buffer.concat(session.wakeProbeChunks);
   session.wakeProbeChunks = [];
   if (!rawAudio.length) {
-    session.wakeProbeProcessing = false;
+    if (session.wakeProbeToken === probeToken) session.wakeProbeProcessing = false;
     return;
   }
   const energy = shouldSkipAudio(rawAudio, MIN_PROBE_RMS);
   if (energy.skip) {
     console.log(`[wake] skipped low-energy probe rms=${Math.round(energy.rms)} threshold=${energy.threshold}`);
-    send({ type: 'wake_probe_result', matched: false, text: '', rawText: '', reason: 'low-energy', mode: session.wakeProbeMode });
-    session.wakeProbeProcessing = false;
+    send({ type: 'wake_probe_result', matched: false, text: '', rawText: '', reason: 'low-energy', mode: probeMode }, probeContext);
+    if (session.wakeProbeToken === probeToken) session.wakeProbeProcessing = false;
     return;
   }
 
@@ -7025,12 +9782,13 @@ async function processWakeProbe(session, ws, send) {
       sampleRate: companionSessionSampleRate(session),
       authPayload: session.companionVoicePayload || {},
     });
+    if (!isSessionContextCurrent(session, probeContext)) return;
     const trimmed = String(text || '').trim();
     let matched;
     let turnText = trimmed;
     let buffered = '';
     let wakeRemainder = '';
-    if (session.wakeProbeMode === 'continuous') {
+    if (probeMode === 'continuous') {
       const absorbed = absorbContinuousSpeech(session, trimmed);
       matched = absorbed.matched;
       turnText = absorbed.text || trimmed;
@@ -7041,9 +9799,9 @@ async function processWakeProbe(session, ws, send) {
       wakeRemainder = parsedWake.turnText || '';
       turnText = wakeRemainder || trimmed;
     }
-    console.log(`[wake] mode=${session.wakeProbeMode} probe_ms=${Date.now() - started} matched=${matched} text=${JSON.stringify(trimmed.slice(0, 80))} remainder=${JSON.stringify(wakeRemainder.slice(0, 120))} buffered=${JSON.stringify(buffered.slice(0, 120))}`);
-    send({ type: 'wake_probe_result', matched, text: turnText, rawText: trimmed, remainder: wakeRemainder, buffered, mode: session.wakeProbeMode });
-    if (matched && session.wakeProbeMode === 'wake' && wakeRemainder) {
+    console.log(`[wake] mode=${probeMode} probe_ms=${Date.now() - started} matched=${matched} text=${JSON.stringify(trimmed.slice(0, 80))} remainder=${JSON.stringify(wakeRemainder.slice(0, 120))} buffered=${JSON.stringify(buffered.slice(0, 120))}`);
+    send({ type: 'wake_probe_result', matched, text: turnText, rawText: trimmed, remainder: wakeRemainder, buffered, mode: probeMode }, probeContext);
+    if (matched && probeMode === 'wake' && wakeRemainder) {
       if (session.processing) {
         if (session.pendingTextTurns.length >= MAX_CLASSIC_PENDING_TURNS) {
           send({ type: 'busy', message: `OpenClaw queue is full (${MAX_CLASSIC_PENDING_TURNS} waiting). Say stop or wait a moment.` });
@@ -7060,16 +9818,13 @@ async function processWakeProbe(session, ws, send) {
         await processTranscribedUtterance(session, ws, send, wakeRemainder, started, turnId);
       } finally {
         if (session.activeTurnId === turnId) session.processing = false;
-        session.dialogueAbort = null;
-        session.ttsAbort = null;
-        session.asrAbort = null;
         if (!session.processing) {
           drainPendingTextTurns(session, ws, send).catch((err) => console.error('[queue-drain]', err.message));
         }
       }
       return;
     }
-    if (matched && session.wakeProbeMode === 'continuous') {
+    if (matched && probeMode === 'continuous') {
       if (session.processing) {
         if (session.pendingTextTurns.length >= MAX_CLASSIC_PENDING_TURNS) {
           send({ type: 'busy', message: `OpenClaw queue is full (${MAX_CLASSIC_PENDING_TURNS} waiting). Say stop or wait a moment.` });
@@ -7086,20 +9841,20 @@ async function processWakeProbe(session, ws, send) {
         await processTranscribedUtterance(session, ws, send, turnText, started, turnId);
       } finally {
         if (session.activeTurnId === turnId) session.processing = false;
-        session.dialogueAbort = null;
-        session.ttsAbort = null;
-        session.asrAbort = null;
         if (!session.processing) {
           drainPendingTextTurns(session, ws, send).catch((err) => console.error('[queue-drain]', err.message));
         }
       }
       return;
     }
-    if (matched) send({ type: 'wake_detected', text: trimmed, mode: session.wakeProbeMode });
+    if (matched) send({ type: 'wake_detected', text: trimmed, mode: probeMode }, probeContext);
   } catch (err) {
     if (err.message !== 'aborted') console.error('[wake]', err.message);
   } finally {
-    session.wakeProbeProcessing = false;
+    if (session.wakeProbeToken === probeToken) {
+      session.wakeProbeProcessing = false;
+      session.wakeProbeToken = null;
+    }
   }
 }
 
@@ -7111,7 +9866,7 @@ function companionVoiceWarmProfiles() {
     label: 'primary',
     options: {
       prepareSet: 'recommended',
-      brainMode: primaryProfile.brainMode || 'qwen3.5-2b',
+      brainMode: primaryProfile.brainMode || 'qwen3.5-0.8b',
       sttProfile: primaryProfile.sttProfile || 'parakeet-live',
       localVoice: primaryProfile.localVoice || 'kokoro-af-heart',
       cerebrasModel: primaryProfile.cerebrasModel || '',
@@ -7123,7 +9878,7 @@ function companionVoiceWarmProfiles() {
       label: 'fast-whisper',
       options: {
         prepareSet: '',
-        brainMode: 'qwen3.5-2b',
+        brainMode: 'qwen3.5-0.8b',
         sttProfile: 'faster-whisper-fast',
         localVoice: 'kokoro-af-heart',
       },
@@ -7132,7 +9887,7 @@ function companionVoiceWarmProfiles() {
       label: 'balanced-whisper',
       options: {
         prepareSet: '',
-        brainMode: 'qwen3.5-2b',
+        brainMode: 'qwen3.5-0.8b',
         sttProfile: 'faster-whisper-balanced',
         localVoice: 'kokoro-af-heart',
       },
@@ -7141,7 +9896,7 @@ function companionVoiceWarmProfiles() {
       label: 'mlx-accurate',
       options: {
         prepareSet: '',
-        brainMode: 'qwen3.5-2b',
+        brainMode: 'qwen3.5-0.8b',
         sttProfile: 'mlx-whisper-accurate',
         localVoice: 'kokoro-af-heart',
       },
@@ -7192,11 +9947,46 @@ function startCompanionVoiceKeepHot() {
   timer.unref?.();
 }
 
-httpServer.listen(PORT, BIND_HOST, () => {
-  console.log(`[voice-bridge] listening on http://${BIND_HOST}:${PORT}${BASE_PATH || '/'}`);
-  console.log(`[voice-bridge] client dir: ${CLIENT_DIR}`);
-  console.log(`[voice-bridge] WebSocket endpoint: ws://localhost:${PORT}${WS_PATH}`);
-  console.log(`[voice-bridge] health endpoint: http://localhost:${PORT}/healthz`);
-  console.log(`[voice-bridge] wake phrase: ${JSON.stringify(WAKE_PHRASE)}`);
-  console.log('[voice-bridge] startup prewarm disabled; Companion voice, keep-hot, and Powerhouse warm passes run only after explicit user action or route demand.');
+if (process.env.VOICECLAW_OUTER_HF_TEST !== '1') {
+  httpServer.listen(PORT, BIND_HOST, () => {
+    console.log(`[voice-bridge] listening on http://${BIND_HOST}:${PORT}${BASE_PATH || '/'}`);
+    console.log(`[voice-bridge] client dir: ${CLIENT_DIR}`);
+    console.log(`[voice-bridge] WebSocket endpoint: ws://localhost:${PORT}${WS_PATH}`);
+    console.log(`[voice-bridge] Codex Realtime V2 relay: ws://localhost:${PORT}${CODEX_REALTIME_WS_PATH}`);
+    console.log(`[voice-bridge] health endpoint: http://localhost:${PORT}/healthz`);
+    console.log(`[voice-bridge] wake phrase: ${JSON.stringify(WAKE_PHRASE)}`);
+    console.log('[voice-bridge] startup prewarm disabled; Companion voice, keep-hot, and Powerhouse warm passes run only after explicit user action or route demand.');
+  });
+}
+
+export const outerHFIntegration = Object.freeze({
+  companionVoiceHFBridgeConfigKey,
+  credentialBoundaryRuntimeSnapshot: () => ({ ...credentialBoundaryRuntimeMetrics }),
+  dispatchHFCompanionConfigTransition,
+  handleHFRealtimeCompanionToolCall,
+  handleRealtimeSidebandEvent,
+  httpServer,
+  realtimeSidebandStateSnapshot(sessionToken) {
+    const state = realtimeSidebandStateFor(sessionToken);
+    return {
+      activeResponseId: state.activeResponseId,
+      pendingResponseCreates: state.pendingResponseCreates.length,
+      pendingResponseIntentBytes: state.pendingResponseIntentBytes,
+      responseCreateAttempts: state.responseCreateAttempts,
+      responseCreateOutcomeUnknownAt: state.responseCreateOutcomeUnknownAt,
+      responseIntentOverflowCount: state.responseIntentOverflowCount,
+    };
+  },
+  requestSidebandResponseCreate,
+  resetRealtimeSidebandState,
+  clearRealtimeSidebandForTest(sessionToken) {
+    realtimeSidebands.delete(sanitizeRealtimeSessionToken(sessionToken));
+    resetRealtimeSidebandState(sessionToken);
+  },
+  runRealtimeOpenClawTurn,
+  setRealtimeSidebandForTest(sessionToken, socket) {
+    realtimeSidebands.set(sanitizeRealtimeSessionToken(sessionToken), socket);
+  },
+  startSessionRegistrySnapshot: () => voiceStartSessionRegistry.snapshot(),
+  wsPath: WS_PATH,
 });

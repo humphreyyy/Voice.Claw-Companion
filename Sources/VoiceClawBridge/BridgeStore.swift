@@ -872,7 +872,7 @@ final class BridgeStore: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: [
             "prepareSet": "recommended",
-            "brainMode": "qwen3.5-2b",
+            "brainMode": "qwen3.5-0.8b",
             "sttProfile": "parakeet-live",
             "localVoice": "kokoro-af-heart",
         ])
@@ -1214,6 +1214,12 @@ final class BridgeStore: ObservableObject {
     private func refreshPairingPayloadSecrets() {
         guard !pairingJSON.isEmpty else { return }
         updatePairingPayload(from: pairingJSON)
+    }
+
+    func refreshPairingPayloadForDisplay() {
+        if !refreshPairingPayloadFromBridgeConfig() {
+            refreshPairingPayloadSecrets()
+        }
     }
 
     private func persistBridgeAuthDefaults() async {
@@ -1844,7 +1850,10 @@ final class BridgeStore: ObservableObject {
                 ?? config["openAIOAuthAccountID"] as? String
                 ?? "",
             "CerebrasAPIKey": config["cerebrasAPIKey"] as? String ?? "",
-            "WatchPublicBridgeURL": "",
+            "WatchPublicBridgeURL": config["watchPublicBridgeURL"] as? String
+                ?? config["WatchPublicBridgeURL"] as? String
+                ?? config["openClawPublicTunnelURL"] as? String
+                ?? "",
             "CompanionVersion": Self.currentCompanionVersion ?? "",
             "CompanionBuild": Self.currentCompanionBuild ?? "",
             "CompanionReleaseTag": Self.currentCompanionReleaseTag,

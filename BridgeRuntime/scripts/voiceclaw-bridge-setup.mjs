@@ -1119,7 +1119,7 @@ async function checkCompanionVoiceDependencies(openClawInstallPath, { prepareSet
       missingWhisperModel: whisperModelReady ? '' : whisperModelPath,
     },
     middleBrain: {
-      defaultMode: 'qwen3.5-2b',
+      defaultMode: 'qwen3.5-0.8b',
       qwenModel: DEFAULT_QWEN_MODEL,
       ollamaBaseURL: OLLAMA_BASE_URL,
       ollamaState,
@@ -1262,7 +1262,7 @@ async function installCompanionVoiceDependencies(openClawInstallPath, { prepareS
         await runCommand(brewPath, ['install', 'ollama']);
         await ensureOllamaReachable(brewPath);
         brewPath = await resolveOptionalExecutable('brew', process.env.BREW_BIN || '');
-      } else if (item.id === 'qwen3.5-2b') {
+      } else if (item.id === 'qwen3.5-0.8b') {
         let ollamaPath = await resolveOptionalExecutable('ollama', process.env.OLLAMA_BIN || '');
         if (!ollamaPath && brewPath) {
           await runCommand(brewPath, ['install', 'ollama']);

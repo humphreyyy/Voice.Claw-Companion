@@ -28,7 +28,7 @@ function startPayload() {
       source: 'synthetic-stream-smoke',
       sessionToken,
       routeMode: 'standalone',
-      brainMode: process.env.VOICECLAW_COMPANION_STREAM_SMOKE_BRAIN || 'qwen3.5-2b',
+      brainMode: process.env.VOICECLAW_COMPANION_STREAM_SMOKE_BRAIN || 'qwen3.5-0.8b',
       qwenThinking: false,
       cerebrasAPIKey: process.env.CEREBRAS_API_KEY || '',
       cerebrasModel: process.env.VOICECLAW_COMPANION_STREAM_SMOKE_CEREBRAS_MODEL || 'gemma-4-31b',

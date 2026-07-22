@@ -98,8 +98,8 @@ The current HF realtime stack checks for:
 
 - Faster Whisper speech-to-text:
   `Systran/faster-whisper-base.en`
-- Qwen 3.5 2B local Companion Realtime Voice LLM when Local Qwen is selected:
-  `mlx-community/Qwen3.5-2B-4bit`
+- Qwen 3.5 0.8B local Companion Realtime Voice LLM when Local Qwen is selected:
+  `mlx-community/Qwen3.5-0.8B-4bit`
 - Qwen3 local text-to-speech:
   `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit`
 

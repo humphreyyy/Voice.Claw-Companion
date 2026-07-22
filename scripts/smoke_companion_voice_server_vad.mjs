@@ -46,7 +46,7 @@ function startPayload() {
       source: 'server-vad-smoke',
       sessionToken,
       routeMode: 'standalone',
-      brainMode: process.env.VOICECLAW_COMPANION_STREAM_SMOKE_BRAIN || 'qwen3.5-2b',
+      brainMode: process.env.VOICECLAW_COMPANION_STREAM_SMOKE_BRAIN || 'qwen3.5-0.8b',
       qwenThinking: false,
       localVoice: process.env.VOICECLAW_COMPANION_STREAM_SMOKE_LOCAL_VOICE || 'kokoro-af-heart',
       ttsSpeed: 'normal',

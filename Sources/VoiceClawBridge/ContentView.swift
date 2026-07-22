@@ -1361,6 +1361,9 @@ private struct PairingPanel: View {
                 showingLargeQRCode = false
             }
         }
+        .task {
+            store.refreshPairingPayloadForDisplay()
+        }
     }
 
     private var setupCodeValue: String {

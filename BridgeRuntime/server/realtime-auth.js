@@ -5,6 +5,10 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import {
+  accessTokenFromValidatedVoiceAccessTokenDelegation,
+  validatedVoiceAccessTokenDelegationForPayload,
+} from './voice-credential-boundary.js';
 
 const HOME = homedir();
 const execFileAsync = promisify(execFile);
@@ -246,73 +250,15 @@ async function loadOpenAIChatGPTOAuthProfilesFromJson() {
   return profiles;
 }
 
-function loadOpenAIChatGPTOAuthProfilesFromRequestPayload(payload = {}) {
-  const objects = [
-    payload,
-    payload?.chatGPTOAuth,
-    payload?.openAIChatGPTOAuth,
-    payload?.openAIOAuth,
-    payload?.oauth,
-  ].filter((item) => item && typeof item === 'object');
-  const profiles = [];
-
-  for (const object of objects) {
-    const access = nonEmptyString(
-      object.ChatGPTOAuthAccessToken
-        || object.openAIChatGPTOAuthAccessToken
-        || object.openAIOAuthAccessToken
-        || object.accessToken
-        || object.access
-    );
-    const refresh = nonEmptyString(
-      object.ChatGPTOAuthRefreshToken
-        || object.openAIChatGPTOAuthRefreshToken
-        || object.openAIOAuthRefreshToken
-        || object.refreshToken
-        || object.refresh
-    );
-    if (!access && !refresh) continue;
-
-    const expires = object.ChatGPTOAuthExpiresAt
-      || object.openAIChatGPTOAuthExpiresAt
-      || object.openAIOAuthExpiresAt
-      || object.expiresAt
-      || object.expires
-      || 0;
-    profiles.push({
-      storeKind: 'request',
-      storePath: 'ios-request',
-      profileId: 'iphone-chatgpt-oauth-request',
-      profile: {
-        type: 'oauth',
-        provider: 'openai',
-        access,
-        refresh,
-        expires,
-        accountId: object.ChatGPTOAuthAccountID
-          || object.openAIChatGPTOAuthAccountID
-          || object.openAIOAuthAccountID
-          || object.accountID
-          || object.accountId
-          || '',
-      },
-      expiresMs: normalizeOpenAIAuthExpiryMs(expires),
-    });
-  }
-
-  return profiles;
-}
-
-async function loadOpenAIChatGPTOAuthProfiles(requestPayload = {}) {
+async function loadOpenAIChatGPTOAuthProfiles() {
   const profiles = [
     ...loadOpenAIChatGPTOAuthProfilesFromBridgeConfig(),
-    ...loadOpenAIChatGPTOAuthProfilesFromRequestPayload(requestPayload),
     ...await loadOpenAIChatGPTOAuthProfilesFromSqlite(),
     ...await loadOpenAIChatGPTOAuthProfilesFromJson(),
   ];
 
   profiles.sort((left, right) => {
-    const priority = (candidate) => candidate.storeKind === 'bridge' ? 0 : candidate.storeKind === 'request' ? 1 : candidate.storeKind === 'sqlite' ? 2 : 3;
+    const priority = (candidate) => candidate.storeKind === 'bridge' ? 0 : candidate.storeKind === 'sqlite' ? 1 : 2;
     const leftPriority = priority(left);
     const rightPriority = priority(right);
     if (leftPriority !== rightPriority) return leftPriority - rightPriority;
@@ -344,7 +290,7 @@ function loadOpenAIChatGPTOAuthProfilesFromBridgeConfig() {
 
 async function persistRefreshedOpenAIChatGPTOAuthProfile(candidate, refreshed) {
   try {
-    if (candidate.storeKind === 'bridge' || candidate.storeKind === 'request') {
+    if (candidate.storeKind === 'bridge') {
       await persistOpenAIChatGPTOAuthBridgeConfig(refreshed);
       return;
     }
@@ -388,7 +334,7 @@ async function persistRefreshedOpenAIChatGPTOAuthProfile(candidate, refreshed) {
   } catch (error) {
     console.warn('[realtime-auth] failed to persist refreshed OpenAI OAuth profile:', error?.message || String(error));
   } finally {
-    if (candidate.storeKind !== 'bridge' && candidate.storeKind !== 'request') {
+    if (candidate.storeKind !== 'bridge') {
       await persistOpenAIChatGPTOAuthBridgeConfig(refreshed).catch((error) => {
         console.warn('[realtime-auth] failed to mirror refreshed OpenAI OAuth profile into bridge config:', error?.message || String(error));
       });
@@ -484,8 +430,8 @@ async function validateOpenClawOAuthToken(token, validateToken) {
   if (validateToken) await validateToken(token);
 }
 
-async function resolveOpenClawOAuthBearerFromProfileStore(validateToken, requestPayload = {}) {
-  const profiles = await loadOpenAIChatGPTOAuthProfiles(requestPayload);
+async function resolveOpenClawOAuthBearerFromProfileStore(validateToken) {
+  const profiles = await loadOpenAIChatGPTOAuthProfiles();
   const now = Date.now();
   const refreshErrors = [];
 
@@ -539,12 +485,6 @@ export function realtimeAuthPreferences(req) {
     fallbackToAPIKey: parseRealtimeBoolean(requestedFallback, parseRealtimeBoolean(configuredFallback, false)),
     source: requestedMode === undefined ? 'companion-default' : 'paired-phone',
   };
-}
-
-function bearerFromPairedPhoneClientSecret(req) {
-  const value = String(req?.headers?.['x-voiceclaw-realtime-client-secret'] || '').trim();
-  if (!value) return '';
-  return value;
 }
 
 function resolveOpenClawPackageRoot() {
@@ -602,10 +542,24 @@ async function resolveOpenClawOAuthBearerFromProviderModule(validateToken) {
   return '';
 }
 
-async function resolveOpenClawOAuthBearer(validateToken, requestPayload = {}) {
+async function resolveOpenClawOAuthBearer(
+  validateToken,
+  requestPayload = {},
+  credentialDelegation = null,
+) {
+  const validatedDelegation = credentialDelegation
+    || validatedVoiceAccessTokenDelegationForPayload(requestPayload);
+  if (validatedDelegation) {
+    const delegatedAccessToken = accessTokenFromValidatedVoiceAccessTokenDelegation(
+      validatedDelegation,
+    );
+    await validateOpenClawOAuthToken(delegatedAccessToken, validateToken);
+    return delegatedAccessToken;
+  }
+
   let profileStoreError = null;
   try {
-    const token = await resolveOpenClawOAuthBearerFromProfileStore(validateToken, requestPayload);
+    const token = await resolveOpenClawOAuthBearerFromProfileStore(validateToken);
     if (token) {
       return token;
     }
@@ -664,7 +618,7 @@ export async function createRealtimeClientSecret({ authToken, session }) {
   };
 }
 
-export async function resolveRealtimeBearer({ req, session, apiKey }) {
+export async function resolveRealtimeBearer({ req, session, apiKey, credentialDelegation = null }) {
   const preferences = realtimeAuthPreferences(req);
 
   if (preferences.mode === REALTIME_AUTH_MODE_API_KEY) {
@@ -679,25 +633,15 @@ export async function resolveRealtimeBearer({ req, session, apiKey }) {
     };
   }
 
-  const pairedPhoneClientSecret = bearerFromPairedPhoneClientSecret(req);
-  if (pairedPhoneClientSecret) {
-    return {
-      bearer: pairedPhoneClientSecret,
-      sidebandBearer: preferences.fallbackToAPIKey && apiKey ? apiKey : pairedPhoneClientSecret,
-      source: 'paired-phone-oauth',
-      preferences,
-    };
-  }
-
   try {
     let clientSecret = null;
     const oauthBearer = await resolveOpenClawOAuthBearer(async (authToken) => {
       clientSecret = await createRealtimeClientSecret({ authToken, session });
-    });
+    }, {}, credentialDelegation);
     return {
       bearer: clientSecret.value,
       sidebandBearer: preferences.fallbackToAPIKey && apiKey ? apiKey : oauthBearer,
-      source: REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
+      source: credentialDelegation ? 'paired-phone-delegation' : REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
       expiresAt: clientSecret.expiresAt,
       preferences,
     };
@@ -714,7 +658,7 @@ export async function resolveRealtimeBearer({ req, session, apiKey }) {
 
     const baseMessage = error?.message || String(error);
     const phoneHint = preferences.source === 'paired-phone'
-      ? ' The paired phone selected OAuth but did not provide an iPhone-minted GPT-Realtime-2 client secret, so the Companion tried its local OpenClaw OAuth profile instead.'
+      ? ' The paired phone selected OAuth but did not provide a valid access-token delegation, so the Companion tried its local OpenClaw OAuth profile instead.'
       : '';
     throw new Error(`${baseMessage}${phoneHint}${preferences.fallbackToAPIKey ? ' API-key fallback is enabled, but no API key was available.' : ' API-key fallback is off.'}`);
   }
