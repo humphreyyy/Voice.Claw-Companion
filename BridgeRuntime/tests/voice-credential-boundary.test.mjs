@@ -609,6 +609,16 @@ test('HTTP and WebSocket routes enforce the credential boundary before runtime a
     cerebrasAPIKey: 'outgoing-cerebras-master-value',
     ChatGPTOAuthAccessToken: 'outgoing-access-value',
     ChatGPTOAuthRefreshToken: 'outgoing-refresh-value',
+    ChatGPTOAuthAccountID: 'setup-account-id',
+    tailscaleBaseURL: 'https://voiceclaw.example.ts.net',
+    watchPublicBridgeURL: 'https://voice.example.test',
+    openClawInstallPath: '/tmp/voiceclaw-openclaw',
+    gatewayToken: 'setup-gateway-token',
+    gatewayPassword: 'setup-gateway-password',
+    openClawAgentName: 'julian',
+    futureSetupField: {
+      nested: ['preserve', 7, true],
+    },
   }));
   process.env.VOICECLAW_OUTER_HF_TEST = '1';
   process.env.VOICECLAW_CONFIG_PATH = configPath;
@@ -697,15 +707,38 @@ test('HTTP and WebSocket routes enforce the credential boundary before runtime a
       headers: { Authorization: 'Bearer credential-route-bridge-token' },
     });
     assert.equal(setupResponse.status, 200);
-    const setupText = await setupResponse.text();
-    for (const value of [
-      'outgoing-openai-master-value',
-      'outgoing-cerebras-master-value',
-      'outgoing-access-value',
-      'outgoing-refresh-value',
-    ]) {
-      assert.equal(setupText.includes(value), false);
-    }
+    assert.match(setupResponse.headers.get('cache-control') || '', /no-store/);
+    const setupPayload = await setupResponse.json();
+    assert.equal(setupPayload.OpenAIAPIKey, 'outgoing-openai-master-value');
+    assert.equal(setupPayload.CerebrasAPIKey, 'outgoing-cerebras-master-value');
+    assert.equal(setupPayload.ChatGPTOAuthAccessToken, 'outgoing-access-value');
+    assert.equal(setupPayload.ChatGPTOAuthRefreshToken, 'outgoing-refresh-value');
+    assert.equal(setupPayload.ChatGPTOAuthAccountID, 'setup-account-id');
+    assert.equal(setupPayload.TailscaleBaseURL, 'https://voiceclaw.example.ts.net');
+    assert.equal(setupPayload.WatchPublicBridgeURL, 'https://voice.example.test');
+    assert.equal(setupPayload.OpenClawInstallPath, '/tmp/voiceclaw-openclaw');
+    assert.equal(setupPayload.OpenClawGatewayToken, 'setup-gateway-token');
+    assert.equal(setupPayload.OpenClawGatewayPassword, 'setup-gateway-password');
+    assert.equal(setupPayload.OpenClawAgent, 'julian');
+    assert.deepEqual(setupPayload.futureSetupField, {
+      nested: ['preserve', 7, true],
+    });
+
+    const setupWithoutProviderKeys = await fetch(
+      `${origin}/realtime/setup-payload?include_openai_key=0&include_cerebras_key=0`,
+      { headers: { Authorization: 'Bearer credential-route-bridge-token' } },
+    );
+    assert.equal(setupWithoutProviderKeys.status, 200);
+    const optedOutPayload = await setupWithoutProviderKeys.json();
+    assert.equal(optedOutPayload.OpenAIAPIKey, '');
+    assert.equal(optedOutPayload.CerebrasAPIKey, '');
+    assert.equal('openAIAPIKey' in optedOutPayload, false);
+    assert.equal('cerebrasAPIKey' in optedOutPayload, false);
+    assert.equal(optedOutPayload.ChatGPTOAuthAccessToken, 'outgoing-access-value');
+    assert.equal(optedOutPayload.WatchPublicBridgeURL, 'https://voice.example.test');
+    assert.deepEqual(optedOutPayload.futureSetupField, {
+      nested: ['preserve', 7, true],
+    });
 
     const before = outerHFIntegration.credentialBoundaryRuntimeSnapshot();
     const events = [];

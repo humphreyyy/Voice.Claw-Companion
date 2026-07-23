@@ -491,7 +491,10 @@ function setupPayloadFromBridgeConfig(options = {}) {
   const cfg = loadVoiceClawBridgeConfig();
   const includeOpenAIAPIKey = options.includeOpenAIAPIKey !== false;
   const includeCerebrasAPIKey = options.includeCerebrasAPIKey !== false;
-  return {
+  const payload = {
+    // Preserve the complete config so future setup fields cannot disappear
+    // merely because an older Companion build did not know their names.
+    ...cfg,
     VoiceClawSetupVersion: 2,
     TailscaleBaseURL: String(cfg.tailscaleBaseURL || ''),
     BridgePath: '/realtime/openclaw-turn',
@@ -517,6 +520,26 @@ function setupPayloadFromBridgeConfig(options = {}) {
     CompanionBuild: RUNTIME_MANIFEST.build || '',
     CompanionReleaseTag: RUNTIME_MANIFEST.version ? `v${RUNTIME_MANIFEST.version}` : '',
   };
+
+  if (!includeOpenAIAPIKey) {
+    for (const key of [
+      'OpenAIAPIKey',
+      'openAIAPIKey',
+      'openAIApiKey',
+      'openaiAPIKey',
+      'openaiApiKey',
+      'apiKey',
+    ]) delete payload[key];
+    payload.OpenAIAPIKey = '';
+  }
+  if (!includeCerebrasAPIKey) {
+    for (const key of ['CerebrasAPIKey', 'cerebrasAPIKey', 'cerebrasApiKey']) {
+      delete payload[key];
+    }
+    payload.CerebrasAPIKey = '';
+  }
+
+  return payload;
 }
 
 function companionVoiceRuntimeProfileFromPayload(payload = {}) {
@@ -5670,11 +5693,15 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/setup-payload`) {
       const setupURL = new URL(req.url, `http://localhost:${PORT}`);
-      const setupPayload = sanitizeVoiceControlPayload(setupPayloadFromBridgeConfig({
+      const setupPayload = setupPayloadFromBridgeConfig({
         includeOpenAIAPIKey: setupURL.searchParams.get('include_openai_key') !== '0',
         includeCerebrasAPIKey: setupURL.searchParams.get('include_cerebras_key') !== '0',
-      })).payload;
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store, max-age=0',
+        Pragma: 'no-cache',
+      });
       res.end(JSON.stringify(setupPayload));
       return;
     }

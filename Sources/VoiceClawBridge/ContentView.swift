@@ -23,6 +23,10 @@ struct ContentView: View {
                 }
             }
         }
+        .onChange(of: selection) { newSelection in
+            guard newSelection == .pair else { return }
+            store.refreshPairingPayloadForDisplay()
+        }
     }
 }
 
@@ -889,6 +893,13 @@ private struct CompanionVoicePanel: View {
                     ForEach(store.companionVoiceDependencyItems) { item in
                         DependencyItemRow(item: item)
                     }
+                }
+                if store.isInstallingCompanionVoiceDependencies,
+                   !store.companionVoiceDependencyInstallProgress.isEmpty {
+                    StatusRow(
+                        title: "Install Progress",
+                        value: store.companionVoiceDependencyInstallProgress,
+                        symbol: "arrow.down.circle")
                 }
                 StatusRow(
                     title: "Warm Runtime",

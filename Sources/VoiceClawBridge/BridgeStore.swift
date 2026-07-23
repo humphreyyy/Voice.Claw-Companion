@@ -167,6 +167,7 @@ final class BridgeStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(watchPublicBridgeURL, forKey: DefaultsKeys.watchPublicBridgeURL)
             refreshPairingPayloadSecrets()
+            Task { await persistBridgeAuthDefaults() }
         }
     }
     @Published var realtimeAuthMode: CompanionRealtimeAuthMode = .apiKey {
@@ -213,6 +214,7 @@ final class BridgeStore: ObservableObject {
     @Published var powerhouseCanRetry: Bool = false
     @Published var powerhouseLastError: String = ""
     @Published var companionVoiceDependencyInstallSummary: String = ""
+    @Published var companionVoiceDependencyInstallProgress: String = ""
     @Published var companionVoiceDependencyInstallAvailable: Bool = false
     @Published var companionVoiceDependencyItems: [CompanionVoiceDependencyItem] = []
     @Published var accessSummary: String = "Access and permissions have not been checked."
@@ -828,6 +830,7 @@ final class BridgeStore: ObservableObject {
         }
 
         isInstallingCompanionVoiceDependencies = true
+        companionVoiceDependencyInstallProgress = "Preparing the dependency installation plan..."
         status = .working("Installing Voice Dependencies")
         defer {
             isInstallingCompanionVoiceDependencies = false
@@ -840,13 +843,25 @@ final class BridgeStore: ObservableObject {
                     "--json",
                     "--openclaw-path",
                     normalizedOpenClawPath,
-                ]
+                ],
+                outputHandler: { [weak self] chunk in
+                    let message = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !message.isEmpty else { return }
+                    Task { @MainActor [weak self] in
+                        self?.companionVoiceDependencyInstallProgress = message
+                    }
+                }
             )
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             lastLog = trimmed.isEmpty ? "Companion Realtime Voice dependency installation completed." : trimmed
+            companionVoiceDependencyInstallProgress = "Installation finished. Verifying the installed runtime..."
             await refreshStatus()
+            companionVoiceDependencyInstallProgress = companionVoiceDependencyInstallAvailable
+                ? "Verification still reports missing dependencies. Review the action log for the failed item."
+                : "Voice dependencies are installed and verified."
         } catch {
             lastLog = Self.userFacingSetupError(error)
+            companionVoiceDependencyInstallProgress = lastLog
             status = .failed("Voice Dependency Install Failed")
             await refreshStatus()
         }
@@ -1099,12 +1114,16 @@ final class BridgeStore: ObservableObject {
         }
     }
 
-    private func runSetupScript(arguments: [String]) async throws -> String {
+    private func runSetupScript(
+        arguments: [String],
+        outputHandler: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
         try await runner.run(
             executable: try await resolveNodeExecutable(),
             arguments: ["scripts/voiceclaw-bridge-setup.mjs"] + arguments,
             workingDirectory: projectRoot,
-            environment: ["VOICECLAW_BRIDGE_ROOT": projectRoot.path]
+            environment: ["VOICECLAW_BRIDGE_ROOT": projectRoot.path],
+            outputHandler: outputHandler
         )
     }
 
@@ -1137,6 +1156,12 @@ final class BridgeStore: ObservableObject {
         }
         if let savedURL = object["tailscaleBaseURL"] as? String {
             bridgeURL = savedURL
+        }
+        if let savedPublicURL = (object["watchPublicBridgeURL"] as? String)
+            ?? (object["WatchPublicBridgeURL"] as? String)
+            ?? (object["openClawPublicTunnelURL"] as? String),
+           !savedPublicURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            watchPublicBridgeURL = savedPublicURL
         }
         if let savedMode = object["realtimeAuthMode"] as? String,
            let mode = CompanionRealtimeAuthMode(rawValue: savedMode) {
@@ -1177,13 +1202,17 @@ final class BridgeStore: ObservableObject {
         if includeOpenAIAPIKeyInPairing, !trimmedKey.isEmpty {
             updated["OpenAIAPIKey"] = trimmedKey
         } else {
-            updated.removeValue(forKey: "OpenAIAPIKey")
+            for key in ["OpenAIAPIKey", "openAIAPIKey", "openAIApiKey", "openaiAPIKey", "openaiApiKey", "apiKey"] {
+                updated.removeValue(forKey: key)
+            }
         }
         let trimmedCerebrasKey = cerebrasAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if includeCerebrasAPIKeyInPairing, !trimmedCerebrasKey.isEmpty {
             updated["CerebrasAPIKey"] = trimmedCerebrasKey
         } else {
-            updated.removeValue(forKey: "CerebrasAPIKey")
+            for key in ["CerebrasAPIKey", "cerebrasAPIKey", "cerebrasApiKey"] {
+                updated.removeValue(forKey: key)
+            }
         }
         updated["RealtimeAuthMode"] = realtimeAuthMode.rawValue
         updated["RealtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
@@ -1257,6 +1286,14 @@ final class BridgeStore: ObservableObject {
             object.removeValue(forKey: "cerebrasAPIKey")
         } else {
             object["cerebrasAPIKey"] = trimmedCerebrasKey
+        }
+        let trimmedPublicURL = watchPublicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedPublicURL.isEmpty {
+            object.removeValue(forKey: "watchPublicBridgeURL")
+            object.removeValue(forKey: "WatchPublicBridgeURL")
+            object.removeValue(forKey: "openClawPublicTunnelURL")
+        } else {
+            object["watchPublicBridgeURL"] = trimmedPublicURL
         }
 
         guard let output = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]) else { return }
@@ -1820,44 +1857,54 @@ final class BridgeStore: ObservableObject {
     }
 
     private static func pairingPayload(from config: [String: Any]) -> [String: Any] {
-        [
-            "VoiceClawSetupVersion": 1,
-            "TailscaleBaseURL": config["tailscaleBaseURL"] as? String ?? "",
-            "BridgePath": "/realtime/openclaw-turn",
-            "OpenClawInstallPath": config["openClawInstallPath"] as? String ?? "\(NSHomeDirectory())/.openclaw",
-            "OpenClawGatewayToken": config["gatewayToken"] as? String ?? "",
-            "OpenClawGatewayPassword": config["gatewayPassword"] as? String ?? "",
-            "RouteMode": "openclaw-bridge",
-            "RealtimeModel": "gpt-realtime-2.1-mini",
-            "InstantModel": "gpt-5-chat-latest",
-            "InstantWebSearch": true,
-            "RealtimeAuthMode": config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue,
-            "RealtimeAuthFallbackToAPIKey": config["realtimeAuthFallbackToAPIKey"] as? Bool ?? false,
-            "ChatGPTOAuthAccessToken": config["ChatGPTOAuthAccessToken"] as? String
-                ?? config["openAIChatGPTOAuthAccessToken"] as? String
-                ?? config["openAIOAuthAccessToken"] as? String
-                ?? "",
-            "ChatGPTOAuthRefreshToken": config["ChatGPTOAuthRefreshToken"] as? String
-                ?? config["openAIChatGPTOAuthRefreshToken"] as? String
-                ?? config["openAIOAuthRefreshToken"] as? String
-                ?? "",
-            "ChatGPTOAuthExpiresAt": config["ChatGPTOAuthExpiresAt"]
-                ?? config["openAIChatGPTOAuthExpiresAt"]
-                ?? config["openAIOAuthExpiresAt"]
-                ?? 0,
-            "ChatGPTOAuthAccountID": config["ChatGPTOAuthAccountID"] as? String
-                ?? config["openAIChatGPTOAuthAccountID"] as? String
-                ?? config["openAIOAuthAccountID"] as? String
-                ?? "",
-            "CerebrasAPIKey": config["cerebrasAPIKey"] as? String ?? "",
-            "WatchPublicBridgeURL": config["watchPublicBridgeURL"] as? String
-                ?? config["WatchPublicBridgeURL"] as? String
-                ?? config["openClawPublicTunnelURL"] as? String
-                ?? "",
-            "CompanionVersion": Self.currentCompanionVersion ?? "",
-            "CompanionBuild": Self.currentCompanionBuild ?? "",
-            "CompanionReleaseTag": Self.currentCompanionReleaseTag,
-        ]
+        // Start from the complete persisted config. Canonical aliases below
+        // normalize values for iOS without silently dropping future fields.
+        var payload = config
+        payload["VoiceClawSetupVersion"] = 2
+        payload["TailscaleBaseURL"] = config["tailscaleBaseURL"] as? String ?? ""
+        payload["BridgePath"] = "/realtime/openclaw-turn"
+        payload["OpenClawInstallPath"] = config["openClawInstallPath"] as? String ?? "\(NSHomeDirectory())/.openclaw"
+        payload["OpenClawGatewayToken"] = config["gatewayToken"] as? String ?? ""
+        payload["OpenClawGatewayPassword"] = config["gatewayPassword"] as? String ?? ""
+        payload["RouteMode"] = "openclaw-bridge"
+        payload["RealtimeModel"] = "gpt-realtime-2.1-mini"
+        payload["InstantModel"] = config["instantModel"] as? String ?? "gpt-5-chat-latest"
+        payload["InstantWebSearch"] = config["instantWebSearch"] as? Bool ?? true
+        payload["RealtimeAuthMode"] = config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue
+        payload["RealtimeAuthFallbackToAPIKey"] = config["realtimeAuthFallbackToAPIKey"] as? Bool ?? false
+        payload["OpenAIAPIKey"] = config["openAIAPIKey"] as? String
+            ?? config["OpenAIAPIKey"] as? String
+            ?? config["openAIApiKey"] as? String
+            ?? config["openaiAPIKey"] as? String
+            ?? config["openaiApiKey"] as? String
+            ?? ""
+        payload["ChatGPTOAuthAccessToken"] = config["ChatGPTOAuthAccessToken"] as? String
+            ?? config["openAIChatGPTOAuthAccessToken"] as? String
+            ?? config["openAIOAuthAccessToken"] as? String
+            ?? ""
+        payload["ChatGPTOAuthRefreshToken"] = config["ChatGPTOAuthRefreshToken"] as? String
+            ?? config["openAIChatGPTOAuthRefreshToken"] as? String
+            ?? config["openAIOAuthRefreshToken"] as? String
+            ?? ""
+        payload["ChatGPTOAuthExpiresAt"] = config["ChatGPTOAuthExpiresAt"]
+            ?? config["openAIChatGPTOAuthExpiresAt"]
+            ?? config["openAIOAuthExpiresAt"]
+            ?? 0
+        payload["ChatGPTOAuthAccountID"] = config["ChatGPTOAuthAccountID"] as? String
+            ?? config["openAIChatGPTOAuthAccountID"] as? String
+            ?? config["openAIOAuthAccountID"] as? String
+            ?? ""
+        payload["CerebrasAPIKey"] = config["cerebrasAPIKey"] as? String
+            ?? config["CerebrasAPIKey"] as? String
+            ?? ""
+        payload["WatchPublicBridgeURL"] = config["watchPublicBridgeURL"] as? String
+            ?? config["WatchPublicBridgeURL"] as? String
+            ?? config["openClawPublicTunnelURL"] as? String
+            ?? ""
+        payload["CompanionVersion"] = Self.currentCompanionVersion ?? ""
+        payload["CompanionBuild"] = Self.currentCompanionBuild ?? ""
+        payload["CompanionReleaseTag"] = Self.currentCompanionReleaseTag
+        return payload
     }
 
     private static func deepLink(for json: String) -> String {
@@ -1877,28 +1924,32 @@ final class BridgeStore: ObservableObject {
         guard !gatewayToken.isEmpty || !gatewayPassword.isEmpty else { return nil }
 
         let baseURLCandidates = [
-            payload["TailscaleBaseURL"] as? String,
             payload["WatchPublicBridgeURL"] as? String,
+            payload["TailscaleBaseURL"] as? String,
         ]
+        let payloadURLs = baseURLCandidates
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .compactMap { bridgeEndpointURL(baseURLString: $0, path: "/realtime/setup-payload") }
+            .reduce(into: [URL]()) { result, candidate in
+                guard !result.contains(candidate),
+                      var payloadComponents = URLComponents(url: candidate, resolvingAgainstBaseURL: false)
+                else { return }
+                var payloadQueryItems = payloadComponents.queryItems ?? []
+                payloadQueryItems.append(URLQueryItem(name: "include_openai_key", value: includeOpenAIKey ? "1" : "0"))
+                payloadQueryItems.append(URLQueryItem(name: "include_cerebras_key", value: includeCerebrasKey ? "1" : "0"))
+                payloadComponents.queryItems = payloadQueryItems
+                if let url = payloadComponents.url { result.append(url) }
+            }
 
-        guard let setupPayloadURL = baseURLCandidates.lazy
-            .compactMap({ $0 })
-            .compactMap({ bridgeEndpointURL(baseURLString: $0, path: "/realtime/setup-payload") })
-            .first,
-              var payloadComponents = URLComponents(url: setupPayloadURL, resolvingAgainstBaseURL: false),
+        guard !payloadURLs.isEmpty,
               var components = URLComponents(string: "voiceclaw://setup")
         else { return nil }
 
-        var payloadQueryItems = payloadComponents.queryItems ?? []
-        payloadQueryItems.append(URLQueryItem(name: "include_openai_key", value: includeOpenAIKey ? "1" : "0"))
-        payloadQueryItems.append(URLQueryItem(name: "include_cerebras_key", value: includeCerebrasKey ? "1" : "0"))
-        payloadComponents.queryItems = payloadQueryItems
-        guard let payloadURL = payloadComponents.url else { return nil }
-
-        var items = [
-            URLQueryItem(name: "v", value: "2"),
-            URLQueryItem(name: "payload_url", value: payloadURL.absoluteString),
-        ]
+        var items = [URLQueryItem(name: "v", value: "2")]
+        items.append(contentsOf: payloadURLs.map {
+            URLQueryItem(name: "payload_url", value: $0.absoluteString)
+        })
 
         if !gatewayToken.isEmpty {
             items.append(URLQueryItem(name: "gateway_token", value: gatewayToken))
@@ -2157,12 +2208,40 @@ private struct BridgeDiagnostics: Decodable {
     }
 }
 
+private final class ProcessOutputAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stdout = Data()
+    private var stderr = Data()
+
+    func append(_ data: Data, isStandardError: Bool) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        if isStandardError {
+            stderr.append(data)
+        } else {
+            stdout.append(data)
+        }
+        lock.unlock()
+    }
+
+    func strings() -> (stdout: String, stderr: String) {
+        lock.lock()
+        let stdout = self.stdout
+        let stderr = self.stderr
+        lock.unlock()
+        return (
+            String(data: stdout, encoding: .utf8) ?? "",
+            String(data: stderr, encoding: .utf8) ?? "")
+    }
+}
+
 struct ProcessRunner {
     func run(
         executable: String,
         arguments: [String],
         workingDirectory: URL,
-        environment: [String: String]
+        environment: [String: String],
+        outputHandler: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let process = Process()
@@ -2173,19 +2252,38 @@ struct ProcessRunner {
 
             let output = Pipe()
             let error = Pipe()
+            let accumulator = ProcessOutputAccumulator()
             process.standardOutput = output
             process.standardError = error
 
+            output.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                accumulator.append(data, isStandardError: false)
+                if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                    outputHandler?(text)
+                }
+            }
+            error.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                accumulator.append(data, isStandardError: true)
+                if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                    outputHandler?(text)
+                }
+            }
+
             process.terminationHandler = { process in
-                let outputData = output.fileHandleForReading.readDataToEndOfFile()
-                let errorData = error.fileHandleForReading.readDataToEndOfFile()
-                let stdout = String(data: outputData, encoding: .utf8) ?? ""
-                let stderr = String(data: errorData, encoding: .utf8) ?? ""
+                output.fileHandleForReading.readabilityHandler = nil
+                error.fileHandleForReading.readabilityHandler = nil
+                accumulator.append(output.fileHandleForReading.readDataToEndOfFile(), isStandardError: false)
+                accumulator.append(error.fileHandleForReading.readDataToEndOfFile(), isStandardError: true)
+                let captured = accumulator.strings()
 
                 if process.terminationStatus == 0 {
-                    continuation.resume(returning: stdout)
+                    continuation.resume(returning: captured.stdout)
                 } else {
-                    let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? stdout : stderr
+                    let message = captured.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? captured.stdout
+                        : captured.stderr
                     continuation.resume(throwing: BridgeProcessError(message: message.trimmingCharacters(in: .whitespacesAndNewlines)))
                 }
             }

@@ -263,6 +263,20 @@ async function runCommand(executable, args, options = {}) {
   return { stdout: stdout.trim(), stderr: stderr.trim() };
 }
 
+async function withInstallHeartbeat(label, operation, intervalMs = 10_000) {
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    process.stderr.write(`[voice-dependencies] ${label} is still running (${elapsedSeconds}s elapsed)...\n`);
+  }, intervalMs);
+  timer.unref?.();
+  try {
+    return await operation();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 function httpJSON(urlString, { timeoutMs = 3000 } = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString);
@@ -1238,15 +1252,30 @@ async function installCompanionVoiceDependencies(openClawInstallPath, { prepareS
   const failures = [];
   let brewPath = await resolveOptionalExecutable('brew', process.env.BREW_BIN || '');
 
+  const hfItems = items.filter((item) => item.installable && isHFRealtimeInstallItem(item));
+  if (hfItems.length) {
+    const label = `HF speech-to-speech runtime bundle (${hfItems.length} requirement${hfItems.length === 1 ? '' : 's'})`;
+    try {
+      process.stderr.write(`[voice-dependencies] Installing ${label}...\n`);
+      await withInstallHeartbeat(label, () => installHFRealtimeRuntime({ prepareSet }));
+      installed.push(...hfItems.map((item) => ({ id: item.id, label: item.label })));
+      process.stderr.write(`[voice-dependencies] Installed ${label}.\n`);
+    } catch (error) {
+      const message = error?.message || String(error);
+      failures.push(...hfItems.map((item) => ({ id: item.id, label: item.label, error: message })));
+      process.stderr.write(`[voice-dependencies] ${label} failed: ${message}\n`);
+    }
+  }
+
   for (const item of items) {
     if (!item.installable) {
       skipped.push({ id: item.id, label: item.label, reason: 'not_installable' });
       continue;
     }
+    if (isHFRealtimeInstallItem(item)) continue;
     try {
-      if (isHFRealtimeInstallItem(item)) {
-        await installHFRealtimeRuntime({ prepareSet });
-      } else if (item.id === 'ffmpeg') {
+      process.stderr.write(`[voice-dependencies] Installing ${item.label || item.id}...\n`);
+      if (item.id === 'ffmpeg') {
         if (!brewPath) throw new Error('Homebrew is required to install ffmpeg automatically.');
         await runCommand(brewPath, ['install', 'ffmpeg']);
       } else if (item.id === 'whisper-cli') {
@@ -1274,8 +1303,10 @@ async function installCompanionVoiceDependencies(openClawInstallPath, { prepareS
         await runCommand(ollamaPath, ['pull', DEFAULT_QWEN_MODEL], { timeoutMs: 60 * 60 * 1000 });
       }
       installed.push({ id: item.id, label: item.label });
+      process.stderr.write(`[voice-dependencies] Installed ${item.label || item.id}.\n`);
     } catch (error) {
       failures.push({ id: item.id, label: item.label, error: error?.message || String(error) });
+      process.stderr.write(`[voice-dependencies] ${item.label || item.id} failed: ${error?.message || String(error)}\n`);
     }
   }
 
@@ -1646,16 +1677,29 @@ async function resetBridgeState({ resetTailscalePort = false, port } = {}) {
 
 function buildPairingPayload(config) {
   return {
-    VoiceClawSetupVersion: 1,
+    // Keep the setup transport lossless. Canonical aliases normalize values
+    // for iOS while unknown/new bridge fields survive pairing unchanged.
+    ...config,
+    VoiceClawSetupVersion: 2,
     TailscaleBaseURL: config.tailscaleBaseURL,
     BridgePath: '/realtime/openclaw-turn',
     OpenClawInstallPath: config.openClawInstallPath,
     OpenClawAgent: config.openClawAgentName,
     OpenClawGatewayToken: config.gatewayToken,
+    OpenClawGatewayPassword: config.gatewayPassword || '',
     RouteMode: 'openclaw-bridge',
     RealtimeModel: 'gpt-realtime-2.1-mini',
+    InstantModel: config.instantModel || 'gpt-5-chat-latest',
+    InstantWebSearch: config.instantWebSearch !== false,
     RealtimeAuthMode: config.realtimeAuthMode,
     RealtimeAuthFallbackToAPIKey: config.realtimeAuthFallbackToAPIKey,
+    OpenAIAPIKey: config.openAIAPIKey || config.OpenAIAPIKey || config.openAIApiKey || config.openaiAPIKey || config.openaiApiKey || '',
+    ChatGPTOAuthAccessToken: config.ChatGPTOAuthAccessToken || config.openAIChatGPTOAuthAccessToken || config.openAIOAuthAccessToken || '',
+    ChatGPTOAuthRefreshToken: config.ChatGPTOAuthRefreshToken || config.openAIChatGPTOAuthRefreshToken || config.openAIOAuthRefreshToken || '',
+    ChatGPTOAuthExpiresAt: config.ChatGPTOAuthExpiresAt || config.openAIChatGPTOAuthExpiresAt || config.openAIOAuthExpiresAt || 0,
+    ChatGPTOAuthAccountID: config.ChatGPTOAuthAccountID || config.openAIChatGPTOAuthAccountID || config.openAIOAuthAccountID || '',
+    CerebrasAPIKey: config.cerebrasAPIKey || config.CerebrasAPIKey || '',
+    WatchPublicBridgeURL: config.watchPublicBridgeURL || config.WatchPublicBridgeURL || config.openClawPublicTunnelURL || '',
     PowerhouseMode: config.powerhouseMode || 'light',
   };
 }
@@ -1772,6 +1816,7 @@ async function main() {
   const openClawAgentName = normalizeOpenClawAgentName(options.openClawAgentName || existing.openClawAgentName || existing.openClawAgent);
   validateOpenClawInstallPath(openClawInstallPath);
   const config = {
+    ...existing,
     port,
     openClawInstallPath,
     openClawAgentName,
