@@ -1425,7 +1425,24 @@ final class BridgeStore: ObservableObject {
             return
         }
 
-        let summary = "Companion is not fully ready: \(missing.joined(separator: " ")) \(setupAdvice)"
+        let readinessAdvice: String
+        if runtimeReady, localReady, tailscaleReady, companionVoiceReady, !accessReady,
+           let accessItem = diagnostics.access?.items?.first(where: {
+               $0.state == "needs_action" || $0.state == "blocked"
+           }) {
+            let label = accessItem.label?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let itemSummary = accessItem.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayLabel = (label?.isEmpty == false ? label : accessItem.id) ?? "Access check"
+            if let itemSummary, !itemSummary.isEmpty {
+                readinessAdvice = "Review \(displayLabel) in Diagnostics > Access: \(itemSummary)"
+            } else {
+                readinessAdvice = "Review \(displayLabel) in Diagnostics > Access."
+            }
+        } else {
+            readinessAdvice = setupAdvice
+        }
+
+        let summary = "Companion is not fully ready: \(missing.joined(separator: " ")) \(readinessAdvice)"
         bridgeRuntimeCheckSummary = summary
         lastLog = summary
 

@@ -9,6 +9,10 @@ import {
   accessTokenFromValidatedVoiceAccessTokenDelegation,
   validatedVoiceAccessTokenDelegationForPayload,
 } from './voice-credential-boundary.js';
+import {
+  configuredOpenClawAgentDirectories,
+  parseOpenClawConfig,
+} from './openclaw-config.js';
 
 const HOME = homedir();
 const execFileAsync = promisify(execFile);
@@ -38,7 +42,7 @@ export function readBridgeConfig() {
 
 function readOpenClawConfig() {
   try {
-    return JSON.parse(readFileSync(OPENCLAW_CONFIG, 'utf8'));
+    return parseOpenClawConfig(readFileSync(OPENCLAW_CONFIG, 'utf8'));
   } catch {
     return {};
   }
@@ -81,11 +85,7 @@ function isUsableOpenAIOAuthProfile(profile) {
 async function listOpenClawAgentDirs(roots) {
   const dirs = new Set();
   const cfg = readOpenClawConfig();
-  const configuredAgents = Array.isArray(cfg?.agents?.list) ? cfg.agents.list : [];
-  for (const agent of configuredAgents) {
-    const agentDir = nonEmptyString(agent?.agentDir);
-    if (agentDir) dirs.add(agentDir);
-  }
+  for (const agentDir of configuredOpenClawAgentDirectories(cfg, { home: HOME })) dirs.add(agentDir);
 
   for (const root of roots) {
     dirs.add(join(root, 'agent'));

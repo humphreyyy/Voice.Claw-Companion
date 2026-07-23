@@ -9,8 +9,11 @@ import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import JSON5 from 'json5';
 import { getHFRealtimeStatus, installHFRealtimeRuntime } from '../server/hf-realtime-sidecar.js';
+import {
+  parseOpenClawConfig,
+  resolveConfiguredOpenClawAgent,
+} from '../server/openclaw-config.js';
 import { getPowerhouseStatus, normalizePowerhouseMode } from '../server/powerhouse-manager.js';
 
 const execFileAsync = promisify(execFile);
@@ -165,49 +168,11 @@ function normalizeOpenClawAgentName(value) {
   return trimmed || DEFAULT_OPENCLAW_AGENT_NAME;
 }
 
-function normalizeOpenClawAgentID(value) {
-  return String(value || '').trim().toLowerCase();
-}
-
 function prepareSetForPowerhouseMode(mode = 'light') {
   const normalized = normalizePowerhouseMode(mode || 'light');
   if (normalized === 'maximum' || normalized === 'presentation') return 'full';
   if (normalized === 'balanced') return 'recommended';
   return 'selected';
-}
-
-function parseOpenClawConfig(raw) {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return JSON5.parse(raw);
-  }
-}
-
-function configuredOpenClawAgentIDs(parsed) {
-  const ids = [];
-  const aliases = [];
-  const list = Array.isArray(parsed?.agents?.list) ? parsed.agents.list : null;
-  if (list) {
-    for (const entry of list) {
-      if (entry?.id) ids.push(String(entry.id));
-      if (entry?.name && entry.name !== entry?.id) aliases.push(String(entry.name));
-    }
-    return { ids, aliases, source: 'agents.list' };
-  }
-
-  const legacyAgents = parsed?.agents || parsed?.agent || parsed?.profiles || {};
-  if (Array.isArray(legacyAgents)) {
-    for (const entry of legacyAgents) {
-      if (entry?.id) ids.push(String(entry.id));
-      else if (entry?.name) ids.push(String(entry.name));
-    }
-    return { ids, aliases, source: 'legacy-array' };
-  }
-  if (legacyAgents && typeof legacyAgents === 'object') {
-    return { ids: Object.keys(legacyAgents), aliases, source: 'legacy-map' };
-  }
-  return { ids, aliases, source: 'none' };
 }
 
 async function resolveNodePath() {
@@ -735,16 +700,13 @@ async function checkOpenClawAccess(openClawInstallPath, openClawAgentName = DEFA
     try {
       const parsed = parseOpenClawConfig(await readFile(openClawConfigPath, 'utf8'));
       jsonReadable = true;
-      const agentConfig = configuredOpenClawAgentIDs(parsed);
-      const normalizedSelected = normalizeOpenClawAgentID(openClawAgentName);
-      const normalizedIDs = new Set(agentConfig.ids.map(normalizeOpenClawAgentID).filter(Boolean));
-      const normalizedAliases = new Set(agentConfig.aliases.map(normalizeOpenClawAgentID).filter(Boolean));
-      agentConfigured = normalizedIDs.size === 0
-        || normalizedIDs.has(normalizedSelected)
-        || normalizedAliases.has(normalizedSelected);
+      const { catalog, agent } = resolveConfiguredOpenClawAgent(parsed, openClawAgentName, { home: HOME });
+      agentConfigured = Boolean(agent);
+      const source = agent?.sources?.length ? ` via ${agent.sources.join(' + ')}` : '';
+      const workspace = agent?.workspace ? `; effective workspace ${agent.workspace}` : '';
       summary = agentConfigured
-        ? `OpenClaw config is readable; selected agent ${openClawAgentName} is configured.`
-        : `OpenClaw config is readable, but selected agent ${openClawAgentName} was not found in configured agent ids${agentConfig.ids.length ? ` (${agentConfig.ids.join(', ')})` : ''}.`;
+        ? `OpenClaw config is readable; selected agent ${openClawAgentName} is configured${source}${workspace}.`
+        : `OpenClaw config is readable, but selected agent ${openClawAgentName} was not found in configured agent ids${catalog.ids.length ? ` (${catalog.ids.join(', ')})` : ''}.`;
     } catch (error) {
       summary = `OpenClaw config exists but could not be parsed: ${error?.message || String(error)}`;
     }
@@ -1347,7 +1309,7 @@ async function diagnoseBridge(port) {
   if (runtimeIntegrity.selfHealRecommended) {
     suggestedAction = 'The bridge is using an older runtime. VoiceClaw Companion will refresh the LaunchAgent from the current app bundle, then check again.';
   } else if (local.state === 'running' && tailscale.state === 'voiceclaw_mapping') {
-    suggestedAction = 'This port is ready. Pair the phone with the current QR code or setup link.';
+    suggestedAction = 'The Mac bridge and private Tailscale route are ready. If this phone is not already paired, use the current QR code or setup link.';
   } else if (local.state !== 'running' && tailscale.state === 'stale_voiceclaw_mapping') {
     suggestedAction = 'This is a stale network mapping. Click Install and Start to reuse it, or use Reset App + Tailscale Mapping to remove it before testing first-run setup.';
   } else if (local.state === 'running' && tailscale.state === 'no_mapping') {
