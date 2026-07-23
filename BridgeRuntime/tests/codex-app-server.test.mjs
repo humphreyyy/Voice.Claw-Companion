@@ -66,11 +66,13 @@ class FakeRelaySocket extends EventEmitter {
 
 function createFakeCodexServer({ realtimeError = '' } = {}) {
   const calls = [];
+  const spawnOptions = [];
   let threadStarts = 0;
   let threadResumes = 0;
   let turnSequence = 0;
   let process = null;
-  const spawnProcess = (_binary, _args, _options) => {
+  const spawnProcess = (_binary, _args, options) => {
+    spawnOptions.push(options);
     process = new FakeCodexProcess((message, send) => {
       calls.push(message);
       if (message.method === 'initialized') return;
@@ -195,12 +197,39 @@ function createFakeCodexServer({ realtimeError = '' } = {}) {
   };
   return {
     spawnProcess,
+    spawnOptions,
     calls,
     get threadStarts() { return threadStarts; },
     get threadResumes() { return threadResumes; },
     get process() { return process; },
   };
 }
+
+test('injects the current Companion OpenAI key into Codex app-server and restarts after key rotation', async () => {
+  const server = createFakeCodexServer();
+  let currentKey = 'sk-test-first';
+  const client = new CodexAppServerClient({
+    codexPath: '/test/bin/codex',
+    spawnProcess: server.spawnProcess,
+    environment: { PATH: '/test/bin' },
+    environmentProvider: () => ({ OPENAI_API_KEY: currentKey }),
+    clientVersion: '0.1.test',
+    requestTimeoutMs: 1_000,
+  });
+
+  await client.start();
+  assert.equal(server.spawnOptions.length, 1);
+  assert.equal(server.spawnOptions[0].env.OPENAI_API_KEY, 'sk-test-first');
+
+  await client.start();
+  assert.equal(server.spawnOptions.length, 1, 'unchanged credentials must reuse the ready app-server');
+
+  currentKey = 'sk-test-second';
+  await client.start();
+  assert.equal(server.spawnOptions.length, 2, 'rotated credentials must restart the app-server');
+  assert.equal(server.spawnOptions[1].env.OPENAI_API_KEY, 'sk-test-second');
+  client.stop();
+});
 
 function createClient(server) {
   return new CodexAppServerClient({
@@ -367,6 +396,7 @@ test('keeps successful Realtime Voice V2 admission distinct from Frameless Bidi 
     version: 'v2',
     model: 'gpt-realtime-2.1-mini',
     voice: 'marin',
+    allowAPIKeyAuth: true,
   });
   const status = await bridge.status();
   const start = server.calls.find((call) => call.method === 'thread/realtime/start');
@@ -400,6 +430,7 @@ test('relays the verified V2 media path without presenting it as V3', async () =
     version: 'v2',
     model: 'gpt-realtime-2.1-mini',
     voice: 'marin',
+    allowAPIKeyAuth: true,
     inputAudio: { encoding: 'pcm_s16le', sampleRate: 16_000, numChannels: 1 },
   })), false);
   await relay.whenIdle();
@@ -457,7 +488,11 @@ test('rejects V3 on the verified V2 relay instead of silently downgrading', asyn
   const ws = new FakeRelaySocket();
   const relay = attachCodexRealtimeRelaySocket({ ws, bridge });
 
-  ws.emit('message', Buffer.from(JSON.stringify({ type: 'start', version: 'v3' })), false);
+  ws.emit('message', Buffer.from(JSON.stringify({
+    type: 'start',
+    version: 'v3',
+    allowAPIKeyAuth: true,
+  })), false);
   await relay.whenIdle();
   const error = ws.sent
     .filter(({ data }) => typeof data === 'string')
@@ -465,6 +500,30 @@ test('rejects V3 on the verified V2 relay instead of silently downgrading', asyn
     .find((event) => event.type === 'error');
   assert.equal(error.code, 'CODEX_REALTIME_VERSION_NOT_ADMITTED');
   assert.match(error.message, /V3 requires separate backend admission/);
+  assert.equal(server.calls.some((call) => call.method === 'thread/realtime/start'), false);
+
+  relay.close();
+  bridge.stop();
+});
+
+test('rejects Codex realtime relay start when the iPhone has not authorized API key use', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-relay-auth-'));
+  const server = createFakeCodexServer();
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+  const ws = new FakeRelaySocket();
+  const relay = attachCodexRealtimeRelaySocket({ ws, bridge });
+
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'start', version: 'v2' })), false);
+  await relay.whenIdle();
+  const error = ws.sent
+    .filter(({ data }) => typeof data === 'string')
+    .map(({ data }) => JSON.parse(data))
+    .find((event) => event.type === 'error');
+  assert.equal(error.code, 'CODEX_REALTIME_API_KEY_NOT_AUTHORIZED');
   assert.equal(server.calls.some((call) => call.method === 'thread/realtime/start'), false);
 
   relay.close();

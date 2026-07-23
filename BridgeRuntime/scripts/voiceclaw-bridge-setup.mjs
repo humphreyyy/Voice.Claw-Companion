@@ -30,6 +30,7 @@ const DEFAULT_OPENCLAW_AGENT_NAME = 'main';
 const DEFAULT_QWEN_MODEL = process.env.COMPANION_VOICE_QWEN_MODEL || 'qwen3.5:0.8b';
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
 const RUNTIME_PATH = [
+  join(HOME, '.local', 'bin'),
   '/opt/homebrew/bin',
   '/opt/homebrew/sbin',
   '/usr/local/bin',
@@ -759,7 +760,8 @@ async function checkOpenClawAccess(openClawInstallPath, openClawAgentName = DEFA
 }
 
 async function checkHermesAccess() {
-  const hermesBin = process.env.HERMES_BIN || await resolveOptionalExecutable('hermes', '');
+  const hermesBin = process.env.HERMES_BIN
+    || await resolveOptionalExecutable('hermes', join(HOME, '.local', 'bin', 'hermes'));
   const hermesHome = String(process.env.HERMES_HOME || join(HOME, '.hermes')).trim();
   const homeWritable = await pathAccessible(hermesHome, constants.W_OK);
   let commandSummary = hermesBin ? `Hermes command found at ${hermesBin}.` : 'Hermes command was not found in PATH or HERMES_BIN.';

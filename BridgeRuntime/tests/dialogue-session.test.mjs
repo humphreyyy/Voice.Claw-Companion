@@ -40,6 +40,18 @@ test.afterEach(() => {
   __dialogueTestHooks.resetExecFileForTest();
 });
 
+test('Hermes CLI output parsing removes the decorative reasoning frame and preserves the reply', () => {
+  const parsed = __dialogueTestHooks.parseHermesChatOutput([
+    '╭─ Reasoning ─╮',
+    '│ internal planning text │',
+    '╰─────────────╯',
+    'Hermes response for the user.',
+  ].join('\n'), 'session_id: hermes-session-123');
+
+  assert.equal(parsed.sessionId, 'hermes-session-123');
+  assert.equal(parsed.reply, 'Hermes response for the user.');
+});
+
 test('attach, resume, and new preserve explicit session semantics', () => {
   const attached = resolveProcessingConfig({
     agent: 'default',

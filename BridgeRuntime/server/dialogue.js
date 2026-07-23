@@ -691,10 +691,19 @@ function parseHermesChatOutput(stdout = '', stderr = '') {
   const lines = String(stdout || '').split(/\r?\n/);
   let sessionId = '';
   const body = [];
+  let insideReasoningFrame = false;
   for (const line of lines) {
     const match = line.match(/^\s*session_id:\s*(\S+)\s*$/i);
     if (match) {
       sessionId = match[1];
+      continue;
+    }
+    if (/^\s*[╭┌].*\bReasoning\b.*[╮┐]\s*$/i.test(line)) {
+      insideReasoningFrame = true;
+      continue;
+    }
+    if (insideReasoningFrame) {
+      if (/^\s*[╰└].*[╯┘]\s*$/.test(line)) insideReasoningFrame = false;
       continue;
     }
     body.push(line);

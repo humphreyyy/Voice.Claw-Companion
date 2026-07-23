@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -138,6 +138,7 @@ export class CodexAppServerClient {
     turnTimeoutMs = DEFAULT_TURN_TIMEOUT_MS,
     realtimeTimeoutMs = DEFAULT_REALTIME_TIMEOUT_MS,
     environment = process.env,
+    environmentProvider = null,
   } = {}) {
     this.codexPath = codexPath;
     this.spawnProcess = spawnProcess;
@@ -146,6 +147,10 @@ export class CodexAppServerClient {
     this.turnTimeoutMs = boundedTimeout(turnTimeoutMs, DEFAULT_TURN_TIMEOUT_MS);
     this.realtimeTimeoutMs = boundedTimeout(realtimeTimeoutMs, DEFAULT_REALTIME_TIMEOUT_MS);
     this.environment = environment;
+    this.environmentProvider = typeof environmentProvider === 'function'
+      ? environmentProvider
+      : null;
+    this.spawnEnvironmentRevision = null;
     this.child = null;
     this.stdoutLines = null;
     this.startPromise = null;
@@ -162,9 +167,13 @@ export class CodexAppServerClient {
   }
 
   async start() {
-    if (this.ready && this.child) return this.initializeResult;
+    const environment = this.#resolvedEnvironment();
+    const environmentRevision = this.#environmentRevision(environment);
+    if (this.ready && this.child && this.spawnEnvironmentRevision === environmentRevision) {
+      return this.initializeResult;
+    }
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.#startProcess();
+    this.startPromise = this.#startProcess(environment, environmentRevision);
     try {
       return await this.startPromise;
     } finally {
@@ -172,15 +181,30 @@ export class CodexAppServerClient {
     }
   }
 
-  async #startProcess() {
+  #resolvedEnvironment() {
+    const dynamicEnvironment = this.environmentProvider?.() || {};
+    return {
+      ...this.environment,
+      ...dynamicEnvironment,
+    };
+  }
+
+  #environmentRevision(environment) {
+    return createHash('sha256')
+      .update(String(environment?.OPENAI_API_KEY || ''))
+      .digest('hex');
+  }
+
+  async #startProcess(environment, environmentRevision) {
     this.stop('restart');
     this.stderrTail = '';
     this.lastExit = null;
     const child = this.spawnProcess(this.codexPath, ['app-server', '--stdio'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...this.environment },
+      env: { ...environment },
     });
     this.child = child;
+    this.spawnEnvironmentRevision = environmentRevision;
     this.generation += 1;
 
     child.stderr?.setEncoding?.('utf8');
@@ -190,8 +214,8 @@ export class CodexAppServerClient {
 
     this.stdoutLines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     this.stdoutLines.on('line', (line) => this.#handleLine(line));
-    child.once('error', (error) => this.#handleExit(null, null, error));
-    child.once('exit', (code, signal) => this.#handleExit(code, signal));
+    child.once('error', (error) => this.#handleExit(child, null, null, error));
+    child.once('exit', (code, signal) => this.#handleExit(child, code, signal));
 
     const initialized = await this.request('initialize', {
       clientInfo: {
@@ -214,6 +238,7 @@ export class CodexAppServerClient {
     this.child = null;
     this.ready = false;
     this.initializeResult = null;
+    this.spawnEnvironmentRevision = null;
     this.stdoutLines?.close?.();
     this.stdoutLines = null;
     const error = new Error(`Codex app-server ${reason}.`);
@@ -725,8 +750,8 @@ export class CodexAppServerClient {
     }
   }
 
-  #handleExit(code, signal, cause = null) {
-    if (!this.child) return;
+  #handleExit(exitedChild, code, signal, cause = null) {
+    if (this.child !== exitedChild) return;
     this.child = null;
     this.ready = false;
     this.initializeResult = null;
@@ -1149,6 +1174,11 @@ export function attachCodexRealtimeRelaySocket({
     const type = String(message?.type || '').trim().toLowerCase();
     if (type === 'start') {
       if (activeThreadID) await bridge.stopRealtime(activeThreadID).catch(() => {});
+      if (message.allowAPIKeyAuth !== true) {
+        const error = new Error('Codex Realtime Voice requires API key authentication. Select API Key authentication or enable API-key fallback in VoiceClaw.');
+        error.code = 'CODEX_REALTIME_API_KEY_NOT_AUTHORIZED';
+        throw error;
+      }
       const requestedVersion = String(message.version || 'v2').trim().toLowerCase();
       if (requestedVersion !== 'v2') {
         const error = new Error('This relay exposes only verified Codex Realtime Voice V2. GPT Live V3 requires separate backend admission.');

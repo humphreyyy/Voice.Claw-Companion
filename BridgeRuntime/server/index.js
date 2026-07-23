@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import WebSocket, { WebSocketServer } from 'ws';
 import { executablePath, normalizeProcessPath } from './bin-paths.js';
-import { attachCodexRealtimeRelaySocket, CodexAppServerBridge } from './codex-app-server.js';
+import { attachCodexRealtimeRelaySocket, CodexAppServerBridge, CodexAppServerClient } from './codex-app-server.js';
 import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply, createVoiceRemoteSessionRuntimeAdapter } from './dialogue.js';
@@ -63,6 +63,11 @@ const CLIENT_DIR = join(__dirname, '..', 'client');
 const RUNTIME_MANIFEST_PATH = join(__dirname, '..', 'runtime-manifest.json');
 const RUNTIME_MANIFEST = loadRuntimeManifest();
 const codexAppServerBridge = new CodexAppServerBridge({
+  client: new CodexAppServerClient({
+    environmentProvider: () => ({
+      OPENAI_API_KEY: getOpenAIApiKey(),
+    }),
+  }),
   workspacePath: process.env.VOICECLAW_CODEX_CWD,
 });
 const PORT = parseInt(process.env.VB_PORT || '12321', 10);
