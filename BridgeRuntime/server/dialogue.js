@@ -420,14 +420,7 @@ async function resolveCallGateway() {
     const binRealPath = (() => {
       try { return realpathSync(OPENCLAW_BIN); } catch { return ''; }
     })();
-    const candidates = [
-      OPENCLAW_GATEWAY_MODULE,
-      join(OPENCLAW_INSTALL_PATH, 'dist', 'call.runtime.js'),
-      join(OPENCLAW_INSTALL_PATH, 'node_modules', 'openclaw', 'dist', 'call.runtime.js'),
-      binRealPath ? join(dirname(binRealPath), '..', 'dist', 'call.runtime.js') : '',
-      '/opt/homebrew/lib/node_modules/openclaw/dist/call.runtime.js',
-      '/usr/local/lib/node_modules/openclaw/dist/call.runtime.js',
-    ].filter(Boolean);
+    const candidates = openClawGatewayModuleCandidates({ binRealPath });
 
     const modulePath = candidates.find((candidate) => existsSync(candidate));
     if (!modulePath) {
@@ -442,6 +435,94 @@ async function resolveCallGateway() {
   })();
 
   return callGatewayLoader;
+}
+
+function openClawGatewayModuleCandidates({
+  gatewayModule = OPENCLAW_GATEWAY_MODULE,
+  installPath = OPENCLAW_INSTALL_PATH,
+  binRealPath = '',
+} = {}) {
+  const binDirectory = binRealPath ? dirname(binRealPath) : '';
+  return [...new Set([
+    gatewayModule,
+    // Current source installs place openclaw.mjs and dist/ beside each other.
+    binDirectory ? join(binDirectory, 'dist', 'call.runtime.js') : '',
+    // Older package layouts put the executable one directory below package root.
+    binDirectory ? join(binDirectory, '..', 'dist', 'call.runtime.js') : '',
+    join(installPath, 'dist', 'call.runtime.js'),
+    join(installPath, 'node_modules', 'openclaw', 'dist', 'call.runtime.js'),
+    '/opt/homebrew/lib/node_modules/openclaw/dist/call.runtime.js',
+    '/usr/local/lib/node_modules/openclaw/dist/call.runtime.js',
+  ].filter(Boolean))];
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    const candidate = String(value ?? '').trim();
+    if (candidate) return candidate;
+  }
+  return '';
+}
+
+function openClawSessionRows(result) {
+  for (const candidate of [result?.sessions, result?.items, result?.data?.sessions]) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
+}
+
+function normalizedOpenClawSessionRow(row = {}) {
+  const entry = row?.entry && typeof row.entry === 'object' ? row.entry : {};
+  const activeRunValues = Array.isArray(row.activeRunIds)
+    ? row.activeRunIds
+    : (Array.isArray(row.activeRunIDs) ? row.activeRunIDs : []);
+  const singularRunID = firstNonEmptyString(row.activeRunId, row.activeRunID);
+  const activeRunIDs = activeRunValues
+    .map((value) => firstNonEmptyString(value))
+    .filter(Boolean);
+  if (singularRunID && !activeRunIDs.includes(singularRunID)) activeRunIDs.unshift(singularRunID);
+  return {
+    source: row,
+    sessionID: firstNonEmptyString(
+      row.sessionId,
+      row.sessionID,
+      row.id,
+      entry.sessionId,
+      entry.sessionID,
+    ),
+    sessionKey: firstNonEmptyString(
+      row.key,
+      row.sessionKey,
+      row.canonicalSessionKey,
+      entry.key,
+      entry.sessionKey,
+    ),
+    label: firstNonEmptyString(row.label, entry.label),
+    activeRunIDs,
+    hasActiveRun: typeof row.hasActiveRun === 'boolean'
+      ? row.hasActiveRun
+      : activeRunIDs.length > 0,
+    createdAt: Number(
+      row.sessionStartedAt
+      || row.createdAt
+      || entry.sessionStartedAt
+      || entry.createdAt
+      || row.updatedAt
+      || entry.updatedAt
+      || Date.now()
+    ),
+    updatedAt: Number(
+      row.lastInteractionAt
+      || row.updatedAt
+      || entry.lastInteractionAt
+      || entry.updatedAt
+      || row.sessionStartedAt
+      || entry.sessionStartedAt
+      || Date.now()
+    ),
+    archived: Boolean(row.archived ?? entry.archived),
+    abortedLastRun: Boolean(row.abortedLastRun ?? entry.abortedLastRun),
+  };
 }
 
 const MIN_OPENCLAW_REPLY_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1581,20 +1662,17 @@ export function createVoiceRemoteSessionRuntimeAdapter({
     });
   };
   const openClawDescriptor = (row, route) => {
-    const sessionID = String(row?.sessionId || '').trim();
-    const sessionKey = String(row?.key || '').trim();
+    const normalized = normalizedOpenClawSessionRow(row);
+    const { sessionID, sessionKey, activeRunIDs } = normalized;
     if (!sessionID || !sessionKey) throw new Error('OpenClaw returned an incomplete session identity.');
-    const activeRunIDs = Array.isArray(row.activeRunIds)
-      ? row.activeRunIds.map((value) => String(value || '').trim()).filter(Boolean)
-      : [];
     return {
       sessionID,
       sessionKey,
-      createdAt: Number(row.sessionStartedAt || row.createdAt || row.updatedAt || Date.now()),
-      updatedAt: Number(row.lastInteractionAt || row.updatedAt || row.sessionStartedAt || Date.now()),
-      state: row.archived ? 'ended' : 'detached',
+      createdAt: normalized.createdAt,
+      updatedAt: normalized.updatedAt,
+      state: normalized.archived ? 'ended' : 'detached',
       runID: activeRunIDs[0] || null,
-      runState: row.hasActiveRun ? 'running' : 'idle',
+      runState: normalized.hasActiveRun ? 'running' : 'idle',
       binding: openClawBinding({ ...route, sessionID, sessionKey }),
     };
   };
@@ -1661,8 +1739,11 @@ export function createVoiceRemoteSessionRuntimeAdapter({
           label: labelForRoute(routeID),
           archived: false,
         });
-        return (Array.isArray(result?.sessions) ? result.sessions : [])
-          .filter((row) => row.label === labelForRoute(routeID))
+        return openClawSessionRows(result)
+          .filter((row) => {
+            const label = normalizedOpenClawSessionRow(row).label;
+            return !label || label === labelForRoute(routeID);
+          })
           .map((row) => openClawDescriptor(row, { routeID, agentID }));
       }
       const [rows, active] = await Promise.all([
@@ -1702,10 +1783,7 @@ export function createVoiceRemoteSessionRuntimeAdapter({
           label: labelForRoute(routeID),
         });
         return openClawDescriptor({
-          key: created?.key,
-          sessionId: created?.sessionId,
-          sessionStartedAt: created?.entry?.sessionStartedAt || created?.entry?.updatedAt,
-          updatedAt: created?.entry?.updatedAt,
+          ...created,
           label: labelForRoute(routeID),
         }, { routeID, agentID });
       }
@@ -2037,15 +2115,16 @@ export function createVoiceRemoteSessionRuntimeAdapter({
         label: binding.label || labelForRoute(session.routeID),
         archived: false,
       });
-      const row = (Array.isArray(result?.sessions) ? result.sessions : [])
-        .find((candidate) => candidate.key === binding.canonicalSessionKey);
-      const activeRunIDs = Array.isArray(row?.activeRunIds) ? row.activeRunIds : [];
+      const row = openClawSessionRows(result)
+        .find((candidate) => normalizedOpenClawSessionRow(candidate).sessionKey === binding.canonicalSessionKey);
+      const normalized = normalizedOpenClawSessionRow(row);
+      const activeRunIDs = normalized.activeRunIDs;
       return {
         runID: activeRunIDs[0] || runID,
-        runState: row?.hasActiveRun
+        runState: normalized.hasActiveRun
           ? 'running'
           : (session.runState === 'starting' || session.runState === 'running'
-              ? (row ? (row.abortedLastRun ? 'cancelled' : 'completed') : 'unknown')
+              ? (row ? (normalized.abortedLastRun ? 'cancelled' : 'completed') : 'unknown')
               : session.runState),
         binding,
       };
@@ -2056,6 +2135,9 @@ export function createVoiceRemoteSessionRuntimeAdapter({
 }
 
 export const __dialogueTestHooks = Object.freeze({
+  openClawGatewayModuleCandidates,
+  openClawSessionRows,
+  normalizedOpenClawSessionRow,
   parseHermesChatOutput,
   isStaleHermesResumeError,
   isConfirmedGatewayAbort,

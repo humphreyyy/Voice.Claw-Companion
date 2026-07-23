@@ -87,6 +87,48 @@ test('attach, resume, and new preserve explicit session semantics', () => {
   assert.ok(fresh.sessionId.length <= 64);
 });
 
+test('OpenClaw gateway lookup prefers the package beside the configured CLI and retains legacy layouts', () => {
+  const candidates = __dialogueTestHooks.openClawGatewayModuleCandidates({
+    gatewayModule: '/explicit/call.runtime.js',
+    installPath: '/configured/openclaw',
+    binRealPath: '/current/openclaw/openclaw.mjs',
+  });
+
+  assert.deepEqual(candidates.slice(0, 5), [
+    '/explicit/call.runtime.js',
+    '/current/openclaw/dist/call.runtime.js',
+    '/current/dist/call.runtime.js',
+    '/configured/openclaw/dist/call.runtime.js',
+    '/configured/openclaw/node_modules/openclaw/dist/call.runtime.js',
+  ]);
+});
+
+test('OpenClaw session normalization accepts current and legacy response fields', () => {
+  const current = __dialogueTestHooks.normalizedOpenClawSessionRow({
+    key: 'agent:julian:current',
+    sessionId: 'current-session',
+    activeRunIds: ['current-run'],
+    hasActiveRun: true,
+  });
+  const legacy = __dialogueTestHooks.normalizedOpenClawSessionRow({
+    canonicalSessionKey: 'agent:julian:legacy',
+    sessionID: 'legacy-session',
+    activeRunID: 'legacy-run',
+  });
+
+  assert.equal(current.sessionID, 'current-session');
+  assert.equal(current.sessionKey, 'agent:julian:current');
+  assert.deepEqual(current.activeRunIDs, ['current-run']);
+  assert.equal(legacy.sessionID, 'legacy-session');
+  assert.equal(legacy.sessionKey, 'agent:julian:legacy');
+  assert.deepEqual(legacy.activeRunIDs, ['legacy-run']);
+  assert.equal(legacy.hasActiveRun, true);
+  assert.deepEqual(
+    __dialogueTestHooks.openClawSessionRows({ data: { sessions: [{ sessionID: 'nested' }] } }),
+    [{ sessionID: 'nested' }],
+  );
+});
+
 test('aborting an accepted OpenClaw turn sends chat.abort with the accepted run identity', async () => {
   const calls = [];
   __dialogueTestHooks.setCallGatewayForTest((options) => {
