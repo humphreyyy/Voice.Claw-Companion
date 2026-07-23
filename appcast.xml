@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.124</title>
+            <pubDate>Thu, 23 Jul 2026 03:38:27 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607230035</sparkle:version>
+            <sparkle:shortVersionString>0.1.124</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.124</h2><ul><li>Makes phone pairing lossless so API keys, OAuth credentials, tunnel URLs, bridge credentials, and future setup fields survive QR and setup-link sync.</li><li>Refreshes pairing data whenever Pair Phone opens and tries both public HTTPS and Tailscale setup endpoints.</li><li>Makes Voice Dependency installation observable and prevents duplicate full HF runtime installs when several requirements are missing.</li><li>Improves OpenClaw and Hermes recent-session discovery for the VoiceClaw session browser.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.124/VoiceClawCompanion-0.1.124-202607230035.dmg" length="3765365" type="application/octet-stream" sparkle:edSignature="yknrbMnNNvij1nYTsB6ikfHRW84q2DFEai0NE296GaQsErt2RvIekLUkiX7vEffWBJcK4HLKPNi0qFYi5nrFAA=="/>
+        </item>
+        <item>
             <title>0.1.123</title>
             <pubDate>Wed, 22 Jul 2026 20:57:55 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.122</h2><ul><li>Adds the Codex App-Server voice route with resilient realtime lifecycle management.</li><li>Adds agent-session resume, observation, and cleanup support.</li><li>Updates the local Companion Realtime Voice model to Qwen3.5 0.8B.</li><li>Refreshes QR pairing data and separates installed, warm, and admitted runtime readiness.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.122/VoiceClawCompanion-0.1.122-202607221732.dmg" length="3760524" type="application/octet-stream" sparkle:edSignature="njgUyaVIDdEug2VhAPz1xYCmB9/h6Ce1qfSMYNnLrdVKce6DPjx5XgczvQmwPTkCfPVVPFcRD14Cz4sCf6wYDg=="/>
-        </item>
-        <item>
-            <title>0.1.121</title>
-            <pubDate>Tue, 07 Jul 2026 02:11:29 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607062309</sparkle:version>
-            <sparkle:shortVersionString>0.1.121</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.121</h2><ul><li>Adds GPT Realtime 2.1 Mini as the default pairing/runtime realtime model.</li><li>Keeps GPT Realtime 2.1 and GPT-Realtime-2 compatible with the existing realtime mechanics.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.121/VoiceClawCompanion-0.1.121-202607062309.dmg" length="3589656" type="application/octet-stream" sparkle:edSignature="vW9YDv4UHECgbx1/z/9spRz1pWPHjTL166oWqgBmP8lcy+aj/afgf+8kA9wFG56NPEC4ewP9j3DP1XY82Ki3AQ=="/>
         </item>
     </channel>
 </rss>
