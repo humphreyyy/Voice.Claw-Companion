@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.127</title>
+            <pubDate>Fri, 24 Jul 2026 01:42:04 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607232241</sparkle:version>
+            <sparkle:shortVersionString>0.1.127</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.127</h2><ul><li>Resolves recent-session discovery against current OpenClaw source installs and older packaged CLI layouts.</li><li>Accepts current and legacy OpenClaw session response fields while preserving runtime-issued session and run identities.</li><li>Supports idle OpenClaw and Hermes sessions whose active run identifier is not yet present.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.127/VoiceClawCompanion-0.1.127-202607232241.dmg" length="3773758" type="application/octet-stream" sparkle:edSignature="0tXLO68hlfk5laQonGnb+tPdLMUl+u35pFLq+PHAt2Bs/giotVyWuWUbl++QGkR0zmGNMYdm7iSKwi6COQ6JBQ=="/>
+        </item>
+        <item>
             <title>0.1.126</title>
             <pubDate>Fri, 24 Jul 2026 00:57:06 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.125</h2><ul><li>Corrects Hermes Agent discovery for standard ~/.local/bin installations and LaunchAgent PATH.</li><li>Cleans decorative Hermes CLI reasoning wrappers from spoken and visible replies.</li><li>Ensures Codex app-server sessions receive the current authorized OpenAI key after key rotation.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.125/VoiceClawCompanion-0.1.125-202607232013.dmg" length="3769725" type="application/octet-stream" sparkle:edSignature="5dQb6keGpDg5OqdAyrb29QoONOKA8bIgyX19z1uO+M590Yuq/HBdPbPSSh7hsr65/dZ83L2M72mrDwqzEUdgDw=="/>
-        </item>
-        <item>
-            <title>0.1.124</title>
-            <pubDate>Thu, 23 Jul 2026 03:38:27 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607230035</sparkle:version>
-            <sparkle:shortVersionString>0.1.124</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.124</h2><ul><li>Makes phone pairing lossless so API keys, OAuth credentials, tunnel URLs, bridge credentials, and future setup fields survive QR and setup-link sync.</li><li>Refreshes pairing data whenever Pair Phone opens and tries both public HTTPS and Tailscale setup endpoints.</li><li>Makes Voice Dependency installation observable and prevents duplicate full HF runtime installs when several requirements are missing.</li><li>Improves OpenClaw and Hermes recent-session discovery for the VoiceClaw session browser.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.124/VoiceClawCompanion-0.1.124-202607230035.dmg" length="3765365" type="application/octet-stream" sparkle:edSignature="yknrbMnNNvij1nYTsB6ikfHRW84q2DFEai0NE296GaQsErt2RvIekLUkiX7vEffWBJcK4HLKPNi0qFYi5nrFAA=="/>
         </item>
     </channel>
 </rss>
