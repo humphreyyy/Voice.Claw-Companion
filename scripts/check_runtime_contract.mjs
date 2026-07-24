@@ -26,9 +26,11 @@ const expectedIphoneTools = [
   'iphone_draft_email',
   'iphone_draft_message',
   'iphone_end_voice_session',
+  'iphone_external_action',
   'iphone_list_calendar_events',
   'iphone_list_reminders',
   'iphone_lookup_contact',
+  'iphone_manage_agent_session',
   'iphone_open_app_settings',
   'iphone_open_maps',
   'iphone_open_url',
@@ -124,8 +126,10 @@ try {
 }
 
 const requiredPhrases = [
-  'OpenClaw is not a fallback, not escalation-only, and not only for computer/file/coding work',
-  'If the user did not say "OpenClaw," still call openclaw_turn for substantive work',
+  'Decide the right surface: direct conversation for a complete answer, one iPhone-side tool for an explicit iPhone action, or openclaw_turn when selected-agent context or execution materially matters',
+  'Call openclaw_turn when the user explicitly targets the selected agent, the request needs its private/current state or tools, the work is long-running, or its durable context or stronger execution would materially improve the result',
+  'iphone_external_action is the generic iPhone action dispatcher',
+  'iphone_manage_agent_session lists discovered OpenClaw/Hermes agents and recent sessions',
   'iphone_set_transcript_visible opens or closes the transcript panel',
   'iphone_set_speakerphone_enabled switches only the live VoiceClaw audio output',
   "iphone_confirm_voice_route_switch changes VoiceClaw's selected route",
