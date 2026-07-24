@@ -62,6 +62,29 @@ function delayedToolRequest(overrides = {}) {
   };
 }
 
+test('Codex route normalization and explicit runtime reject a stale OpenClaw binding', () => {
+  const processing = outerHFIntegration.normalizeRealtimeProcessingPayload({
+    routeMode: 'codex-app-server',
+    processing: {},
+  });
+  assert.equal(processing.runtime, 'codex');
+
+  const staleOpenClawSession = { runtime: 'openclaw', sessionID: 'old-openclaw-session' };
+  const resolved = outerHFIntegration.resolveRealtimeRuntimeBinding(
+    processing,
+    staleOpenClawSession,
+  );
+  assert.equal(resolved.runtime, 'codex');
+  assert.equal(resolved.boundRemoteSession, null);
+});
+
+test('an attached agent runtime remains usable when no explicit runtime overrides it', () => {
+  const hermesSession = { runtime: 'hermes', sessionID: 'hermes-session' };
+  const resolved = outerHFIntegration.resolveRealtimeRuntimeBinding({}, hermesSession);
+  assert.equal(resolved.runtime, 'hermes');
+  assert.equal(resolved.boundRemoteSession, hermesSession);
+});
+
 test('sidecar interruption aborts an actual delayed outer tool with stable downstream identity', async () => {
   const controller = new AbortController();
   let downstream = null;

@@ -87,6 +87,38 @@ test('attach, resume, and new preserve explicit session semantics', () => {
   assert.ok(fresh.sessionId.length <= 64);
 });
 
+test('generic OpenClaw model identifiers never resolve to raw direct routes', () => {
+  for (const model of [
+    'gpt-5.5',
+    'gpt-5.6-sol',
+    'gpt56sol',
+    'openai/gpt-5.6-terra',
+    'gpt-5.6-luna',
+    'gpt-5.4',
+    'gpt54',
+    'gpt-5.3-codex',
+  ]) {
+    const resolved = resolveProcessingConfig({ agent: model, sessionToken: 'model-routing-test' });
+    assert.equal(resolved.modelRun, false, `${model} unexpectedly selected a raw model-run route`);
+    assert.notEqual(resolved.promptMode, 'none', `${model} unexpectedly disabled the OpenClaw prompt/tools`);
+  }
+});
+
+test('explicit direct route identifiers preserve raw no-OpenClaw execution', () => {
+  for (const route of [
+    'gpt55-direct',
+    'gpt54-direct',
+    'gpt56-sol-direct',
+    'gpt56-terra-direct',
+    'gpt56-luna-direct',
+  ]) {
+    const resolved = resolveProcessingConfig({ agent: route, sessionToken: 'direct-routing-test' });
+    assert.equal(resolved.route, route);
+    assert.equal(resolved.modelRun, true, `${route} did not preserve raw model-run execution`);
+    assert.equal(resolved.promptMode, 'none', `${route} unexpectedly enabled the OpenClaw prompt/tools`);
+  }
+});
+
 test('OpenClaw gateway lookup prefers the package beside the configured CLI and retains legacy layouts', () => {
   const candidates = __dialogueTestHooks.openClawGatewayModuleCandidates({
     gatewayModule: '/explicit/call.runtime.js',
@@ -127,6 +159,96 @@ test('OpenClaw session normalization accepts current and legacy response fields'
     __dialogueTestHooks.openClawSessionRows({ data: { sessions: [{ sessionID: 'nested' }] } }),
     [{ sessionID: 'nested' }],
   );
+});
+
+test('OpenClaw context overflow detection is canonical and does not match ordinary discussion', () => {
+  assert.equal(
+    __dialogueTestHooks.isOpenClawContextOverflowReply(
+      'Context overflow: prompt too large for the model. Try /new.',
+    ),
+    true,
+  );
+  assert.equal(
+    __dialogueTestHooks.isOpenClawContextOverflowReply(
+      '⚠️ Context overflow — this conversation is too large for the model.',
+    ),
+    true,
+  );
+  assert.equal(
+    __dialogueTestHooks.isOpenClawContextOverflowReply(
+      'I can investigate the context overflow issue in your app.',
+    ),
+    false,
+  );
+});
+
+test('OpenClaw adapter compacts the bound session and retries once after canonical context overflow', async () => {
+  const route = { routeID: 'openclaw-bridge', runtime: 'openclaw', agentID: 'main' };
+  const calls = [];
+  let agentAttempt = 0;
+  __dialogueTestHooks.setCallGatewayForTest((options) => {
+    calls.push({ method: options.method, params: options.params });
+    if (options.method === 'sessions.create') {
+      return Promise.resolve({
+        ok: true,
+        key: 'agent:main:dashboard:overflow-key',
+        sessionId: 'overflow-session-id',
+        entry: { updatedAt: Date.now() },
+      });
+    }
+    if (options.method === 'sessions.compact') {
+      assert.deepEqual(options.params, {
+        key: 'agent:main:dashboard:overflow-key',
+        agentId: 'main',
+      });
+      return Promise.resolve({
+        ok: true,
+        key: 'agent:main:dashboard:overflow-key',
+        compacted: true,
+      });
+    }
+    assert.equal(options.method, 'agent');
+    agentAttempt += 1;
+    options.onAccepted?.({
+      status: 'accepted',
+      runId: `overflow-run-${agentAttempt}`,
+      sessionKey: 'agent:main:dashboard:overflow-key',
+    });
+    return Promise.resolve({
+      result: {
+        payloads: [{
+          text: agentAttempt === 1
+            ? 'Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session.'
+            : 'The same OpenClaw session was compacted and the request completed.',
+        }],
+        meta: { agentMeta: { model: 'test-model' } },
+      },
+    });
+  });
+
+  const adapter = createVoiceRemoteSessionRuntimeAdapter();
+  const descriptor = await adapter.startSession(route);
+  const acceptedRuns = [];
+  const result = await adapter.runTurn({
+    session: sessionFromDescriptor(descriptor, route),
+    binding: descriptor.binding,
+    text: 'Run this in a fresh context if necessary.',
+    processing: { thinking: 'minimal' },
+    requestID: 'overflow-request',
+    signal: new AbortController().signal,
+    async onRunStarted(identity) { acceptedRuns.push(identity.runID); },
+    async onEvent() {},
+  });
+
+  assert.equal(result.reply, 'The same OpenClaw session was compacted and the request completed.');
+  assert.deepEqual(acceptedRuns, ['overflow-run-1', 'overflow-run-2']);
+  assert.deepEqual(calls.map(({ method }) => method), [
+    'sessions.create',
+    'agent',
+    'sessions.compact',
+    'agent',
+  ]);
+  assert.equal(calls[3].params.idempotencyKey, 'overflow-request:post-compact');
 });
 
 test('aborting an accepted OpenClaw turn sends chat.abort with the accepted run identity', async () => {

@@ -43,9 +43,11 @@ function toolNamesFromArray(name) {
 const openClaw = extractTemplate('REALTIME_INSTRUCTIONS');
 const direct = extractTemplate('REALTIME_DIRECT_INSTRUCTIONS');
 const instant = extractTemplate('REALTIME_INSTANT_INSTRUCTIONS');
+const codex = extractTemplate('REALTIME_CODEX_INSTRUCTIONS');
 const iphoneSummary = extractTemplate('IPHONE_TOOL_CAPABILITY_SUMMARY');
 const capabilityAwareness = extractTemplate('CAPABILITY_AWARENESS_INSTRUCTIONS');
 const openClawTools = toolNamesFromArray('REALTIME_TOOLS');
+const codexTools = toolNamesFromArray('CODEX_REALTIME_TOOLS');
 const instantTools = toolNamesFromArray('INSTANT_REALTIME_TOOLS');
 const iphoneTools = toolNamesFromArray('IPHONE_REALTIME_TOOLS');
 
@@ -63,12 +65,12 @@ for (const needle of [
   'Operating loop',
   'Examples and routing patterns',
   'Capability boundaries and routing priority',
-  'Direct GPT-Realtime-2 is the live conversation layer',
+  'The active Voice Engine is the conversation layer',
   'iPhone-side tools are the device-action layer',
-  'Active work controls are part of the OpenClaw route',
+  'Active work controls are part of the selected agent route',
   'Apple Watch settings sync',
-  'Apple Watch can use Direct GPT-Realtime-2',
-  'Direct GPT-5.5 Instant over cellular',
+  'Apple Watch supports GPT Realtime and Companion Realtime Voice engines',
+  'Its routes include GPT Realtime Standalone, GPT-5.5 Instant, Codex',
   'Tool precision and confirmation',
   'calendar/reminder reading or creation',
   'Calendar and reminder reads expose private iPhone data',
@@ -78,28 +80,21 @@ for (const needle of [
   'WhatsApp handoffs',
   'choose Notes in the share sheet',
   'iOS system shortcuts',
-  'get VoiceClaw status',
+  'iphone_status reads current iPhone and VoiceClaw app status',
   'User-extensible iPhone automation through Shortcuts',
-  'When explaining capabilities',
+  'When the user asks what VoiceClaw can do',
   'named Apple Shortcuts',
   'custom iPhone workflows',
   'Do not repeatedly call the same failed tool',
-  'keep normal GPT-Realtime-2 conversation and iPhone-side actions available',
+  'keep normal',
   'wait_for_user',
   'Do not respond conversationally after wait_for_user',
-  'steer_openclaw instead of starting a second OpenClaw turn',
-  'bridge_status before starting another OpenClaw turn',
-]) {
-  assertContains('REALTIME_INSTRUCTIONS expanded prompt', expandedOpenClaw, needle);
-}
-
-for (const needle of [
-  'OpenClaw is not a fallback, not escalation-only, and not only for computer/file/coding work',
-  'If the user did not say "OpenClaw," still call openclaw_turn for substantive work',
-  'Never say the user must explicitly ask to use OpenClaw in this route',
-  'use OpenClaw for almost every substantive request',
-  "If your next words would be \"I can't\"",
-  'There is no stop-to-cancel window',
+  'steer_openclaw instead of starting a duplicate turn',
+  'call bridge_status before starting another turn',
+  'Session continuity',
+  'Trust boundaries',
+  'does not require delegation for every substantive sentence',
+  'state the exact failure plainly',
 ]) {
   assertContains('REALTIME_INSTRUCTIONS expanded prompt', expandedOpenClaw, needle);
 }
@@ -107,10 +102,9 @@ for (const needle of [
 for (const needle of [
   'Capability awareness as VoiceClaw grows',
   'The active route and active tool list are authoritative',
-  'Do not under-use OpenClaw in OpenClaw Bridge/Tunnel routes',
   'Use iphone_status when the user asks about this iPhone',
   'Permission-gated tools such as Location, Contacts, Calendar, Reminders, microphone, camera, and clipboard access',
-  'Use bridge_status when the user asks about OpenClaw queue',
+  'Use bridge_status when the user asks about the selected agent queue',
 ]) {
   assertContains('CAPABILITY_AWARENESS_INSTRUCTIONS', capabilityAwareness, needle);
 }
@@ -125,6 +119,15 @@ for (const [name, text] of [
 
 assertContains('REALTIME_DIRECT_INSTRUCTIONS', direct, 'GPT-Realtime-2 is a full first responder');
 assertContains('REALTIME_INSTANT_INSTRUCTIONS', instant, 'GPT-Realtime-2 remains a full first responder');
+for (const needle of [
+  'Codex App-Server as the active second-layer route',
+  'persistent Codex app-server thread',
+  'Do not call Codex merely because an answer is substantive',
+  'Never claim that Codex completed work',
+  'untrusted data',
+]) {
+  assertContains('REALTIME_CODEX_INSTRUCTIONS', codex, needle);
+}
 
 for (const needle of ['openclaw_turn', 'steer_openclaw', 'stop_openclaw', 'bridge_status']) {
   assertOmits('REALTIME_DIRECT_INSTRUCTIONS', direct, needle);
@@ -133,6 +136,10 @@ for (const needle of ['openclaw_turn', 'steer_openclaw', 'stop_openclaw', 'bridg
 
 for (const toolName of [...openClawTools, ...iphoneTools]) {
   assertContains('REALTIME_INSTRUCTIONS expanded prompt', expandedOpenClaw, toolName);
+}
+
+for (const toolName of codexTools) {
+  assertContains('REALTIME_CODEX_INSTRUCTIONS', codex, toolName);
 }
 
 for (const toolName of iphoneTools) {

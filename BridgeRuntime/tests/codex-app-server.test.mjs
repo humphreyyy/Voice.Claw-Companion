@@ -64,12 +64,14 @@ class FakeRelaySocket extends EventEmitter {
   }
 }
 
-function createFakeCodexServer({ realtimeError = '' } = {}) {
+function createFakeCodexServer({ realtimeError = '', contextOverflowOnce = false } = {}) {
   const calls = [];
   const spawnOptions = [];
   let threadStarts = 0;
   let threadResumes = 0;
   let turnSequence = 0;
+  let compactions = 0;
+  let shouldOverflow = contextOverflowOnce;
   let process = null;
   const spawnProcess = (_binary, _args, options) => {
     spawnOptions.push(options);
@@ -126,11 +128,38 @@ function createFakeCodexServer({ realtimeError = '' } = {}) {
         send({ id: message.id, result: { thread: { id: message.params.threadId } } });
         return;
       }
+      if (message.method === 'thread/compact/start') {
+        compactions += 1;
+        send({ id: message.id, result: {} });
+        queueMicrotask(() => {
+          send({ method: 'thread/compacted', params: { threadId: message.params.threadId } });
+        });
+        return;
+      }
       if (message.method === 'turn/start') {
         turnSequence += 1;
         const turnID = `turn-${turnSequence}`;
         send({ id: message.id, result: { turn: { id: turnID, status: 'inProgress', items: [] } } });
         queueMicrotask(() => {
+          if (shouldOverflow) {
+            shouldOverflow = false;
+            send({
+              method: 'turn/completed',
+              params: {
+                threadId: message.params.threadId,
+                turn: {
+                  id: turnID,
+                  status: 'failed',
+                  items: [],
+                  error: {
+                    message: 'Context overflow: prompt too large for the model.',
+                    codexErrorInfo: 'context_window_exceeded',
+                  },
+                },
+              },
+            });
+            return;
+          }
           send({
             method: 'item/agentMessage/delta',
             params: {
@@ -201,6 +230,7 @@ function createFakeCodexServer({ realtimeError = '' } = {}) {
     calls,
     get threadStarts() { return threadStarts; },
     get threadResumes() { return threadResumes; },
+    get compactions() { return compactions; },
     get process() { return process; },
   };
 }
@@ -286,10 +316,30 @@ test('runs serialized text turns on one durable Codex thread', async () => {
   assert.equal(server.threadResumes, 0);
   const start = server.calls.find((call) => call.method === 'thread/start');
   assert.equal(start.params.approvalPolicy, 'never');
-  assert.equal(start.params.sandbox, 'read-only');
+  assert.equal(start.params.sandbox, 'workspace-write');
   assert.equal(start.params.serviceName, 'voiceclaw_companion');
   const turns = server.calls.filter((call) => call.method === 'turn/start');
   assert.deepEqual(turns[0].params.input, [{ type: 'text', text: 'first', text_elements: [] }]);
+  bridge.stop();
+});
+
+test('compacts and retries one Codex turn after a context overflow', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-compact-'));
+  const server = createFakeCodexServer({ contextOverflowOnce: true });
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+
+  const result = await bridge.runTurn({ sessionKey: 'overflow-session', text: 'retry me' });
+
+  assert.equal(result.threadID, 'thread-voiceclaw-1');
+  assert.equal(result.text, 'reply-2');
+  assert.equal(result.recoveredByCompaction, true);
+  assert.equal(server.threadStarts, 1);
+  assert.equal(server.compactions, 1);
+  assert.equal(server.calls.filter((call) => call.method === 'turn/start').length, 2);
   bridge.stop();
 });
 

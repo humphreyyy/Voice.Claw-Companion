@@ -2807,7 +2807,6 @@ async function sidecarConfigFromPayload(payload = {}, { port = HF_PORT, signal =
       '--no_compact_history',
       ...ttsArgs,
       ...liveTranscriptionArgs,
-      '--llm_gen_max_new_tokens', '192',
       '--thresh', '0.5',
       '--min_silence_ms', '360',
       '--min_speech_ms', '384',

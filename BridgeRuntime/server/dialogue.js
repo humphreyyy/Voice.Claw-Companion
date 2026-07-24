@@ -23,42 +23,50 @@ const BRIDGE_DEFAULT_MODEL = process.env.INTERCOM_DEFAULT_MODEL || 'openai/gpt-5
 const BRIDGE_DEFAULT_LABEL = process.env.INTERCOM_DEFAULT_MODEL_LABEL || 'GPT-5.5 (OpenClaw tools)';
 const DIRECT_GPT55_ROUTE_ID = 'gpt55-direct';
 const DIRECT_GPT55_MODEL = 'openai/gpt-5.5';
+const OPENCLAW_TOOL_MODEL_IDS = [
+  'openai/gpt-5.5',
+  'openai/gpt-5.6-sol',
+  'openai/gpt-5.6-terra',
+  'openai/gpt-5.6-luna',
+  'openai/gpt-5.4',
+  'openai/gpt-5.3-codex',
+];
 const DIRECT_OPENAI_MODEL_ROUTES = [
   {
     id: DIRECT_GPT55_ROUTE_ID,
-    label: 'GPT-5.5 Direct (raw/no OpenClaw)',
+    label: 'GPT-5.5 (Direct)',
     model: DIRECT_GPT55_MODEL,
     aliases: ['gpt55-direct', 'gpt55direct', 'gpt-5.5-direct', 'gpt-5.5-without-openclaw', 'without-openclaw'],
   },
   {
     id: 'gpt54-direct',
-    label: 'GPT-5.4 Direct (raw/no OpenClaw)',
+    label: 'GPT-5.4 (Direct)',
     model: 'openai/gpt-5.4',
-    aliases: ['gpt54-direct', 'gpt54direct', 'gpt-5.4-direct', 'gpt-5.4', 'gpt54'],
+    aliases: ['gpt54-direct', 'gpt54direct', 'gpt-5.4-direct'],
   },
   {
     id: 'gpt54-mini-direct',
-    label: 'GPT-5.4-mini Direct (raw/no OpenClaw)',
+    label: 'GPT-5.4-mini (Direct)',
     model: 'openai/gpt-5.4-mini',
-    aliases: ['gpt54-mini-direct', 'gpt54mini-direct', 'gpt-5.4-mini-direct', 'gpt-5.4-mini', 'gpt54mini', 'gpt54-nano-direct', 'gpt54nano-direct', 'gpt-5.4-nano-direct', 'gpt-5.4-nano', 'gpt54nano'],
+    aliases: ['gpt54-mini-direct', 'gpt54mini-direct', 'gpt-5.4-mini-direct', 'gpt54-nano-direct', 'gpt54nano-direct', 'gpt-5.4-nano-direct'],
   },
   {
     id: 'gpt56-sol-direct',
-    label: 'GPT-5.6 Sol Direct (raw/no OpenClaw)',
+    label: 'GPT-5.6 Sol (Direct)',
     model: 'openai/gpt-5.6-sol',
-    aliases: ['gpt56-sol-direct', 'gpt56soldirect', 'gpt-5.6-sol-direct', 'gpt-5.6-sol', 'gpt56sol'],
+    aliases: ['gpt56-sol-direct', 'gpt56soldirect', 'gpt-5.6-sol-direct'],
   },
   {
     id: 'gpt56-terra-direct',
-    label: 'GPT-5.6 Terra Direct (raw/no OpenClaw)',
+    label: 'GPT-5.6 Terra (Direct)',
     model: 'openai/gpt-5.6-terra',
-    aliases: ['gpt56-terra-direct', 'gpt56terradirect', 'gpt-5.6-terra-direct', 'gpt-5.6-terra', 'gpt56terra'],
+    aliases: ['gpt56-terra-direct', 'gpt56terradirect', 'gpt-5.6-terra-direct'],
   },
   {
     id: 'gpt56-luna-direct',
-    label: 'GPT-5.6 Luna Direct (raw/no OpenClaw)',
+    label: 'GPT-5.6 Luna (Direct)',
     model: 'openai/gpt-5.6-luna',
-    aliases: ['gpt56-luna-direct', 'gpt56lunadirect', 'gpt-5.6-luna-direct', 'gpt-5.6-luna', 'gpt56luna'],
+    aliases: ['gpt56-luna-direct', 'gpt56lunadirect', 'gpt-5.6-luna-direct'],
   },
 ];
 const THINKING_OPTIONS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
@@ -120,6 +128,10 @@ function buildProcessingRoutes() {
   addModel(defaultsPrimary);
   fallbackModels.forEach(addModel);
   Object.keys(modelsMap).forEach(addModel);
+  // VoiceClaw's OpenClaw model picker is intentionally forward-compatible.
+  // Keep every picker model on the tool-enabled agent path even when an older
+  // openclaw.json has not added an explicit models entry for it yet.
+  OPENCLAW_TOOL_MODEL_IDS.forEach(addModel);
 
   const routes = orderedModelIds.filter((fullModelId) => !isKnownUnavailableModel(fullModelId)).map((fullModelId) => {
     const isBridgeDefault = fullModelId === BRIDGE_DEFAULT_MODEL;
@@ -180,7 +192,10 @@ function buildProcessingRoutes() {
   });
 }
 const PROCESSING_ROUTES = buildProcessingRoutes();
-const FAST_MODE_OPTIONS = ['on'];
+const FAST_MODE_OPTIONS = ['off', 'on'];
+const DEFAULT_FAST_MODE = String(process.env.VOICECLAW_OPENCLAW_FAST_MODE || 'on').trim().toLowerCase() === 'off'
+  ? 'off'
+  : 'on';
 const _primedSessions = new Map();
 const _hermesSessions = new Map();
 const _hermesOperations = new Map();
@@ -197,17 +212,41 @@ function normalizeThinking(value) {
 }
 
 function normalizeFastMode(value) {
-  return 'on';
+  const normalized = String(value || '').trim().toLowerCase();
+  return FAST_MODE_OPTIONS.includes(normalized) ? normalized : DEFAULT_FAST_MODE;
 }
 
 function routeIdByAlias(raw) {
-  const wanted = String(raw || '').trim();
+  const wanted = String(raw || '').trim().toLowerCase();
   if (!wanted) return '';
 
   const primary = PROCESSING_ROUTES[0]?.id || 'default';
-  if (wanted === 'main' || wanted === 'default' || wanted === 'default-fast' || wanted === 'intercom' || wanted === 'gpt54' || wanted === 'gpt54-fast') return primary;
+  if (wanted === 'main' || wanted === 'default' || wanted === 'default-fast' || wanted === 'intercom') return primary;
+
+  // An exact route id is authoritative. In particular, raw/no-tools routes
+  // must be selected with their explicit `-direct` identity.
+  const exactRoute = PROCESSING_ROUTES.find((route) => route.id.toLowerCase() === wanted);
+  if (exactRoute) return exactRoute.id;
+
   const directRoute = DIRECT_OPENAI_MODEL_ROUTES.find((route) => route.aliases.includes(wanted));
   if (directRoute) return directRoute.id;
+
+  // A generic model id received while an OpenClaw route is active means
+  // "use this model inside OpenClaw", never "bypass OpenClaw and its tools".
+  const compact = (value) => String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^openai\//, '')
+    .replace(/[^a-z0-9]+/g, '');
+  const wantedModel = compact(wanted);
+  const openClawRoute = PROCESSING_ROUTES.find((route) => !route.modelRun && [
+    route.id,
+    route.model,
+    shortModelName(route.model),
+    modelOptionId(route.model),
+  ].some((candidate) => compact(candidate) === wantedModel));
+  if (openClawRoute) return openClawRoute.id;
+
   return wanted;
 }
 
@@ -720,6 +759,9 @@ async function runGatewayAgentTurn(
 
 function userFacingOpenClawGatewayError(error) {
   const message = String(error?.message || error || '');
+  if (isOpenClawContextOverflowReply(message)) {
+    return 'OpenClaw reached the context limit for this agent session. Start a fresh agent session and retry the request.';
+  }
   if (/gateway module was not found|callGateway export|module not found|cannot find module/i.test(message)) {
     return 'OpenClaw is not available to the Companion on this Mac. Open or reinstall OpenClaw, then retry from VoiceClaw.';
   }
@@ -730,6 +772,41 @@ function userFacingOpenClawGatewayError(error) {
     return 'OpenClaw could not authenticate this request. Open OpenClaw on the Mac, confirm your ChatGPT login, then retry from VoiceClaw.';
   }
   return null;
+}
+
+function isOpenClawContextOverflowReply(value) {
+  const text = String(value || '').trim();
+  return /^(?:⚠️?\s*)?context overflow(?:\s*[:—-]|\b)/i.test(text)
+    || /^context_window_exceeded\b/i.test(text)
+    || /^request_too_large\b/i.test(text);
+}
+
+function openClawContextOverflowError(reply) {
+  const error = new Error(String(reply || '').trim() || 'OpenClaw context overflow.');
+  error.code = 'OPENCLAW_CONTEXT_OVERFLOW';
+  error.recoverable = true;
+  return error;
+}
+
+async function compactOpenClawSession(cfg, { timeoutMs = MIN_OPENCLAW_REPLY_TIMEOUT_MS } = {}) {
+  const sessionKey = sessionKeyForGateway(cfg);
+  if (!sessionKey) throw new Error('OpenClaw session compaction requires a canonical session key.');
+  const callGateway = await resolveCallGateway();
+  const result = await withOpenClawSessionActivity(cfg.sessionId, () => callGateway({
+    method: 'sessions.compact',
+    scopes: ['operator.admin'],
+    params: {
+      key: sessionKey,
+      ...(cfg.agent ? { agentId: cfg.agent } : {}),
+    },
+    expectFinal: false,
+    timeoutMs: openClawReplyTimeout(timeoutMs),
+  }));
+  if (result?.compacted !== true) {
+    const reason = String(result?.reason || 'OpenClaw did not confirm compaction.').trim();
+    throw new Error(`OpenClaw session compaction did not complete: ${reason}`);
+  }
+  return result;
 }
 
 function runOpenclawTurn(args, { signal, timeoutMs = 60000, enforceMinimumTimeout = false } = {}) {
@@ -1311,7 +1388,7 @@ export function getProcessingOptions() {
   return {
     defaultAgent: defaultRouteId(),
     defaultThinking: normalizeThinking(DEFAULT_THINKING),
-    defaultFastMode: 'on',
+    defaultFastMode: DEFAULT_FAST_MODE,
     agents: PROCESSING_ROUTES.map((route) => ({
       id: route.id,
       label: route.label,
@@ -1324,7 +1401,7 @@ export function getProcessingOptions() {
     })),
     thinking: THINKING_OPTIONS,
     fastMode: FAST_MODE_OPTIONS,
-    fastModeBehavior: 'always-on best-effort session priming via /fast on',
+    fastModeBehavior: 'best-effort per-session priming via /fast on or /fast off',
     sessionModes: ['attach', 'resume', 'new'],
     sessionStateTTLms: SESSION_STATE_TTL_MS,
   };
@@ -1537,7 +1614,7 @@ async function generateReplyResult(
       console.log(`[dialogue] runtime=hermes session=${cfg.sessionId} hermesSession=${result.sessionId || mappedSessionId} behavior=${result.sessionBehavior} replied in ${elapsed}ms: "${(result.reply || '').slice(0, 80)}"`);
       const runtimeSessionID = result.sessionId || mappedSessionId || cfg.runtimeSessionID || '';
       return {
-        reply: result.reply || "I didn't catch that. Say it again.",
+        reply: result.reply || 'Hermes returned no user-facing answer. I can retry, check its status, or start a fresh Hermes session.',
         runtime: 'hermes',
         sessionKey: cfg.sessionKey || `hermes:${runtimeSessionID || cfg.sessionId}`,
         runtimeSessionID,
@@ -1563,22 +1640,50 @@ async function generateReplyResult(
   await applyFastModeIfNeeded(cfg, signal);
 
   try {
-    const gatewayTurn = await runGatewayAgentTurn(message, cfg, {
+    let gatewayTurn = await runGatewayAgentTurn(message, cfg, {
       signal,
       timeoutMs,
       requestId: requestId || cfg.requestId,
       onRunStarted,
     });
-    const obj = gatewayTurn.response;
-    const payloads = obj?.result?.payloads || [];
-    const model = obj?.result?.meta?.agentMeta?.model || 'unknown';
-    const reply = payloads[0]?.text?.trim();
+    let obj = gatewayTurn.response;
+    let payloads = obj?.result?.payloads || [];
+    let model = obj?.result?.meta?.agentMeta?.model || 'unknown';
+    let reply = payloads[0]?.text?.trim();
+
+    if (isOpenClawContextOverflowReply(reply)) {
+      console.warn(`[dialogue] OpenClaw context overflow sessionKey=${gatewayTurn.sessionKey}; compacting the same session before one retry`);
+      try {
+        await compactOpenClawSession(cfg, { timeoutMs });
+      } catch (compactionError) {
+        const overflow = openClawContextOverflowError(reply);
+        overflow.cause = compactionError;
+        throw overflow;
+      }
+      const retryRequestId = gatewayRequestId(
+        `${requestId || cfg.requestId || gatewayTurn.requestId}:post-compact`,
+      );
+      gatewayTurn = await runGatewayAgentTurn(message, cfg, {
+        signal,
+        timeoutMs,
+        requestId: retryRequestId,
+        onRunStarted,
+      });
+      obj = gatewayTurn.response;
+      payloads = obj?.result?.payloads || [];
+      model = obj?.result?.meta?.agentMeta?.model || model;
+      reply = payloads[0]?.text?.trim();
+      if (isOpenClawContextOverflowReply(reply)) {
+        throw openClawContextOverflowError(reply);
+      }
+    }
+
     const elapsed = Date.now() - t0;
     console.log(`[dialogue] route=${cfg.route} agent=${cfg.agent} requestId=${gatewayTurn.requestId} sessionMode=${cfg.sessionMode} thinking=${cfg.thinking} fastMode=${cfg.fastMode} fastHint=${cfg.fastHint} model=${model} replied in ${elapsed}ms: "${(reply || '').slice(0, 80)}"`);
 
     if (!reply || reply === 'NO_REPLY') {
       return {
-        reply: "I didn't catch that. Say it again.",
+        reply: 'OpenClaw returned no user-facing answer. I can retry, check its status, or start a fresh OpenClaw session.',
         runtime: 'openclaw',
         sessionKey: gatewayTurn.sessionKey,
         runtimeSessionID: cfg.sessionId,
@@ -2138,6 +2243,8 @@ export const __dialogueTestHooks = Object.freeze({
   openClawGatewayModuleCandidates,
   openClawSessionRows,
   normalizedOpenClawSessionRow,
+  isOpenClawContextOverflowReply,
+  compactOpenClawSession,
   parseHermesChatOutput,
   isStaleHermesResumeError,
   isConfirmedGatewayAbort,

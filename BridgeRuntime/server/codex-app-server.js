@@ -12,6 +12,8 @@ const DEFAULT_TURN_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_REALTIME_TIMEOUT_MS = 30_000;
 const DEFAULT_STATE_PATH = join(homedir(), '.voiceclaw', 'codex-app-server-sessions.json');
 const DEFAULT_WORKSPACE_PATH = join(homedir(), '.voiceclaw', 'codex-workspace');
+const DEFAULT_CODEX_SANDBOX = process.env.VOICECLAW_CODEX_SANDBOX || 'workspace-write';
+const DEFAULT_CODEX_APPROVAL_POLICY = process.env.VOICECLAW_CODEX_APPROVAL_POLICY || 'never';
 const REALTIME_FEATURE_NAME = 'realtime_conversation';
 const SESSION_SCHEMA_VERSION = 1;
 const MAX_STDERR_CHARS = 16_384;
@@ -83,6 +85,20 @@ function turnFailure(turn = {}) {
   error.code = turn?.error?.codexErrorInfo || 'CODEX_TURN_FAILED';
   error.turn = turn;
   return error;
+}
+
+function isCodexContextOverflow(error) {
+  const code = String(error?.code || error?.data?.code || '').toLowerCase();
+  const message = String(error?.message || error || '').toLowerCase();
+  return code.includes('context_window')
+    || code.includes('context_overflow')
+    || code.includes('prompt_too_large')
+    || message.includes('context overflow')
+    || message.includes('context window exceeded')
+    || message.includes('context_window_exceeded')
+    || message.includes('prompt too large')
+    || message.includes('maximum context length')
+    || message.includes('input is too long');
 }
 
 function absoluteWorkspacePath(value = '') {
@@ -394,8 +410,8 @@ export class CodexAppServerClient {
     return await this.request('thread/start', {
       ...(safeModel(model) ? { model: safeModel(model) } : {}),
       cwd: absoluteWorkspacePath(cwd),
-      approvalPolicy: 'never',
-      sandbox: 'read-only',
+      approvalPolicy: DEFAULT_CODEX_APPROVAL_POLICY,
+      sandbox: DEFAULT_CODEX_SANDBOX,
       personality: 'pragmatic',
       serviceName: 'voiceclaw_companion',
       developerInstructions,
@@ -407,6 +423,37 @@ export class CodexAppServerClient {
     const value = String(threadID || '').trim();
     if (!value) throw new Error('Codex thread id is required.');
     return await this.request('thread/resume', { threadId: value });
+  }
+
+  async compactThread(threadID, { timeoutMs = this.turnTimeoutMs } = {}) {
+    const targetThreadID = String(threadID || '').trim();
+    if (!targetThreadID) throw new Error('Codex thread id is required for compaction.');
+    await this.start();
+
+    let removeListener = () => {};
+    let timeout = null;
+    const compacted = new Promise((resolvePromise, rejectPromise) => {
+      removeListener = this.onNotification((message) => {
+        if (message?.method !== 'thread/compacted') return;
+        if (String(message?.params?.threadId || '') !== targetThreadID) return;
+        resolvePromise(message.params || {});
+      });
+      timeout = setTimeout(() => {
+        const error = new Error(`Codex thread compaction timed out: ${targetThreadID}`);
+        error.code = 'CODEX_COMPACTION_TIMEOUT';
+        rejectPromise(error);
+      }, boundedTimeout(timeoutMs, this.turnTimeoutMs));
+      timeout.unref?.();
+    });
+
+    try {
+      await this.request('thread/compact/start', { threadId: targetThreadID }, { timeoutMs });
+      await compacted;
+      return { threadID: targetThreadID, compacted: true };
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      removeListener();
+    }
   }
 
   async runTextTurn({
@@ -839,16 +886,36 @@ export class CodexAppServerBridge {
         sessionMode,
         model,
       });
-      const result = await this.client.runTextTurn({
-        threadID: session.threadID,
-        text,
-        model,
-        reasoningEffort,
-        timeoutMs,
-      });
+      let result;
+      let recoveredByCompaction = false;
+      try {
+        result = await this.client.runTextTurn({
+          threadID: session.threadID,
+          text,
+          model,
+          reasoningEffort,
+          timeoutMs,
+        });
+      } catch (error) {
+        if (!isCodexContextOverflow(error)) throw error;
+        await this.client.compactThread(session.threadID, { timeoutMs });
+        recoveredByCompaction = true;
+        result = await this.client.runTextTurn({
+          threadID: session.threadID,
+          text,
+          model,
+          reasoningEffort,
+          timeoutMs,
+        });
+      }
       session.updatedAt = new Date().toISOString();
       await this.#saveState();
-      return { ...result, sessionKey: key, model: safeModel(model) || null };
+      return {
+        ...result,
+        sessionKey: key,
+        model: safeModel(model) || null,
+        recoveredByCompaction,
+      };
     });
   }
 
