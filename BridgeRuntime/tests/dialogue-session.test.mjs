@@ -612,6 +612,9 @@ test('Hermes adapter uses stored/live IDs from its gateway and streams the ackno
   assert.equal(descriptor.sessionID, 'hermes-stored-session');
   assert.equal(descriptor.binding.liveSessionID, 'hermes-live-session');
   assert.equal(descriptor.sessionKey, 'hermes:hermes-stored-session');
+  const createCall = gateway.calls.find((call) => call.method === 'session.create');
+  assert.match(createCall.params.title, /^voiceclaw:hermes-bridge:[0-9a-f-]+$/i);
+  assert.equal(storeCalls[0][2].title, createCall.params.title);
 
   let acceptedIdentity;
   const events = [];
@@ -690,7 +693,8 @@ test('Hermes discovery resumes the persisted runtime ID instead of creating a re
       return sessionID;
     },
     async end() {},
-    async discover() {
+    async discover(options) {
+      storeCalls.push(['discover', options]);
       return [{
         id: 'hermes-existing-session',
         source: 'voiceclaw',
@@ -711,13 +715,54 @@ test('Hermes discovery resumes the persisted runtime ID instead of creating a re
     recentWindowMs: 24 * 60 * 60 * 1000,
   });
   assert.equal(discovered[0].sessionID, 'hermes-existing-session');
+  assert.deepEqual(storeCalls[0], ['discover', {
+    activeSince: 1_799_999_000_000,
+    title: 'voiceclaw:hermes-bridge',
+    titlePrefix: 'voiceclaw:hermes-bridge:',
+    source: 'voiceclaw',
+  }]);
   const attached = await adapter.attachSession({
     session: sessionFromDescriptor(discovered[0], route),
     binding: discovered[0].binding,
   });
   assert.equal(attached.binding.runtimeSessionID, 'hermes-existing-session');
   assert.equal(attached.binding.liveSessionID, 'hermes-resumed-live-session');
-  assert.deepEqual(storeCalls, [['attach', 'hermes-existing-session']]);
+  assert.deepEqual(storeCalls.slice(1), [['attach', 'hermes-existing-session']]);
   const resumeCall = gateway.calls.find((call) => call.method === 'session.resume');
   assert.equal(resumeCall.params.session_id, 'hermes-existing-session');
+});
+
+test('Hermes session creation rolls back live and stored identities when persistence fails', async () => {
+  const gateway = new FakeHermesGateway();
+  const storeCalls = [];
+  const store = {
+    async create(sessionID, options) {
+      storeCalls.push(['create', sessionID, options]);
+      throw new Error('duplicate Hermes title');
+    },
+    async attach() {},
+    async end(sessionID) {
+      storeCalls.push(['end', sessionID]);
+      return sessionID;
+    },
+    async discover() { return []; },
+  };
+  const adapter = createVoiceRemoteSessionRuntimeAdapter({
+    hermesGateway: gateway,
+    hermesSessionStore: store,
+  });
+
+  await assert.rejects(
+    adapter.startSession({ routeID: 'hermes-bridge', runtime: 'hermes', agentID: 'hermes' }),
+    /duplicate Hermes title/,
+  );
+
+  assert.deepEqual(storeCalls.map((call) => call.slice(0, 2)), [
+    ['create', 'hermes-stored-session'],
+    ['end', 'hermes-stored-session'],
+  ]);
+  assert.ok(gateway.calls.some((call) => (
+    call.method === 'session.close' && call.params.session_id === 'hermes-live-session'
+  )));
+  assert.deepEqual(gateway.active, []);
 });

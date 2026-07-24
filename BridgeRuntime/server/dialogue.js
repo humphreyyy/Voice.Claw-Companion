@@ -1057,6 +1057,7 @@ try:
     if action == "discover":
         active_since = float(options.get("active_since") or 0)
         title = str(options.get("title") or "")
+        title_prefix = str(options.get("title_prefix") or "")
         source = str(options.get("source") or "voiceclaw")
         rows = db.list_sessions_rich(
             source=source,
@@ -1073,7 +1074,11 @@ try:
                 "ended_at": row.get("ended_at"),
             }
             for row in rows
-            if (not title or (row.get("title") or "") == title)
+            if (
+                (not title and not title_prefix)
+                or (row.get("title") or "") == title
+                or (title_prefix and (row.get("title") or "").startswith(title_prefix))
+            )
             and float(row.get("last_active") or row.get("started_at") or 0) >= active_since
             and not row.get("ended_at")
         ]
@@ -1152,10 +1157,17 @@ const defaultHermesSessionStore = Object.freeze({
     const result = await runHermesSessionStoreOperation('end', sessionID);
     return result.session_id;
   },
-  discover({ activeSince = 0, title = '', source = 'voiceclaw', limit = 200 } = {}) {
+  discover({
+    activeSince = 0,
+    title = '',
+    titlePrefix = '',
+    source = 'voiceclaw',
+    limit = 200,
+  } = {}) {
     return runHermesSessionStoreOperation('discover', '', {
       active_since: Number(activeSince) / 1000,
       title,
+      title_prefix: titlePrefix,
       source,
       limit,
     });
@@ -1731,6 +1743,7 @@ export function createVoiceRemoteSessionRuntimeAdapter({
 } = {}) {
   const gatewayForHermes = () => hermesGateway || getDefaultHermesGatewayClient();
   const labelForRoute = (routeID) => `voiceclaw:${String(routeID || '').trim()}`;
+  const hermesTitleForRoute = (routeID) => `${labelForRoute(routeID)}:${randomUUID()}`;
   const openClawBinding = ({ routeID, agentID, sessionID, sessionKey }) => ({
     runtime: 'openclaw',
     routeID,
@@ -1855,6 +1868,7 @@ export function createVoiceRemoteSessionRuntimeAdapter({
         hermesSessionStore.discover({
           activeSince,
           title: labelForRoute(routeID),
+          titlePrefix: `${labelForRoute(routeID)}:`,
           source: 'voiceclaw',
         }),
         activeHermesSessions(),
@@ -1893,18 +1907,33 @@ export function createVoiceRemoteSessionRuntimeAdapter({
         }, { routeID, agentID });
       }
       if (runtime !== 'hermes') throw new Error(`Unsupported remote runtime: ${runtime}`);
+      const title = hermesTitleForRoute(routeID);
       const created = await gatewayForHermes().request('session.create', {
         source: 'voiceclaw',
-        title: labelForRoute(routeID),
+        title,
         close_on_disconnect: false,
       });
       const sessionID = String(created?.stored_session_id || '').trim();
       const liveSessionID = String(created?.session_id || '').trim();
-      if (!sessionID || !liveSessionID) throw new Error('Hermes returned an incomplete session identity.');
-      await hermesSessionStore.create(sessionID, {
-        source: 'voiceclaw',
-        title: labelForRoute(routeID),
-      });
+      if (!sessionID || !liveSessionID) {
+        if (liveSessionID) {
+          await gatewayForHermes().request('session.close', { session_id: liveSessionID }).catch(() => null);
+        }
+        if (sessionID) await hermesSessionStore.end(sessionID).catch(() => null);
+        throw new Error('Hermes returned an incomplete session identity.');
+      }
+      try {
+        await hermesSessionStore.create(sessionID, {
+          source: 'voiceclaw',
+          title,
+        });
+      } catch (error) {
+        await Promise.allSettled([
+          gatewayForHermes().request('session.close', { session_id: liveSessionID }),
+          hermesSessionStore.end(sessionID),
+        ]);
+        throw error;
+      }
       return {
         sessionID,
         sessionKey: `hermes:${sessionID}`,
