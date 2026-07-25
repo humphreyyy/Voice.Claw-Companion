@@ -57,6 +57,11 @@ import {
   normalizeVoiceStreamWireFormat,
   voiceStreamOutputCapacityDecision,
 } from './voice-stream-resume.js';
+import { applySetupSecretPolicy, decorateSetupPayload } from './setup-contract.js';
+import { ArtifactInbox, createArtifactInboxHTTPHandler } from './artifact-inbox.js';
+import { InputAttachmentStore, createInputAttachmentHTTPHandler } from './input-attachments.js';
+import { RouteTaskService, createRouteTaskHTTPHandler } from './route-tasks.js';
+import { PRODUCT_SURFACE_POLICY } from './product-policy.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 normalizeProcessPath();
@@ -84,6 +89,32 @@ const voiceRemoteSessionHTTP = createVoiceRemoteSessionHTTPHandler({
   service: voiceRemoteSessionService,
   basePath: BASE_PATH,
 });
+const artifactInbox = new ArtifactInbox();
+const artifactInboxHTTP = createArtifactInboxHTTPHandler({ inbox: artifactInbox, basePath: BASE_PATH });
+const inputAttachmentStore = new InputAttachmentStore();
+const inputAttachmentHTTP = createInputAttachmentHTTPHandler({ store: inputAttachmentStore, basePath: BASE_PATH });
+const routeTaskService = new RouteTaskService({
+  remoteSessionService: voiceRemoteSessionService,
+  codexBridge: codexAppServerBridge,
+  artifactInbox,
+  inputAttachmentStore,
+  directTurn: async (task, { signal } = {}) => ({
+    reply: await generateReply(task.request.fullText, {
+      signal,
+      processing: {
+        runtime: 'direct',
+        route: task.target.route,
+        model: task.target.model || undefined,
+        thinking: task.target.reasoning || undefined,
+      },
+    }),
+  }),
+});
+const routeTaskHTTP = createRouteTaskHTTPHandler({
+  service: routeTaskService,
+  artifactInbox,
+  basePath: BASE_PATH,
+});
 const WAKE_PHRASE = (process.env.INTERCOM_WAKE_PHRASE || 'Hey').trim() || 'Hey';
 
 // MIME types for static serving
@@ -103,7 +134,7 @@ function loadRuntimeManifest() {
     const parsed = JSON.parse(readFileSync(RUNTIME_MANIFEST_PATH, 'utf8'));
     return {
       schema: parsed.schema || 1,
-      product: String(parsed.product || 'VoiceClaw Companion'),
+      product: String(parsed.product || 'VoiceClaw Realtime Companion'),
       version: String(parsed.version || ''),
       build: String(parsed.build || ''),
       runtimePackageVersion: String(parsed.runtimePackageVersion || ''),
@@ -115,7 +146,7 @@ function loadRuntimeManifest() {
   } catch {
     return {
       schema: 1,
-      product: 'VoiceClaw Companion',
+      product: 'VoiceClaw Realtime Companion',
       version: '',
       build: '',
       runtimePackageVersion: '',
@@ -373,14 +404,20 @@ function isProtectedBridgePath(urlPath) {
     || logicalPath === '/ws';
 }
 
+function isInputAttachmentUploadPath(req, urlPath) {
+  if (String(req.method || '').toUpperCase() !== 'PUT') return false;
+  const logicalPath = logicalPathForAuth(urlPath);
+  return /^\/realtime\/tasks\/[^/]+\/attachments\/[^/]+$/.test(logicalPath);
+}
+
 function requireBridgeAuth(req, res) {
   if (hasBridgeAuth(req)) return true;
 
   res.writeHead(401, {
     'Content-Type': 'application/json',
-    'WWW-Authenticate': 'Bearer realm="VoiceClaw Companion"',
+    'WWW-Authenticate': 'Bearer realm="VoiceClaw Realtime Companion"',
   });
-  res.end(JSON.stringify({ ok: false, error: 'VoiceClaw Companion authorization required' }));
+  res.end(JSON.stringify({ ok: false, error: 'VoiceClaw Realtime Companion authorization required' }));
   return false;
 }
 
@@ -430,7 +467,8 @@ function bindSessionCredentialDelegation(session, payload) {
 async function prepareCredentialBoundRequestBody(req, urlPath) {
   const method = String(req.method || '').toUpperCase();
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
-      || !isProtectedBridgePath(urlPath)) return;
+      || !isProtectedBridgePath(urlPath)
+      || isInputAttachmentUploadPath(req, urlPath)) return;
 
   const rawBody = await readRawRequestBuffer(req, 200_000_000);
   const text = rawBody.toString('utf8').trim();
@@ -563,55 +601,45 @@ function setupPayloadFromBridgeConfig(options = {}) {
   const cfg = loadVoiceClawBridgeConfig();
   const includeOpenAIAPIKey = options.includeOpenAIAPIKey !== false;
   const includeCerebrasAPIKey = options.includeCerebrasAPIKey !== false;
-  const payload = {
+  const includeBridgeCredentials = options.includeBridgeCredentials !== false;
+  const includeChatGPTOAuth = options.includeChatGPTOAuth !== false;
+  let payload = {
     // Preserve the complete config so future setup fields cannot disappear
     // merely because an older Companion build did not know their names.
     ...cfg,
-    VoiceClawSetupVersion: 2,
-    TailscaleBaseURL: String(cfg.tailscaleBaseURL || ''),
+    VoiceClawSetupVersion: 3,
+    TailscaleBaseURL: String(cfg.tailscaleBaseURL || cfg.TailscaleBaseURL || ''),
     BridgePath: '/realtime/openclaw-turn',
-    OpenClawInstallPath: String(cfg.openClawInstallPath || join(homedir(), '.openclaw')),
-    OpenClawGatewayToken: String(cfg.gatewayToken || ''),
-    OpenClawGatewayPassword: String(cfg.gatewayPassword || ''),
-    OpenClawAgent: String(cfg.openClawAgentName || cfg.openClawAgent || 'main'),
+    OpenClawInstallPath: String(cfg.openClawInstallPath || cfg.OpenClawInstallPath || join(homedir(), '.openclaw')),
+    OpenClawGatewayToken: String(cfg.gatewayToken || cfg.OpenClawGatewayToken || ''),
+    OpenClawGatewayPassword: String(cfg.gatewayPassword || cfg.OpenClawGatewayPassword || ''),
+    OpenClawAgent: String(cfg.openClawAgentName || cfg.openClawAgent || cfg.OpenClawAgent || 'main'),
     RouteMode: 'openclaw-bridge',
     RealtimeModel: REALTIME_MODEL,
-    InstantModel: String(cfg.instantModel || 'gpt-5-chat-latest'),
-    InstantWebSearch: cfg.instantWebSearch !== false,
-    RealtimeAuthMode: String(cfg.realtimeAuthMode || 'api-key'),
-    RealtimeAuthFallbackToAPIKey: cfg.realtimeAuthFallbackToAPIKey === true,
+    InstantModel: String(cfg.instantModel || cfg.InstantModel || 'gpt-5-chat-latest'),
+    InstantWebSearch: (cfg.instantWebSearch ?? cfg.InstantWebSearch) !== false,
+    RealtimeAuthMode: String(cfg.realtimeAuthMode || cfg.RealtimeAuthMode || 'api-key'),
+    RealtimeAuthFallbackToAPIKey: (cfg.realtimeAuthFallbackToAPIKey ?? cfg.RealtimeAuthFallbackToAPIKey) === true,
     OpenAIAPIKey: includeOpenAIAPIKey ? String(cfg.openAIAPIKey || cfg.OpenAIAPIKey || cfg.openAIApiKey || cfg.openaiAPIKey || cfg.openaiApiKey || cfg.apiKey || '') : '',
     ChatGPTOAuthAccessToken: String(cfg.ChatGPTOAuthAccessToken || cfg.openAIChatGPTOAuthAccessToken || cfg.openAIOAuthAccessToken || ''),
     ChatGPTOAuthRefreshToken: String(cfg.ChatGPTOAuthRefreshToken || cfg.openAIChatGPTOAuthRefreshToken || cfg.openAIOAuthRefreshToken || ''),
     ChatGPTOAuthExpiresAt: cfg.ChatGPTOAuthExpiresAt || cfg.openAIChatGPTOAuthExpiresAt || cfg.openAIOAuthExpiresAt || 0,
     ChatGPTOAuthAccountID: String(cfg.ChatGPTOAuthAccountID || cfg.openAIChatGPTOAuthAccountID || cfg.openAIOAuthAccountID || ''),
     CerebrasAPIKey: includeCerebrasAPIKey ? String(cfg.cerebrasAPIKey || cfg.CerebrasAPIKey || '') : '',
-    WatchPublicBridgeURL: String(cfg.watchPublicBridgeURL || ''),
-    PowerhouseMode: String(cfg.powerhouseMode || 'light'),
+    WatchPublicBridgeURL: String(cfg.watchPublicBridgeURL || cfg.WatchPublicBridgeURL || cfg.openClawPublicTunnelURL || ''),
+    PowerhouseMode: String(cfg.powerhouseMode || cfg.PowerhouseMode || cfg.CompanionPowerhouseMode || 'light'),
     CompanionVersion: RUNTIME_MANIFEST.version || '',
     CompanionBuild: RUNTIME_MANIFEST.build || '',
     CompanionReleaseTag: RUNTIME_MANIFEST.version ? `v${RUNTIME_MANIFEST.version}` : '',
   };
 
-  if (!includeOpenAIAPIKey) {
-    for (const key of [
-      'OpenAIAPIKey',
-      'openAIAPIKey',
-      'openAIApiKey',
-      'openaiAPIKey',
-      'openaiApiKey',
-      'apiKey',
-    ]) delete payload[key];
-    payload.OpenAIAPIKey = '';
-  }
-  if (!includeCerebrasAPIKey) {
-    for (const key of ['CerebrasAPIKey', 'cerebrasAPIKey', 'cerebrasApiKey']) {
-      delete payload[key];
-    }
-    payload.CerebrasAPIKey = '';
-  }
-
-  return payload;
+  payload = applySetupSecretPolicy(payload, {
+    includeOpenAIAPIKey,
+    includeCerebrasAPIKey,
+    includeBridgeCredentials,
+    includeChatGPTOAuth,
+  });
+  return decorateSetupPayload(payload);
 }
 
 function companionVoiceRuntimeProfileFromPayload(payload = {}) {
@@ -2307,7 +2335,7 @@ function bridgeStatusSnapshot(sessionToken = '') {
     } : null,
     sessionConfig,
     lastResult: latestRealtimeResult(key),
-    tts: getTtsStatus(),
+    ...(PRODUCT_SURFACE_POLICY.companionRealtimeVoiceVisible ? { tts: getTtsStatus() } : {}),
   };
 }
 
@@ -3239,19 +3267,19 @@ function userFacingOpenClawTurnError(err) {
   if (/gateway module was not found|callGateway export|module not found|cannot find module/i.test(message)) {
     return {
       code: 'openclaw_unavailable',
-      error: 'OpenClaw is not available to the Companion on this Mac. Open or reinstall OpenClaw, then retry from VoiceClaw.',
+      error: 'OpenClaw is not available to the Companion on this Mac. Open or reinstall OpenClaw, then retry from VoiceClaw Realtime.',
     };
   }
   if (/ECONNREFUSED|connection refused|failed to connect|could not connect|not running|socket hang up|EHOSTUNREACH|ENETUNREACH/i.test(message)) {
     return {
       code: 'openclaw_not_running',
-      error: 'OpenClaw is not running on this Mac, or the Companion cannot reach it. Open OpenClaw, wait until it is ready, then retry from VoiceClaw.',
+      error: 'OpenClaw is not running on this Mac, or the Companion cannot reach it. Open OpenClaw, wait until it is ready, then retry from VoiceClaw Realtime.',
     };
   }
   if (/unauthorized|forbidden|login|oauth|auth/i.test(message)) {
     return {
       code: 'openclaw_auth_failed',
-      error: 'OpenClaw could not authenticate this request. Open OpenClaw on the Mac, confirm your ChatGPT login, then retry from VoiceClaw.',
+      error: 'OpenClaw could not authenticate this request. Open OpenClaw on the Mac, confirm your ChatGPT login, then retry from VoiceClaw Realtime.',
     };
   }
   return { code: 'openclaw_turn_failed', error: 'OpenClaw turn failed' };
@@ -5385,7 +5413,7 @@ async function planCompanionVoiceTurn(text, { brainMode, routeMode, sessionToken
   if (String(brainMode || '').startsWith('cerebras:')) {
     const cerebrasModel = companionVoiceCerebrasModelID(brainMode, payload);
     if (!hasCerebrasKeyForCompanionVoice(payload)) {
-      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
+      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Realtime Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
     }
     try {
       const raw = await runCerebrasPlanner(prompt, {
@@ -5750,7 +5778,7 @@ async function runCompanionVoiceTurn({ req, payload, signal } = {}) {
   const textInput = String(payload.text || '').trim();
   const audioBuffer = payload.audioBuffer || (payload.audioBase64 ? Buffer.from(String(payload.audioBase64), 'base64') : null);
   if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
-    throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
+    throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Realtime Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
   }
   if (!textInput && !audioBuffer?.length) throw new Error('Companion Realtime Voice turn needs audio or text.');
 
@@ -5913,12 +5941,31 @@ async function runCompanionVoiceTranscription({ req, payload }) {
 
 const httpServer = createServer(async (req, res) => {
   try {
-    let urlPath = new URL(req.url, `http://localhost:${PORT}`).pathname;
+    const rawRequestTarget = String(req.url || '');
+    if (Buffer.byteLength(rawRequestTarget, 'utf8') > 8192) {
+      res.writeHead(414, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, error: { code: 'request_target_too_large', message: 'The request URL is too large.' } }));
+      return;
+    }
+    let urlPath = new URL(rawRequestTarget, `http://localhost:${PORT}`).pathname;
 
     if (urlPath === '/healthz') {
-      const powerhouse = getPowerhouseQuickStatus({ mode: readPowerhouseModeFromConfig() });
+      const powerhouse = PRODUCT_SURFACE_POLICY.powerhouseVisible
+        ? getPowerhouseQuickStatus({ mode: readPowerhouseModeFromConfig() })
+        : null;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, port: PORT, bindHost: BIND_HOST, basePath: BASE_PATH || '/', wakePhrase: WAKE_PHRASE, realtimeBridge: true, runtime: RUNTIME_MANIFEST, auth: bridgeAuthSummary(), tts: getTtsStatus(), powerhouse }));
+      res.end(JSON.stringify({
+        ok: true,
+        port: PORT,
+        bindHost: BIND_HOST,
+        basePath: BASE_PATH || '/',
+        wakePhrase: WAKE_PHRASE,
+        realtimeBridge: true,
+        runtime: RUNTIME_MANIFEST,
+        auth: bridgeAuthSummary(),
+        ...(PRODUCT_SURFACE_POLICY.companionRealtimeVoiceVisible ? { tts: getTtsStatus() } : {}),
+        ...(powerhouse ? { powerhouse } : {}),
+      }));
       return;
     }
 
@@ -5950,11 +5997,25 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
+    if (await inputAttachmentHTTP.handle(credentialBoundReplayRequest(req), res, urlPath)) {
+      return;
+    }
+
+    if (await routeTaskHTTP.handle(credentialBoundReplayRequest(req), res, urlPath)) {
+      return;
+    }
+
+    if (await artifactInboxHTTP.handle(credentialBoundReplayRequest(req), res, urlPath)) {
+      return;
+    }
+
     if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/setup-payload`) {
       const setupURL = new URL(req.url, `http://localhost:${PORT}`);
       const setupPayload = setupPayloadFromBridgeConfig({
         includeOpenAIAPIKey: setupURL.searchParams.get('include_openai_key') !== '0',
         includeCerebrasAPIKey: setupURL.searchParams.get('include_cerebras_key') !== '0',
+        includeBridgeCredentials: setupURL.searchParams.get('include_bridge_credentials') !== '0',
+        includeChatGPTOAuth: setupURL.searchParams.get('include_chatgpt_oauth') !== '0',
       });
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -5966,47 +6027,55 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (urlPath === '/config') {
-      const tts = await getVoiceOptions();
-      const configURL = new URL(req.url, `http://localhost:${PORT}`);
-      const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
-      const hfRealtime = await getHFRealtimeStatus({
-        brainMode: configURL.searchParams.get('brainMode') || primaryProfile.brainMode || 'qwen3.5-0.8b',
-        sttProfile: configURL.searchParams.get('sttProfile') || primaryProfile.sttProfile || 'parakeet-live',
-        localVoice: configURL.searchParams.get('localVoice') || primaryProfile.localVoice || 'kokoro-af-heart',
-        cerebrasModel: configURL.searchParams.get('cerebrasModel') || primaryProfile.cerebrasModel || '',
-        prepareSet: configURL.searchParams.get('prepareSet') || 'recommended',
-      }).catch((error) => ({ state: 'error', error: error?.message || String(error) }));
-      const powerhouse = getPowerhouseQuickStatus({
-        mode: configURL.searchParams.get('powerhouseMode') || readPowerhouseModeFromConfig(),
-      });
-      const companionVoiceConfig = {
-        path: `${BASE_PATH}/realtime/companion-voice-turn-file`,
-        streamingPath: `${BASE_PATH}/ws`,
-        transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`,
-        asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`,
-        hfRealtimeStatusPath: `${BASE_PATH}/realtime/hf-status`,
-        hfRealtimeInstallPath: `${BASE_PATH}/realtime/hf-install`,
-        hfRealtimePrewarmPath: `${BASE_PATH}/realtime/hf-prewarm`,
-        powerhouseStatusPath: `${BASE_PATH}/realtime/powerhouse/status`,
-        powerhousePrewarmPath: `${BASE_PATH}/realtime/powerhouse/prewarm`,
-        powerhouseCancelPath: `${BASE_PATH}/realtime/powerhouse/cancel`,
-        hfRealtime,
-        powerhouse,
-        powerhouseModes: powerhouseModes(),
-        brainModes: ['qwen3.5-0.8b', ...Object.keys(COMPANION_VOICE_OPENAI_BRAIN_MODES), ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)],
-        defaultBrainMode: primaryProfile.brainMode || 'qwen3.5-0.8b',
-        qwenModel: COMPANION_VOICE_QWEN_MODEL,
-        qwenThinkingDefault: false,
-        cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL,
-        hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(),
-        cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models',
-        sttProfiles: hfRealtime.sttProfiles || [],
-        defaultSTTProfile: primaryProfile.sttProfile || hfRealtime.sttProfile || 'parakeet-live',
-        ttsDefault: primaryProfile.localVoice || tts.defaultVoice,
-        ttsVoices: tts.voices,
-        routeModes: ['realtime-only', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'],
-        routeAliases: { standalone: 'realtime-only', openclaw: 'openclaw-bridge', hermes: 'hermes-bridge' },
-      };
+      let tts = null;
+      let companionVoiceConfig = null;
+      if (PRODUCT_SURFACE_POLICY.companionRealtimeVoiceVisible) {
+        tts = await getVoiceOptions();
+        const configURL = new URL(req.url, `http://localhost:${PORT}`);
+        const primaryProfile = readPrimaryCompanionVoiceRuntimeProfileFromConfig();
+        const hfRealtime = await getHFRealtimeStatus({
+          brainMode: configURL.searchParams.get('brainMode') || primaryProfile.brainMode || 'qwen3.5-0.8b',
+          sttProfile: configURL.searchParams.get('sttProfile') || primaryProfile.sttProfile || 'parakeet-live',
+          localVoice: configURL.searchParams.get('localVoice') || primaryProfile.localVoice || 'kokoro-af-heart',
+          cerebrasModel: configURL.searchParams.get('cerebrasModel') || primaryProfile.cerebrasModel || '',
+          prepareSet: configURL.searchParams.get('prepareSet') || 'recommended',
+        }).catch((error) => ({ state: 'error', error: error?.message || String(error) }));
+        const powerhouse = PRODUCT_SURFACE_POLICY.powerhouseVisible
+          ? getPowerhouseQuickStatus({
+            mode: configURL.searchParams.get('powerhouseMode') || readPowerhouseModeFromConfig(),
+          })
+          : null;
+        companionVoiceConfig = {
+          path: `${BASE_PATH}/realtime/companion-voice-turn-file`,
+          streamingPath: `${BASE_PATH}/ws`,
+          transcriptionPath: `${BASE_PATH}/realtime/companion-voice-transcribe-file`,
+          asyncResultPath: `${BASE_PATH}/realtime/companion-voice-turn/result`,
+          hfRealtimeStatusPath: `${BASE_PATH}/realtime/hf-status`,
+          hfRealtimeInstallPath: `${BASE_PATH}/realtime/hf-install`,
+          hfRealtimePrewarmPath: `${BASE_PATH}/realtime/hf-prewarm`,
+          hfRealtime,
+          brainModes: ['qwen3.5-0.8b', ...Object.keys(COMPANION_VOICE_OPENAI_BRAIN_MODES), ...COMPANION_VOICE_CEREBRAS_MODELS.map((model) => `cerebras:${model}`)],
+          defaultBrainMode: primaryProfile.brainMode || 'qwen3.5-0.8b',
+          qwenModel: COMPANION_VOICE_QWEN_MODEL,
+          qwenThinkingDefault: false,
+          cerebrasDefaultModel: COMPANION_VOICE_CEREBRAS_DEFAULT_MODEL,
+          hasCerebrasAPIKey: hasCerebrasKeyForCompanionVoice(),
+          cerebrasPublicModelsPath: 'https://api.cerebras.ai/public/v1/models',
+          sttProfiles: hfRealtime.sttProfiles || [],
+          defaultSTTProfile: primaryProfile.sttProfile || hfRealtime.sttProfile || 'parakeet-live',
+          ttsDefault: primaryProfile.localVoice || tts.defaultVoice,
+          ttsVoices: tts.voices,
+          routeModes: ['realtime-only', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw-bridge', 'openclaw-public-tunnel', 'hermes-bridge', 'hermes-public-tunnel'],
+          routeAliases: { standalone: 'realtime-only', openclaw: 'openclaw-bridge', hermes: 'hermes-bridge' },
+          ...(powerhouse ? {
+            powerhouse,
+            powerhouseStatusPath: `${BASE_PATH}/realtime/powerhouse/status`,
+            powerhousePrewarmPath: `${BASE_PATH}/realtime/powerhouse/prewarm`,
+            powerhouseCancelPath: `${BASE_PATH}/realtime/powerhouse/cancel`,
+            powerhouseModes: powerhouseModes(),
+          } : {}),
+        };
+      }
       const realtimeConfig = {
         model: REALTIME_MODEL,
         transcriptionModel: REALTIME_TRANSCRIPTION_MODEL,
@@ -6025,7 +6094,7 @@ const httpServer = createServer(async (req, res) => {
         transcriptionOptions: ['off', REALTIME_TRANSCRIPTION_MODEL],
         conversationOptions: ['openclaw-gpt55', 'gpt55-instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', REALTIME_MODEL],
         routeModes: ['direct', 'instant', 'gpt55-direct', 'gpt56-sol-direct', 'gpt56-terra-direct', 'gpt56-luna-direct', 'openclaw', 'hermes'],
-        companionVoice: companionVoiceConfig,
+        ...(companionVoiceConfig ? { companionVoice: companionVoiceConfig } : {}),
         auth: realtimeAuthPreferences(req),
         codexAppServer: {
           statusPath: `${BASE_PATH}/realtime/codex/status`,
@@ -6044,7 +6113,7 @@ const httpServer = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
-        product: 'VoiceClaw Companion',
+        product: 'VoiceClaw Realtime Companion',
         runtime: RUNTIME_MANIFEST,
         auth: bridgeAuthSummary(),
         wsPath: `${BASE_PATH}/ws` || '/ws',
@@ -6052,7 +6121,7 @@ const httpServer = createServer(async (req, res) => {
         processing: getProcessingOptions(),
         wakePhrase: WAKE_PHRASE,
         realtime: realtimeConfig,
-        tts,
+        ...(tts ? { tts } : {}),
       }));
       return;
     }
@@ -7009,7 +7078,7 @@ function beginPendingWebSocketAuth(ws, req) {
   const timer = setTimeout(() => {
     if (settled) return;
     settled = true;
-    closePendingWebSocket(ws, 'AUTH_TIMEOUT', 'VoiceClaw Companion WebSocket authentication timed out.');
+    closePendingWebSocket(ws, 'AUTH_TIMEOUT', 'VoiceClaw Realtime Companion WebSocket authentication timed out.');
   }, COMPANION_VOICE_WS_AUTH_DEADLINE_MS);
   timer.unref?.();
 
@@ -7044,7 +7113,7 @@ function beginPendingWebSocketAuth(ws, req) {
       || !isBridgeAuthFirstMessage(authMessage)) {
       settled = true;
       cleanup();
-      closePendingWebSocket(ws, 'AUTH_FAILED', 'VoiceClaw Companion WebSocket authorization failed.');
+      closePendingWebSocket(ws, 'AUTH_FAILED', 'VoiceClaw Realtime Companion WebSocket authorization failed.');
       return;
     }
 
@@ -7065,7 +7134,7 @@ function beginPendingWebSocketAuth(ws, req) {
     if (!hasBridgeMessageAuth(authMessage)) {
       settled = true;
       cleanup();
-      closePendingWebSocket(ws, 'AUTH_FAILED', 'VoiceClaw Companion WebSocket authorization failed.');
+      closePendingWebSocket(ws, 'AUTH_FAILED', 'VoiceClaw Realtime Companion WebSocket authorization failed.');
       return;
     }
 
@@ -7092,7 +7161,7 @@ function beginPendingWebSocketAuth(ws, req) {
 
 function initializeWebSocketSession(initialWS, req, firstControlMessage = null) {
   if (bridgeAuthEnabled() && !initialWS.voiceClawUpgradeAuthenticated && !initialWS.voiceClawMessageAuthenticated) {
-    closePendingWebSocket(initialWS, 'AUTH_REQUIRED_BEFORE_ALLOCATION', 'VoiceClaw Companion WebSocket authorization is required before session allocation.');
+    closePendingWebSocket(initialWS, 'AUTH_REQUIRED_BEFORE_ALLOCATION', 'VoiceClaw Realtime Companion WebSocket authorization is required before session allocation.');
     return;
   }
   if (initialWS.voiceClawSessionAllocated || initialWS.readyState !== WebSocket.OPEN) return;
@@ -7275,7 +7344,7 @@ function initializeWebSocketSession(initialWS, req, firstControlMessage = null) 
     sendJournaledEvent(lifecycleEvent({
       type: 'error',
       code: 'WS_OUTPUT_BACKPRESSURE',
-      message: 'VoiceClaw Companion output could not keep up with the client; reconnect the live session.',
+      message: 'VoiceClaw Realtime Companion output could not keep up with the client; reconnect the live session.',
       recoverable: false,
       bufferedAmount,
       hardLimitBytes: COMPANION_VOICE_WS_OUTPUT_HARD_LIMIT_BYTES,
@@ -9599,7 +9668,7 @@ async function processCompanionVoiceStreamingUtterance(session, ws, send, cancel
     const context = String(payload.context || '').trim();
 
     if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
-      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
+      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Realtime Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
     }
 
     const planningStartedAt = Date.now();
@@ -9793,7 +9862,7 @@ async function processCompanionVoiceStreamingTextTurn(session, ws, send, text = 
     const qwenThinking = companionVoiceQwenThinkingEnabled(payload);
     const context = String(payload.context || '').trim();
     if (String(brainMode || '').startsWith('cerebras:') && !hasCerebrasKeyForCompanionVoice(payload)) {
-      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
+      throw new Error('Cerebras API key is not configured. Add it in VoiceClaw Realtime Companion or in VoiceClaw Realtime Settings > Account > AI Subscriptions / API Keys before selecting the Cerebras Companion Realtime Voice LLM.');
     }
 
     const planningStartedAt = Date.now();
@@ -10277,7 +10346,12 @@ if (process.env.VOICECLAW_OUTER_HF_TEST !== '1') {
     console.log(`[voice-bridge] Codex Realtime V2 relay: ws://localhost:${PORT}${CODEX_REALTIME_WS_PATH}`);
     console.log(`[voice-bridge] health endpoint: http://localhost:${PORT}/healthz`);
     console.log(`[voice-bridge] wake phrase: ${JSON.stringify(WAKE_PHRASE)}`);
-    console.log('[voice-bridge] startup prewarm disabled; Companion voice, keep-hot, and Powerhouse warm passes run only after explicit user action or route demand.');
+    console.log('[voice-bridge] dormant runtime warm passes are disabled by current product policy.');
+    routeTaskService.reconcile().then((result) => {
+      if (result.tasks.length) console.log(`[voice-bridge] reconciled ${result.tasks.length} durable route task(s)`);
+    }).catch((error) => {
+      console.warn(`[voice-bridge] route-task reconciliation failed: ${error?.message || String(error)}`);
+    });
   });
 }
 

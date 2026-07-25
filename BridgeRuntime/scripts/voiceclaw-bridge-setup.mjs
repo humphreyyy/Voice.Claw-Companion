@@ -15,6 +15,8 @@ import {
   resolveConfiguredOpenClawAgent,
 } from '../server/openclaw-config.js';
 import { getPowerhouseStatus, normalizePowerhouseMode } from '../server/powerhouse-manager.js';
+import { decorateSetupPayload } from '../server/setup-contract.js';
+import { PRODUCT_SURFACE_POLICY, accessItemIsVisible } from '../server/product-policy.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -22,6 +24,9 @@ const PROJECT_ROOT = join(__dirname, '..');
 const HOME = process.env.HOME || '';
 const CONFIG_DIR = join(HOME, '.voiceclaw');
 const CONFIG_FILE = join(CONFIG_DIR, 'bridge.json');
+const VOICECLAW_MODEL_DIR = process.env.VOICECLAW_MODEL_DIR
+  || join(HOME, 'Library', 'Application Support', 'VoiceClaw Realtime Companion', 'Models');
+const LEGACY_OPENCLAW_MODEL_DIR = join(HOME, '.openclaw', 'models');
 const RUNTIME_MANIFEST_FILE = join(PROJECT_ROOT, 'runtime-manifest.json');
 const LAUNCH_AGENT_LABEL = 'ai.voiceclaw.bridge';
 const LAUNCH_AGENT_FILE = join(HOME, 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
@@ -77,7 +82,7 @@ function parseArgs(argv) {
     else if (arg === '--suggest-port') options.suggestPort = true;
     else if (arg === '--install-companion-voice-deps') options.installCompanionVoiceDependencies = true;
     else if (arg === '--install-priority-helper') {
-      throw new Error('The realtime priority helper installer is no longer offered by VoiceClaw Companion.');
+      throw new Error('The realtime priority helper installer is no longer offered by VoiceClaw Realtime Companion.');
     } else if (arg === '--uninstall-priority-helper') options.uninstallPriorityHelper = true;
     else if (arg === '--refresh-launch-agent') options.refreshLaunchAgent = true;
     else if (arg === '--port') options.port = Number(argv[++index]);
@@ -106,7 +111,14 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`VoiceClaw Companion setup
+  const dormantOptions = PRODUCT_SURFACE_POLICY.companionRealtimeVoiceVisible
+    || PRODUCT_SURFACE_POLICY.powerhouseVisible
+    ? `  --install-companion-voice-deps
+                             Install missing Companion Realtime Voice dependencies after app confirmation
+  --powerhouse-mode MODE      light, balanced, maximum, or presentation
+`
+    : '';
+  console.log(`VoiceClaw Realtime Companion setup
 
 Usage:
   node scripts/voiceclaw-bridge-setup.mjs [options]
@@ -115,20 +127,18 @@ Options:
   --install-launch-agent     Install ~/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist
   --start                    Start or restart the launch agent after installing it
   --configure-tailscale      Run tailscale serve for the configured bridge port
-  --reset                    Stop VoiceClaw's LaunchAgent and remove VoiceClaw companion config
+  --reset                    Stop VoiceClaw Realtime's LaunchAgent and remove Companion config
   --reset-tailscale-port     With --reset, also remove the selected Tailscale Serve port only if it is safely identified as Voice.Claw
   --diagnose                 Print read-only local bridge and Tailscale Serve diagnostics
   --suggest-port             Print a fresh unused test port without changing system state
-  --install-companion-voice-deps
-                             Install missing Companion Realtime Voice dependencies after app confirmation
-  --refresh-launch-agent     Reinstall and restart only VoiceClaw's LaunchAgent from the current app runtime
+  --refresh-launch-agent     Reinstall and restart only VoiceClaw Realtime's LaunchAgent from the current app runtime
   --json                     Print only the phone setup JSON
   --port 12321               Bridge/Tailscale HTTPS port
   --openclaw-path PATH       OpenClaw install/config folder, usually ~/.openclaw
   --openclaw-agent NAME      OpenClaw agent id, usually the configured OpenClaw default
   --realtime-auth-mode MODE   api-key or openclaw-oauth
   --realtime-auth-fallback-to-api-key / --no-realtime-auth-fallback-to-api-key
-  --powerhouse-mode MODE      light, balanced, maximum, or presentation
+${dormantOptions}
 
 Recommended first run:
   node scripts/voiceclaw-bridge-setup.mjs --install --start --tailscale
@@ -306,7 +316,7 @@ async function resolveTailscalePath() {
     if (resolved) return resolved;
   } catch {}
 
-  throw new Error('Tailscale CLI was not found. Install Tailscale, sign in, then reopen VoiceClaw Companion.');
+  throw new Error('Tailscale CLI was not found. Install Tailscale, sign in, then reopen VoiceClaw Realtime Companion.');
 }
 
 async function detectTailscaleDNSName() {
@@ -424,7 +434,7 @@ function readRuntimeManifest(root = PROJECT_ROOT) {
     const parsed = JSON.parse(readFileSync(manifestPath, 'utf8'));
     return {
       schema: parsed.schema || 1,
-      product: String(parsed.product || 'VoiceClaw Companion'),
+      product: String(parsed.product || 'VoiceClaw Realtime Companion'),
       version: String(parsed.version || ''),
       build: String(parsed.build || ''),
       runtimePackageVersion: String(parsed.runtimePackageVersion || ''),
@@ -442,7 +452,7 @@ function readRuntimeManifest(root = PROJECT_ROOT) {
     } catch {}
     return {
       schema: 1,
-      product: 'VoiceClaw Companion',
+      product: 'VoiceClaw Realtime Companion',
       version: '',
       build: '',
       runtimePackageVersion: '',
@@ -607,7 +617,7 @@ function checkRuntimeIntegrity(local = {}, launchAgent = {}) {
   if (!launchAgent.plistExists) {
     return {
       state: 'needs_setup',
-      summary: 'No VoiceClaw LaunchAgent is installed yet. Click Install and Start to install the current runtime.',
+      summary: 'No VoiceClaw Realtime LaunchAgent is installed yet. Click Install and Start to install the current runtime.',
       bundled,
       running,
       expectedRuntimeEntryPoint,
@@ -743,7 +753,7 @@ async function checkHermesAccess() {
   };
 }
 
-async function checkNetworkAccess(port, tailscale = {}) {
+async function checkNetworkAccess(port, tailscale = {}, { includeHuggingFace = false } = {}) {
   const githubReachable = await new Promise((resolve) => {
     const request = http.get({
       hostname: 'api.github.com',
@@ -761,28 +771,39 @@ async function checkNetworkAccess(port, tailscale = {}) {
     request.on('error', () => resolve(false));
   });
 
-  const hfReachable = await new Promise((resolve) => {
-    const request = http.get({
-      hostname: 'huggingface.co',
-      path: '/',
-      timeout: 4000,
-      headers: { 'User-Agent': 'VoiceClawCompanion' },
-    }, (response) => {
-      response.resume();
-      resolve(response.statusCode >= 200 && response.statusCode < 500);
-    });
-    request.on('timeout', () => {
-      request.destroy();
-      resolve(false);
-    });
-    request.on('error', () => resolve(false));
-  });
+  const hfReachable = includeHuggingFace
+    ? await new Promise((resolve) => {
+      const request = http.get({
+        hostname: 'huggingface.co',
+        path: '/',
+        timeout: 4000,
+        headers: { 'User-Agent': 'VoiceClawCompanion' },
+      }, (response) => {
+        response.resume();
+        resolve(response.statusCode >= 200 && response.statusCode < 500);
+      });
+      request.on('timeout', () => {
+        request.destroy();
+        resolve(false);
+      });
+      request.on('error', () => resolve(false));
+    })
+    : null;
+
+  const networkParts = [
+    `Local port ${port}`,
+    `GitHub ${githubReachable ? 'reachable' : 'not reachable'}`,
+  ];
+  if (includeHuggingFace) {
+    networkParts.push(`Hugging Face ${hfReachable ? 'reachable' : 'not reachable'}`);
+  }
+  networkParts.push(`Tailscale ${tailscale?.state || 'unknown'}`);
 
   return {
     githubReachable,
     hfReachable,
     tailscaleReady: tailscale?.state === 'voiceclaw_mapping',
-    summary: `Local port ${port}; GitHub ${githubReachable ? 'reachable' : 'not reachable'}; Hugging Face ${hfReachable ? 'reachable' : 'not reachable'}; Tailscale ${tailscale?.state || 'unknown'}.`,
+    summary: `${networkParts.join('; ')}.`,
   };
 }
 
@@ -830,32 +851,39 @@ async function checkPriorityAccess() {
 async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallPath, openClawAgentName, companionVoice, launchAgent, runtimeIntegrity, priority }) {
   launchAgent = launchAgent || await checkLaunchAgentAccess(local);
   runtimeIntegrity = runtimeIntegrity || checkRuntimeIntegrity(local, launchAgent);
-  priority = priority || await checkPriorityAccess();
+  const voiceSurfaceVisible = PRODUCT_SURFACE_POLICY.companionRealtimeVoiceVisible;
+  const performanceSurfaceVisible = voiceSurfaceVisible || PRODUCT_SURFACE_POLICY.powerhouseVisible;
+  priority = priority || (performanceSurfaceVisible ? await checkPriorityAccess() : {
+    state: 'hidden',
+    summary: 'Dormant realtime performance controls are hidden by product policy.',
+  });
   const openClaw = await checkOpenClawAccess(openClawInstallPath, openClawAgentName);
   const hermes = await checkHermesAccess();
-  const network = await checkNetworkAccess(port, tailscale);
+  const network = await checkNetworkAccess(port, tailscale, { includeHuggingFace: voiceSurfaceVisible });
   const voiceclawDirWritable = await pathAccessible(CONFIG_DIR, constants.W_OK).catch(() => false);
   const logsDir = join(CONFIG_DIR, 'logs');
   const logsWritable = await pathAccessible(logsDir, constants.W_OK).catch(() => false);
   const hfCache = join(HOME, '.cache', 'huggingface', 'hub');
-  const hfCacheWritable = await pathAccessible(hfCache, constants.W_OK).catch(() => false);
+  const hfCacheWritable = voiceSurfaceVisible
+    ? await pathAccessible(hfCache, constants.W_OK).catch(() => false)
+    : false;
 
   const items = [
     statusItem({
       id: 'voiceclaw-config',
-      label: 'VoiceClaw local data',
+      label: 'VoiceClaw Realtime local data',
       state: voiceclawDirWritable ? 'ready' : 'needs_action',
       summary: voiceclawDirWritable ? `Writable at ${CONFIG_DIR}.` : `Not writable at ${CONFIG_DIR}.`,
       path: CONFIG_DIR,
-      action: 'Open VoiceClaw Data',
+      action: 'Open VoiceClaw Realtime Data',
     }),
     statusItem({
       id: 'voiceclaw-logs',
-      label: 'VoiceClaw logs',
+      label: 'VoiceClaw Realtime logs',
       state: logsWritable ? 'ready' : 'needs_action',
       summary: logsWritable ? `Writable at ${logsDir}.` : `Not writable at ${logsDir}.`,
       path: logsDir,
-      action: 'Open VoiceClaw Data',
+      action: 'Open VoiceClaw Realtime Data',
     }),
     statusItem({
       id: 'launch-agent',
@@ -939,7 +967,7 @@ async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallP
     statusItem({
       id: 'network-downloads',
       label: 'Installer network access',
-      state: network.githubReachable && network.hfReachable ? 'ready' : 'needs_action',
+      state: network.githubReachable && (!voiceSurfaceVisible || network.hfReachable) ? 'ready' : 'needs_action',
       summary: network.summary,
       action: 'Verify Everything',
     }),
@@ -957,7 +985,7 @@ async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallP
       summary: 'Grant microphone access up front if you use local Mac audio diagnostics or future Mac-side voice capture. iPhone voice sessions still stream the phone microphone through the bridge.',
       action: 'Open Microphone Settings',
     }),
-  ];
+  ].filter(accessItemIsVisible);
 
   const readyCount = items.filter((item) => item.state === 'ready').length;
   const manualCount = items.filter((item) => item.state === 'manual').length;
@@ -970,7 +998,7 @@ async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallP
     openClaw,
     hermes,
     network,
-    priority,
+    ...(performanceSurfaceVisible ? { priority } : {}),
   };
 }
 
@@ -1039,11 +1067,15 @@ async function checkCompanionVoiceDependencies(openClawInstallPath, { prepareSet
   const hfReady = hfRealtime.state === 'ready';
   const ffmpegPath = await resolveOptionalExecutable('ffmpeg', process.env.FFMPEG_BIN || '');
   const whisperPath = await resolveOptionalExecutable('whisper-cli', process.env.WHISPER_CLI || '');
-  const whisperSmallModel = join(HOME, '.openclaw', 'models', 'ggml-small.bin');
-  const whisperMediumModel = join(HOME, '.openclaw', 'models', 'ggml-medium.bin');
+  const ownedWhisperSmallModel = join(VOICECLAW_MODEL_DIR, 'ggml-small.bin');
+  const ownedWhisperMediumModel = join(VOICECLAW_MODEL_DIR, 'ggml-medium.bin');
+  const legacyWhisperSmallModel = join(LEGACY_OPENCLAW_MODEL_DIR, 'ggml-small.bin');
+  const legacyWhisperMediumModel = join(LEGACY_OPENCLAW_MODEL_DIR, 'ggml-medium.bin');
   const configuredWhisperModel = process.env.WHISPER_MODEL || '';
   const whisperModelPath = configuredWhisperModel
-    || (existsSync(whisperSmallModel) ? whisperSmallModel : whisperMediumModel);
+    || [ownedWhisperSmallModel, ownedWhisperMediumModel, legacyWhisperSmallModel, legacyWhisperMediumModel]
+      .find((candidate) => existsSync(candidate))
+    || ownedWhisperSmallModel;
   const whisperModelReady = existsSync(whisperModelPath);
   const sttReady = !!ffmpegPath && !!whisperPath && whisperModelReady;
 
@@ -1061,8 +1093,14 @@ async function checkCompanionVoiceDependencies(openClawInstallPath, { prepareSet
       : `Ollama is running, but ${DEFAULT_QWEN_MODEL} is not installed. Run: ollama pull ${DEFAULT_QWEN_MODEL}.`;
   } catch {}
 
-  const piperRyanModel = join(HOME, '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx');
-  const piperLibriModel = join(HOME, '.openclaw', 'models', 'piper', 'en_US-libritts-high.onnx');
+  const piperRyanModel = [
+    join(VOICECLAW_MODEL_DIR, 'piper', 'en_US-ryan-high.onnx'),
+    join(LEGACY_OPENCLAW_MODEL_DIR, 'piper', 'en_US-ryan-high.onnx'),
+  ].find((candidate) => existsSync(candidate)) || join(VOICECLAW_MODEL_DIR, 'piper', 'en_US-ryan-high.onnx');
+  const piperLibriModel = [
+    join(VOICECLAW_MODEL_DIR, 'piper', 'en_US-libritts-high.onnx'),
+    join(LEGACY_OPENCLAW_MODEL_DIR, 'piper', 'en_US-libritts-high.onnx'),
+  ].find((candidate) => existsSync(candidate)) || join(VOICECLAW_MODEL_DIR, 'piper', 'en_US-libritts-high.onnx');
   const sayPath = await resolveOptionalExecutable('say', process.env.SAY_BIN || '');
   const brewPath = await resolveOptionalExecutable('brew', process.env.BREW_BIN || '');
   const ollamaPath = await resolveOptionalExecutable('ollama', process.env.OLLAMA_BIN || '');
@@ -1248,7 +1286,7 @@ async function installCompanionVoiceDependencies(openClawInstallPath, { prepareS
       } else if (item.id === 'whisper-model-small') {
         await downloadFile(
           'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
-          join(HOME, '.openclaw', 'models', 'ggml-small.bin')
+          join(VOICECLAW_MODEL_DIR, 'ggml-small.bin')
         );
       } else if (item.id === 'ollama') {
         if (!brewPath) throw new Error('Homebrew is required to install Ollama automatically.');
@@ -1304,10 +1342,9 @@ async function diagnoseBridge(port) {
   const launchAgent = await checkLaunchAgentAccess(local);
   const runtimeIntegrity = checkRuntimeIntegrity(local, launchAgent);
   const powerhouseMode = normalizePowerhouseMode(existing.powerhouseMode || existing.PowerhouseMode || 'light');
-  const companionPrepareSet = prepareSetForPowerhouseMode(powerhouseMode);
   let suggestedAction = 'Click Install and Start to install the bridge and configure Tailscale Serve for this port.';
   if (runtimeIntegrity.selfHealRecommended) {
-    suggestedAction = 'The bridge is using an older runtime. VoiceClaw Companion will refresh the LaunchAgent from the current app bundle, then check again.';
+    suggestedAction = 'The bridge is using an older runtime. VoiceClaw Realtime Companion will refresh the LaunchAgent from the current app bundle, then check again.';
   } else if (local.state === 'running' && tailscale.state === 'voiceclaw_mapping') {
     suggestedAction = 'The Mac bridge and private Tailscale route are ready. If this phone is not already paired, use the current QR code or setup link.';
   } else if (local.state !== 'running' && tailscale.state === 'stale_voiceclaw_mapping') {
@@ -1318,15 +1355,22 @@ async function diagnoseBridge(port) {
     suggestedAction = 'Choose a different port or manually review this Tailscale Serve mapping outside Voice.Claw. The app will not remove mappings it cannot identify as its own.';
   }
 
-  const companionVoice = await checkCompanionVoiceDependencies(openClawInstallPath, { prepareSet: companionPrepareSet });
-  const powerhouse = await getPowerhouseStatus({
-    mode: powerhouseMode,
-  }).catch((error) => ({
-    state: 'error',
-    mode: powerhouseMode,
-    summary: `Powerhouse runtime status could not be checked: ${error?.message || String(error)}`,
-  }));
-  const priority = await checkPriorityAccess();
+  const companionVoice = PRODUCT_SURFACE_POLICY.companionRealtimeVoiceVisible
+    ? await checkCompanionVoiceDependencies(openClawInstallPath, {
+      prepareSet: prepareSetForPowerhouseMode(powerhouseMode),
+    })
+    : null;
+  const powerhouse = PRODUCT_SURFACE_POLICY.powerhouseVisible
+    ? await getPowerhouseStatus({ mode: powerhouseMode }).catch((error) => ({
+      state: 'error',
+      mode: powerhouseMode,
+      summary: `Powerhouse runtime status could not be checked: ${error?.message || String(error)}`,
+    }))
+    : null;
+  const priority = PRODUCT_SURFACE_POLICY.companionRealtimeVoiceVisible
+    || PRODUCT_SURFACE_POLICY.powerhouseVisible
+    ? await checkPriorityAccess()
+    : null;
   const access = await buildAccessDiagnostics({
     port,
     local,
@@ -1345,9 +1389,9 @@ async function diagnoseBridge(port) {
     local,
     tailscale,
     runtimeIntegrity,
-    companionVoice,
-    powerhouse,
-    priority,
+    ...(companionVoice ? { companionVoice } : {}),
+    ...(powerhouse ? { powerhouse } : {}),
+    ...(priority ? { priority } : {}),
     access,
     suggestedAction,
   };
@@ -1640,23 +1684,23 @@ async function resetBridgeState({ resetTailscalePort = false, port } = {}) {
 }
 
 function buildPairingPayload(config) {
-  return {
+  return decorateSetupPayload({
     // Keep the setup transport lossless. Canonical aliases normalize values
     // for iOS while unknown/new bridge fields survive pairing unchanged.
     ...config,
-    VoiceClawSetupVersion: 2,
-    TailscaleBaseURL: config.tailscaleBaseURL,
+    VoiceClawSetupVersion: 3,
+    TailscaleBaseURL: config.tailscaleBaseURL || config.TailscaleBaseURL || '',
     BridgePath: '/realtime/openclaw-turn',
-    OpenClawInstallPath: config.openClawInstallPath,
-    OpenClawAgent: config.openClawAgentName,
-    OpenClawGatewayToken: config.gatewayToken,
-    OpenClawGatewayPassword: config.gatewayPassword || '',
+    OpenClawInstallPath: config.openClawInstallPath || config.OpenClawInstallPath,
+    OpenClawAgent: config.openClawAgentName || config.openClawAgent || config.OpenClawAgent,
+    OpenClawGatewayToken: config.gatewayToken || config.OpenClawGatewayToken || '',
+    OpenClawGatewayPassword: config.gatewayPassword || config.OpenClawGatewayPassword || '',
     RouteMode: 'openclaw-bridge',
     RealtimeModel: 'gpt-realtime-2.1-mini',
-    InstantModel: config.instantModel || 'gpt-5-chat-latest',
-    InstantWebSearch: config.instantWebSearch !== false,
-    RealtimeAuthMode: config.realtimeAuthMode,
-    RealtimeAuthFallbackToAPIKey: config.realtimeAuthFallbackToAPIKey,
+    InstantModel: config.instantModel || config.InstantModel || 'gpt-5-chat-latest',
+    InstantWebSearch: (config.instantWebSearch ?? config.InstantWebSearch) !== false,
+    RealtimeAuthMode: config.realtimeAuthMode || config.RealtimeAuthMode,
+    RealtimeAuthFallbackToAPIKey: config.realtimeAuthFallbackToAPIKey ?? config.RealtimeAuthFallbackToAPIKey,
     OpenAIAPIKey: config.openAIAPIKey || config.OpenAIAPIKey || config.openAIApiKey || config.openaiAPIKey || config.openaiApiKey || '',
     ChatGPTOAuthAccessToken: config.ChatGPTOAuthAccessToken || config.openAIChatGPTOAuthAccessToken || config.openAIOAuthAccessToken || '',
     ChatGPTOAuthRefreshToken: config.ChatGPTOAuthRefreshToken || config.openAIChatGPTOAuthRefreshToken || config.openAIOAuthRefreshToken || '',
@@ -1664,21 +1708,23 @@ function buildPairingPayload(config) {
     ChatGPTOAuthAccountID: config.ChatGPTOAuthAccountID || config.openAIChatGPTOAuthAccountID || config.openAIOAuthAccountID || '',
     CerebrasAPIKey: config.cerebrasAPIKey || config.CerebrasAPIKey || '',
     WatchPublicBridgeURL: config.watchPublicBridgeURL || config.WatchPublicBridgeURL || config.openClawPublicTunnelURL || '',
-    PowerhouseMode: config.powerhouseMode || 'light',
-  };
+    PowerhouseMode: config.powerhouseMode || config.PowerhouseMode || config.CompanionPowerhouseMode || 'light',
+  });
 }
 
 function printSummary(config, pairingPayload, actions) {
-  console.log('VoiceClaw Companion setup ready.');
+  console.log('VoiceClaw Realtime Companion setup ready.');
   console.log(`Config: ${CONFIG_FILE}`);
   console.log(`LaunchAgent: ${LAUNCH_AGENT_FILE}`);
   console.log(`Bridge URL: ${config.tailscaleBaseURL || '(Tailscale DNS unavailable)'}`);
   console.log(`OpenClaw path: ${config.openClawInstallPath}`);
   console.log(`OpenClaw agent: ${config.openClawAgentName}`);
-  console.log(`Powerhouse mode: ${config.powerhouseMode || 'light'}`);
+  if (PRODUCT_SURFACE_POLICY.powerhouseVisible) {
+    console.log(`Powerhouse mode: ${config.powerhouseMode || 'light'}`);
+  }
   console.log(`Token: ${config.gatewayToken ? 'generated' : 'missing'}`);
   for (const action of actions) console.log(`- ${action}`);
-  console.log('\nPaste this setup JSON into VoiceClaw Settings, or show it as a QR code from the Mac companion:\n');
+  console.log('\nPaste this setup JSON into VoiceClaw Realtime Settings, or show it as a QR code from the Mac Companion:\n');
   console.log(JSON.stringify(pairingPayload, null, 2));
 }
 
@@ -1752,7 +1798,7 @@ async function main() {
     if (options.jsonOnly) {
       console.log(JSON.stringify({ ok: true, refreshedLaunchAgent: true, diagnostics }, null, 2));
     } else {
-      console.log(diagnostics.runtimeIntegrity?.summary || 'Refreshed VoiceClaw bridge LaunchAgent from the current app runtime.');
+      console.log(diagnostics.runtimeIntegrity?.summary || 'Refreshed the VoiceClaw Realtime bridge LaunchAgent from the current app runtime.');
     }
     return;
   }
@@ -1768,7 +1814,7 @@ async function main() {
       console.log(JSON.stringify({ ok: true, reset: true, ...result }, null, 2));
     } else {
       const suffix = result.tailscaleReset?.removed ? ` Removed Tailscale Serve port ${resetPort}.` : ' Tailscale, OpenClaw, and Node.js were not modified.';
-      console.log(`VoiceClaw companion state reset.${suffix}`);
+      console.log(`VoiceClaw Realtime Companion state reset.${suffix}`);
     }
     return;
   }

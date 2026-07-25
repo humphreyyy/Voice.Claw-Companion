@@ -107,21 +107,63 @@ function absoluteWorkspacePath(value = '') {
 }
 
 function publicAccount(accountResult = {}) {
-  const account = accountResult?.account;
+  const envelope = accountResult?.result && typeof accountResult.result === 'object'
+    ? accountResult.result
+    : (accountResult?.data && typeof accountResult.data === 'object' ? accountResult.data : accountResult);
+  const account = envelope?.account;
   if (!account || typeof account !== 'object') {
     return {
       signedIn: false,
       type: null,
       planType: null,
-      requiresOpenaiAuth: accountResult?.requiresOpenaiAuth !== false,
+      requiresOpenaiAuth: envelope?.requiresOpenaiAuth !== false,
     };
   }
   return {
     signedIn: true,
     type: String(account.type || ''),
     planType: account.planType ? String(account.planType) : null,
-    requiresOpenaiAuth: accountResult?.requiresOpenaiAuth !== false,
+    requiresOpenaiAuth: envelope?.requiresOpenaiAuth !== false,
   };
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function firstString(...values) {
+  return values.map((value) => String(value ?? '').trim()).find(Boolean) || '';
+}
+
+export function codexAppServerNegotiation(initializeResult = {}) {
+  const root = objectValue(initializeResult);
+  const serverInfo = objectValue(root.serverInfo || root.server_info);
+  const userAgent = firstString(root.userAgent, root.user_agent, serverInfo.userAgent, serverInfo.user_agent);
+  const inferredVersion = userAgent.match(/\bcodex(?:_cli_rs)?\/([^\s;)]+)/i)?.[1] || '';
+  const appServerVersion = firstString(
+    root.appServerVersion,
+    root.app_server_version,
+    serverInfo.version,
+    serverInfo.appServerVersion,
+    inferredVersion,
+  );
+  const protocolVersion = firstString(
+    root.protocolVersion,
+    root.protocol_version,
+    serverInfo.protocolVersion,
+    serverInfo.protocol_version,
+  );
+  return Object.freeze({
+    mode: protocolVersion
+      ? 'explicit-protocol'
+      : (appServerVersion ? 'server-version' : 'legacy-unversioned'),
+    compatible: true,
+    appServerVersion: appServerVersion || null,
+    protocolVersion: protocolVersion || null,
+    userAgent,
+    platformFamily: firstString(root.platformFamily, root.platform_family, serverInfo.platformFamily),
+    platformOs: firstString(root.platformOs, root.platform_os, serverInfo.platformOs),
+  });
 }
 
 function newTurnTracker(threadID, turnID) {
@@ -178,6 +220,7 @@ export class CodexAppServerClient {
     this.turnTrackers = new Map();
     this.stderrTail = '';
     this.initializeResult = null;
+    this.initializeNegotiation = null;
     this.lastExit = null;
     this.lastRealtimeProbes = new Map();
   }
@@ -236,7 +279,7 @@ export class CodexAppServerClient {
     const initialized = await this.request('initialize', {
       clientInfo: {
         name: 'voiceclaw_companion',
-        title: 'VoiceClaw Companion',
+        title: 'VoiceClaw Realtime Companion',
         version: this.clientVersion,
       },
       capabilities: {
@@ -245,6 +288,7 @@ export class CodexAppServerClient {
     }, { skipStart: true, timeoutMs: this.requestTimeoutMs });
     this.notify('initialized', {});
     this.initializeResult = initialized;
+    this.initializeNegotiation = codexAppServerNegotiation(initialized);
     this.ready = true;
     return initialized;
   }
@@ -254,6 +298,7 @@ export class CodexAppServerClient {
     this.child = null;
     this.ready = false;
     this.initializeResult = null;
+    this.initializeNegotiation = null;
     this.spawnEnvironmentRevision = null;
     this.stdoutLines?.close?.();
     this.stdoutLines = null;
@@ -314,10 +359,14 @@ export class CodexAppServerClient {
 
   async status({ refreshToken = false } = {}) {
     await this.start();
-    const [accountResult, featureResult] = await Promise.all([
-      this.request('account/read', { refreshToken: refreshToken === true }),
-      this.request('experimentalFeature/list', { limit: 100 }),
-    ]);
+    const accountResult = await this.request('account/read', { refreshToken: refreshToken === true });
+    let featureResult = {};
+    let featureListError = null;
+    try {
+      featureResult = await this.request('experimentalFeature/list', { limit: 100 });
+    } catch (error) {
+      featureListError = error?.message || String(error);
+    }
     const features = Array.isArray(featureResult?.data) ? featureResult.data : [];
     const realtimeFeature = features.find((feature) => feature?.name === REALTIME_FEATURE_NAME) || null;
     const webSocketProbe = this.lastRealtimeProbes.get('websocket') || null;
@@ -334,15 +383,23 @@ export class CodexAppServerClient {
       state: 'ready',
       binary: this.codexPath,
       generation: this.generation,
-      userAgent: this.initializeResult?.userAgent || '',
-      platformFamily: this.initializeResult?.platformFamily || '',
-      platformOs: this.initializeResult?.platformOs || '',
+      userAgent: this.initializeNegotiation?.userAgent || '',
+      platformFamily: this.initializeNegotiation?.platformFamily || '',
+      platformOs: this.initializeNegotiation?.platformOs || '',
+      appServer: {
+        version: this.initializeNegotiation?.appServerVersion || null,
+        protocolVersion: this.initializeNegotiation?.protocolVersion || null,
+        negotiation: this.initializeNegotiation?.mode || 'legacy-unversioned',
+        compatible: this.initializeNegotiation?.compatible !== false,
+      },
       account: publicAccount(accountResult),
       realtime: {
         method: 'thread/realtime/start',
         experimental: true,
         localFeaturePresent: !!realtimeFeature,
         localFeatureEnabled: realtimeFeature?.enabled === true,
+        featureListAvailable: !featureListError,
+        featureListError,
         stage: realtimeFeature?.stage || null,
         backendAdmission: verifiedTransport
           ? 'verified'
@@ -756,7 +813,7 @@ export class CodexAppServerClient {
       id: message.id,
       error: {
         code: -32601,
-        message: `VoiceClaw Companion does not handle server request ${message.method}.`,
+        message: `VoiceClaw Realtime Companion does not handle server request ${message.method}.`,
       },
     })}\n`);
   }
@@ -802,6 +859,7 @@ export class CodexAppServerClient {
     this.child = null;
     this.ready = false;
     this.initializeResult = null;
+    this.initializeNegotiation = null;
     this.lastExit = {
       code,
       signal: signal || null,
@@ -1242,7 +1300,7 @@ export function attachCodexRealtimeRelaySocket({
     if (type === 'start') {
       if (activeThreadID) await bridge.stopRealtime(activeThreadID).catch(() => {});
       if (message.allowAPIKeyAuth !== true) {
-        const error = new Error('Codex Realtime Voice requires API key authentication. Select API Key authentication or enable API-key fallback in VoiceClaw.');
+        const error = new Error('Codex Realtime Voice requires API key authentication. Select API Key authentication or enable API-key fallback in VoiceClaw Realtime.');
         error.code = 'CODEX_REALTIME_API_KEY_NOT_AUTHORIZED';
         throw error;
       }

@@ -1,4 +1,4 @@
-# VoiceClaw Companion Development Notes
+# VoiceClaw Realtime Companion Development Notes
 
 These notes are kept out of the repository landing page so the README can stay focused on users installing and troubleshooting the Companion app.
 

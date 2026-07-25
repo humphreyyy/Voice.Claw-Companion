@@ -115,6 +115,8 @@ final class BridgeStore: ObservableObject {
     private enum DefaultsKeys {
         static let includeOpenAIAPIKeyInPairing = "voiceclaw.includeOpenAIAPIKeyInPairing"
         static let includeCerebrasAPIKeyInPairing = "voiceclaw.includeCerebrasAPIKeyInPairing"
+        static let includeBridgeCredentialsInPairing = "voiceclaw.includeBridgeCredentialsInPairing"
+        static let includeChatGPTOAuthInPairing = "voiceclaw.includeChatGPTOAuthInPairing"
         static let watchPublicBridgeURL = "voiceclaw.watchPublicBridgeURL"
         static let openClawAgentName = "voiceclaw.openClawAgentName"
         static let realtimeAuthMode = "voiceclaw.realtimeAuthMode"
@@ -154,13 +156,25 @@ final class BridgeStore: ObservableObject {
     @Published var includeOpenAIAPIKeyInPairing: Bool = true {
         didSet {
             UserDefaults.standard.set(includeOpenAIAPIKeyInPairing, forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing)
-            refreshPairingPayloadSecrets()
+            refreshPairingPayloadForDisplay()
         }
     }
     @Published var includeCerebrasAPIKeyInPairing: Bool = true {
         didSet {
             UserDefaults.standard.set(includeCerebrasAPIKeyInPairing, forKey: DefaultsKeys.includeCerebrasAPIKeyInPairing)
-            refreshPairingPayloadSecrets()
+            refreshPairingPayloadForDisplay()
+        }
+    }
+    @Published var includeBridgeCredentialsInPairing: Bool = true {
+        didSet {
+            UserDefaults.standard.set(includeBridgeCredentialsInPairing, forKey: DefaultsKeys.includeBridgeCredentialsInPairing)
+            refreshPairingPayloadForDisplay()
+        }
+    }
+    @Published var includeChatGPTOAuthInPairing: Bool = true {
+        didSet {
+            UserDefaults.standard.set(includeChatGPTOAuthInPairing, forKey: DefaultsKeys.includeChatGPTOAuthInPairing)
+            refreshPairingPayloadForDisplay()
         }
     }
     @Published var watchPublicBridgeURL: String = "" {
@@ -232,6 +246,13 @@ final class BridgeStore: ObservableObject {
     @Published var lastRefreshDate: Date?
     @Published var setupAdvice: String = "Click Install and Start to install the bridge and configure Tailscale Serve for this port."
     @Published var canResetTailscaleMapping: Bool = false
+    @Published var routeTasks: [CompanionRouteTask] = []
+    @Published var artifacts: [CompanionArtifact] = []
+    @Published var artifactInboxStatus: CompanionArtifactInboxStatus?
+    @Published var workCenterSummary: String = "Route tasks and the Artifact Inbox have not been checked."
+    @Published var workCenterError: String = ""
+    @Published var isRefreshingWorkCenter: Bool = false
+    @Published var lastWorkCenterRefreshDate: Date?
     @Published var updateSummary: String = "Updates have not been checked."
     @Published var updateAvailable: Bool = false
     @Published var isCheckingForUpdates: Bool = false
@@ -315,6 +336,12 @@ final class BridgeStore: ObservableObject {
         if UserDefaults.standard.object(forKey: DefaultsKeys.includeCerebrasAPIKeyInPairing) != nil {
             includeCerebrasAPIKeyInPairing = UserDefaults.standard.bool(forKey: DefaultsKeys.includeCerebrasAPIKeyInPairing)
         }
+        if UserDefaults.standard.object(forKey: DefaultsKeys.includeBridgeCredentialsInPairing) != nil {
+            includeBridgeCredentialsInPairing = UserDefaults.standard.bool(forKey: DefaultsKeys.includeBridgeCredentialsInPairing)
+        }
+        if UserDefaults.standard.object(forKey: DefaultsKeys.includeChatGPTOAuthInPairing) != nil {
+            includeChatGPTOAuthInPairing = UserDefaults.standard.bool(forKey: DefaultsKeys.includeChatGPTOAuthInPairing)
+        }
         watchPublicBridgeURL = UserDefaults.standard.string(forKey: DefaultsKeys.watchPublicBridgeURL) ?? ""
         if let savedMode = UserDefaults.standard.string(forKey: DefaultsKeys.realtimeAuthMode),
            let mode = CompanionRealtimeAuthMode(rawValue: savedMode) {
@@ -365,7 +392,7 @@ final class BridgeStore: ObservableObject {
         refreshLaunchAtStartupStatus()
         refreshPairingPayloadFromBridgeConfig()
         isCheckingBridgeRuntime = true
-        bridgeRuntimeCheckSummary = "Checking Bridge Runtime: LaunchAgent identity, local bridge, Tailscale Serve mapping, Realtime endpoints, Companion Realtime Voice dependencies, warm runtime status, and required Mac access."
+        bridgeRuntimeCheckSummary = "Checking Bridge Runtime: LaunchAgent identity, local bridge, Tailscale Serve mapping, Realtime endpoints, and required Mac access."
         defer {
             refreshPairingPayloadFromBridgeConfig()
             isCheckingBridgeRuntime = false
@@ -400,8 +427,8 @@ final class BridgeStore: ObservableObject {
             }
             refreshLaunchAtStartupStatus()
             lastLog = enabled
-                ? "VoiceClaw Companion is set to launch when this Mac user logs in."
-                : "VoiceClaw Companion will no longer launch automatically at login."
+                ? "VoiceClaw Realtime Companion is set to launch when this Mac user logs in."
+                : "VoiceClaw Realtime Companion will no longer launch automatically at login."
         } catch {
             refreshLaunchAtStartupStatus()
             let action = enabled ? "enable" : "disable"
@@ -469,7 +496,7 @@ final class BridgeStore: ObservableObject {
         guard !pairingURL.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(pairingURL, forType: .string)
-        lastLog = "Copied VoiceClaw setup link."
+        lastLog = "Copied VoiceClaw Realtime setup link."
     }
 
     func useDefaultPort() {
@@ -549,6 +576,136 @@ final class BridgeStore: ObservableObject {
         openOrCreateDirectory(URL(fileURLWithPath: "\(NSHomeDirectory())/.voiceclaw", isDirectory: true))
     }
 
+    func refreshWorkCenter(silent: Bool = false) async {
+        guard !isRefreshingWorkCenter else { return }
+        guard let portValue = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (1...65_535).contains(portValue)
+        else {
+            if !silent {
+                workCenterError = "Choose a valid bridge port before checking route tasks and files."
+            }
+            return
+        }
+
+        isRefreshingWorkCenter = true
+        if !silent { workCenterError = "" }
+        defer {
+            isRefreshingWorkCenter = false
+            lastWorkCenterRefreshDate = Date()
+        }
+
+        do {
+            var taskRequest = try localBridgeRequest(
+                port: portValue,
+                path: "/realtime/tasks?limit=100"
+            )
+            var artifactRequest = try localBridgeRequest(
+                port: portValue,
+                path: "/realtime/artifacts"
+            )
+            var statusRequest = try localBridgeRequest(
+                port: portValue,
+                path: "/realtime/artifacts/status"
+            )
+            taskRequest.timeoutInterval = 8
+            artifactRequest.timeoutInterval = 8
+            statusRequest.timeoutInterval = 8
+            let finalTaskRequest = taskRequest
+            let finalArtifactRequest = artifactRequest
+            let finalStatusRequest = statusRequest
+
+            async let taskPayload = bridgeJSON(CompanionRouteTaskListResponse.self, request: finalTaskRequest)
+            async let artifactPayload = bridgeJSON(CompanionArtifactListResponse.self, request: finalArtifactRequest)
+            async let statusPayload = bridgeJSON(CompanionArtifactStatusResponse.self, request: finalStatusRequest)
+            let (tasks, listedArtifacts, status) = try await (taskPayload, artifactPayload, statusPayload)
+
+            routeTasks = tasks.tasks
+            artifacts = listedArtifacts.artifacts
+            artifactInboxStatus = status.status
+            workCenterError = ""
+            let activeCount = routeTasks.filter { !$0.isTerminal }.count
+            workCenterSummary = "\(activeCount) active route task\(activeCount == 1 ? "" : "s"); \(artifacts.count) file\(artifacts.count == 1 ? "" : "s") in the Artifact Inbox. Files are retained until you delete them."
+        } catch {
+            workCenterError = "Tasks & Files could not refresh: \(Self.userFacingSetupError(error))"
+            if routeTasks.isEmpty, artifacts.isEmpty {
+                workCenterSummary = "Start or repair the local bridge, then refresh Tasks & Files. This does not affect existing route work."
+            }
+        }
+    }
+
+    func cancelRouteTask(_ task: CompanionRouteTask) async {
+        guard !task.isTerminal else { return }
+        do {
+            let taskID = try encodedPathComponent(task.taskID)
+            var request = try localBridgeRequest(
+                path: "/realtime/tasks/\(taskID)/cancel",
+                method: "POST",
+                json: ["requestID": UUID().uuidString]
+            )
+            request.timeoutInterval = 8
+            _ = try await bridgeData(for: request)
+            await refreshWorkCenter()
+        } catch {
+            workCenterError = "The route task could not be cancelled: \(Self.userFacingSetupError(error))"
+        }
+    }
+
+    func openArtifactInbox() {
+        let defaultURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent(VoiceClawBranding.companionDisplayName, isDirectory: true)
+            .appendingPathComponent("Artifact Inbox", isDirectory: true)
+            ?? URL(fileURLWithPath: "\(NSHomeDirectory())/Library/Application Support/VoiceClaw Realtime Companion/Artifact Inbox", isDirectory: true)
+        let url = artifactInboxStatus?.rootPath.isEmpty == false
+            ? URL(fileURLWithPath: artifactInboxStatus!.rootPath, isDirectory: true)
+            : defaultURL
+        openOrCreateDirectory(url)
+    }
+
+    func deleteArtifact(_ artifact: CompanionArtifact) async {
+        guard confirmArtifactDeletion(artifact) else { return }
+        do {
+            let artifactID = try encodedPathComponent(artifact.artifactID)
+            let request = try localBridgeRequest(
+                path: "/realtime/artifacts/\(artifactID)",
+                method: "DELETE"
+            )
+            _ = try await bridgeData(for: request)
+            await refreshWorkCenter()
+        } catch {
+            workCenterError = "\(artifact.displayName) could not be deleted: \(Self.userFacingSetupError(error))"
+        }
+    }
+
+    func emptyArtifactInbox() async {
+        guard !artifacts.isEmpty else { return }
+        guard confirmEmptyArtifactInbox() else { return }
+
+        do {
+            let confirmationRequest = try localBridgeRequest(
+                path: "/realtime/artifacts/empty-confirmation",
+                method: "POST"
+            )
+            let confirmation = try await bridgeJSON(
+                CompanionArtifactEmptyConfirmationResponse.self,
+                request: confirmationRequest
+            )
+            var emptyRequest = try localBridgeRequest(
+                path: "/realtime/artifacts",
+                method: "DELETE"
+            )
+            emptyRequest.setValue(
+                confirmation.confirmationToken,
+                forHTTPHeaderField: "X-VoiceClaw-Empty-Confirmation"
+            )
+            _ = try await bridgeData(for: emptyRequest)
+            await refreshWorkCenter()
+            lastLog = "The VoiceClaw Realtime Companion Artifact Inbox was emptied after explicit confirmation."
+        } catch {
+            workCenterError = "The Artifact Inbox could not be emptied: \(Self.userFacingSetupError(error))"
+        }
+    }
+
     func openHuggingFaceCacheFolder() {
         openOrCreateDirectory(URL(fileURLWithPath: "\(NSHomeDirectory())/.cache/huggingface/hub", isDirectory: true))
     }
@@ -570,15 +727,15 @@ final class BridgeStore: ObservableObject {
     func openLatestDMG() {
         if let latestDMGURL {
             NSWorkspace.shared.open(latestDMGURL)
-            lastLog = "Opened the notarized VoiceClaw Companion DMG download."
+            lastLog = "Opened the notarized VoiceClaw Realtime Companion DMG download."
         } else {
             openLatestRelease()
         }
     }
 
     func installLatestUpdate() {
-        updateSummary = "Opening the signed VoiceClaw Companion updater..."
-        lastLog = "Opening Sparkle to download, verify, install, and relaunch VoiceClaw Companion."
+        updateSummary = "Opening the signed VoiceClaw Realtime Companion updater..."
+        lastLog = "Opening Sparkle to download, verify, install, and relaunch VoiceClaw Realtime Companion."
         sparkleUpdaterController.checkForUpdates(nil)
     }
 
@@ -608,7 +765,7 @@ final class BridgeStore: ObservableObject {
         }
 
         isDownloadingUpdate = true
-        updateSummary = "Downloading notarized VoiceClaw Companion DMG..."
+        updateSummary = "Downloading notarized VoiceClaw Realtime Companion DMG..."
         defer { isDownloadingUpdate = false }
 
         do {
@@ -644,7 +801,7 @@ final class BridgeStore: ObservableObject {
                 lastLog = "Downloaded \(fileName) to Downloads. No release digest was available to verify."
             }
 
-            updateSummary = "Downloaded \(fileName) to Downloads and opened it. Drag VoiceClaw Companion to Applications to update."
+            updateSummary = "Downloaded \(fileName) to Downloads and opened it. Drag VoiceClaw Realtime Companion to Applications to update."
             NSWorkspace.shared.open(destination)
         } catch {
             updateSummary = "Could not download the update: \(error.localizedDescription)"
@@ -658,7 +815,7 @@ final class BridgeStore: ObservableObject {
         isCheckingForUpdates = true
         lastUpdateCheckDate = Date()
         if manual {
-                updateSummary = "Checking GitHub Releases for a notarized VoiceClaw Companion update..."
+                updateSummary = "Checking GitHub Releases for a notarized VoiceClaw Realtime Companion update..."
         }
         defer { isCheckingForUpdates = false }
 
@@ -709,7 +866,7 @@ final class BridgeStore: ObservableObject {
                 updateSummary = "Update \(release.tagName) is available. Use Install Update to open the signed updater. If the updater cannot complete, open the GitHub release and install the notarized DMG manually: \(latestDMGName)."
             } else {
                 updateAvailable = false
-                updateSummary = "VoiceClaw Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName). Automatic checks run \(automaticUpdateCheckInterval.label.lowercased()) when enabled."
+                updateSummary = "VoiceClaw Realtime Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName). Automatic checks run \(automaticUpdateCheckInterval.label.lowercased()) when enabled."
             }
         } catch {
             updateAvailable = false
@@ -806,10 +963,10 @@ final class BridgeStore: ObservableObject {
             pairingURL = ""
             pairingQRCodeValue = ""
             if removeTailscaleMapping {
-                let networkSummary = resetResponse?.tailscaleReset?.summary ?? "No matching VoiceClaw Tailscale Serve mapping needed removal."
-                lastLog = "Reset complete. VoiceClaw removed its LaunchAgent and local bridge config. \(networkSummary) Tailscale itself, OpenClaw, and Node.js were not changed."
+                let networkSummary = resetResponse?.tailscaleReset?.summary ?? "No matching VoiceClaw Realtime Tailscale Serve mapping needed removal."
+                lastLog = "Reset complete. VoiceClaw Realtime removed its LaunchAgent and local bridge config. \(networkSummary) Tailscale itself, OpenClaw, and Node.js were not changed."
             } else {
-                lastLog = "Reset complete. VoiceClaw removed its LaunchAgent and local bridge config only. Tailscale, OpenClaw, Node.js, and tailnet settings were not changed."
+                lastLog = "Reset complete. VoiceClaw Realtime removed its LaunchAgent and local bridge config only. Tailscale, OpenClaw, Node.js, and tailnet settings were not changed."
             }
             status = .idle
             await refreshStatus()
@@ -1197,36 +1354,27 @@ final class BridgeStore: ObservableObject {
     }
 
     private func updatePairingPayload(_ payload: [String: Any]) {
-        var updated = payload
-        let trimmedKey = openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if includeOpenAIAPIKeyInPairing, !trimmedKey.isEmpty {
-            updated["OpenAIAPIKey"] = trimmedKey
-        } else {
-            for key in ["OpenAIAPIKey", "openAIAPIKey", "openAIApiKey", "openaiAPIKey", "openaiApiKey", "apiKey"] {
-                updated.removeValue(forKey: key)
-            }
-        }
-        let trimmedCerebrasKey = cerebrasAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if includeCerebrasAPIKeyInPairing, !trimmedCerebrasKey.isEmpty {
-            updated["CerebrasAPIKey"] = trimmedCerebrasKey
-        } else {
-            for key in ["CerebrasAPIKey", "cerebrasAPIKey", "cerebrasApiKey"] {
-                updated.removeValue(forKey: key)
-            }
-        }
+        var updated = VoiceClawSetupContract.applyingPairingSecretPolicy(
+            payload,
+            includeOpenAIAPIKey: includeOpenAIAPIKeyInPairing,
+            localOpenAIAPIKey: openAIAPIKey,
+            includeCerebrasAPIKey: includeCerebrasAPIKeyInPairing,
+            localCerebrasAPIKey: cerebrasAPIKey,
+            includeBridgeCredentials: includeBridgeCredentialsInPairing,
+            includeChatGPTOAuth: includeChatGPTOAuthInPairing)
         updated["RealtimeAuthMode"] = realtimeAuthMode.rawValue
         updated["RealtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
         updated["OpenClawAgent"] = normalizedOpenClawAgentName
-        updated["PowerhouseMode"] = powerhouseMode.rawValue
+        if VoiceClawProductSurfacePolicy.powerhouseVisible {
+            updated["PowerhouseMode"] = powerhouseMode.rawValue
+        }
         updated["InstantModel"] = updated["InstantModel"] as? String ?? "gpt-5-chat-latest"
         updated["InstantWebSearch"] = updated["InstantWebSearch"] as? Bool ?? true
         updated["CompanionVersion"] = Self.currentCompanionVersion ?? ""
         updated["CompanionBuild"] = Self.currentCompanionBuild ?? ""
         updated["CompanionReleaseTag"] = Self.currentCompanionReleaseTag
         let trimmedWatchBridgeURL = watchPublicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedWatchBridgeURL.isEmpty {
-            updated.removeValue(forKey: "WatchPublicBridgeURL")
-        } else {
+        if !trimmedWatchBridgeURL.isEmpty {
             updated["WatchPublicBridgeURL"] = trimmedWatchBridgeURL
         }
 
@@ -1237,7 +1385,10 @@ final class BridgeStore: ObservableObject {
         pairingJSON = json
         pairingPreview = Self.redactedPairingJSON(json)
         pairingURL = Self.deepLink(for: json)
-        pairingQRCodeValue = Self.compactDeepLink(for: updated) ?? pairingURL
+        pairingQRCodeValue = Self.compactDeepLink(
+            for: updated,
+            includeBridgeCredentials: includeBridgeCredentialsInPairing,
+            includeChatGPTOAuth: includeChatGPTOAuthInPairing) ?? pairingURL
     }
 
     private func refreshPairingPayloadSecrets() {
@@ -1397,7 +1548,8 @@ final class BridgeStore: ObservableObject {
         let localReady = diagnostics.local.state == "running"
         let tailscaleReady = diagnostics.tailscale.state == "voiceclaw_mapping"
         let runtimeReady = runtimeState == "ready"
-        let companionVoiceReady = companionVoiceState == "ready"
+        let companionVoiceReady = !VoiceClawProductSurfacePolicy.requiresCompanionVoiceReadiness
+            || companionVoiceState == "ready"
         let accessState = diagnostics.access?.state ?? "not_reported"
         let accessReady = accessState == "ready"
 
@@ -1411,7 +1563,7 @@ final class BridgeStore: ObservableObject {
         if !tailscaleReady {
             missing.append("Tailscale Serve mapping is \(diagnostics.tailscale.state).")
         }
-        if !companionVoiceReady {
+        if VoiceClawProductSurfacePolicy.requiresCompanionVoiceReadiness, !companionVoiceReady {
             missing.append("Companion Realtime Voice dependencies are \(companionVoiceState).")
         }
         if !accessReady {
@@ -1421,7 +1573,7 @@ final class BridgeStore: ObservableObject {
         if missing.isEmpty {
             status = .ready
             suppressTransientSetupWarningUntil = nil
-            bridgeRuntimeCheckSummary = "Companion Ready means the packaged bridge runtime is current, the local bridge is running, Tailscale Serve is mapped to VoiceClaw, access checks are clear, and Companion Realtime Voice dependencies are installed. Selected-runtime prewarming and Powerhouse warm passes are advisory and never block starting a route."
+            bridgeRuntimeCheckSummary = "Companion Ready means the packaged bridge runtime is current, the local bridge is running, Tailscale Serve is mapped to VoiceClaw Realtime, and required access checks are clear. Hidden optional features do not affect readiness."
             return
         }
 
@@ -1458,7 +1610,7 @@ final class BridgeStore: ObservableObject {
             } else {
                 status = .warning("Companion Needs Attention")
             }
-        } else if !companionVoiceReady {
+        } else if VoiceClawProductSurfacePolicy.requiresCompanionVoiceReadiness, !companionVoiceReady {
             status = .warning("Voice Runtime Needs Attention")
         } else if !accessReady {
             status = .warning("Companion Access Needs Attention")
@@ -1475,13 +1627,13 @@ final class BridgeStore: ObservableObject {
         runtimeSelfHealAttempted = true
         status = .working("Refreshing Bridge Runtime")
         runtimeIntegritySummary = "Refreshing the LaunchAgent so the bridge uses this Companion app's packaged runtime."
-        bridgeRuntimeCheckSummary = "Checking Bridge Runtime found a stale or mismatched LaunchAgent runtime. VoiceClaw is refreshing the bridge runtime now, then it will run diagnostics again."
+        bridgeRuntimeCheckSummary = "Checking Bridge Runtime found a stale or mismatched LaunchAgent runtime. VoiceClaw Realtime is refreshing the bridge runtime now, then it will run diagnostics again."
         lastLog = runtimeIntegritySummary
 
         do {
             let output = try await runSetupScript(arguments: ["--refresh-launch-agent", "--json", "--port", port])
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            lastLog = trimmed.isEmpty ? "Refreshed VoiceClaw bridge LaunchAgent from the current app runtime." : trimmed
+            lastLog = trimmed.isEmpty ? "Refreshed VoiceClaw Realtime bridge LaunchAgent from the current app runtime." : trimmed
             status = .idle
             await refreshBridgeDiagnostics()
         } catch {
@@ -1507,14 +1659,14 @@ final class BridgeStore: ObservableObject {
 
         lastLocalBridgeRestartAttemptDate = Date()
         status = .working("Restarting Local Bridge")
-        localBridgeSummary = "Local bridge is not answering on this port. VoiceClaw Companion is restarting the current LaunchAgent now."
-        bridgeRuntimeCheckSummary = "Checking Bridge Runtime found the local bridge down. VoiceClaw Companion is restarting the bridge runtime, then it will check again."
+        localBridgeSummary = "Local bridge is not answering on this port. VoiceClaw Realtime Companion is restarting the current LaunchAgent now."
+        bridgeRuntimeCheckSummary = "Checking Bridge Runtime found the local bridge down. VoiceClaw Realtime Companion is restarting the bridge runtime, then it will check again."
         lastLog = bridgeRuntimeCheckSummary
 
         do {
             let output = try await runSetupScript(arguments: ["--refresh-launch-agent", "--json", "--port", port])
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            lastLog = trimmed.isEmpty ? "Restarted VoiceClaw bridge LaunchAgent from the current app runtime." : trimmed
+            lastLog = trimmed.isEmpty ? "Restarted VoiceClaw Realtime bridge LaunchAgent from the current app runtime." : trimmed
             status = .idle
             try? await Task.sleep(nanoseconds: 700_000_000)
             await refreshBridgeDiagnostics()
@@ -1532,7 +1684,7 @@ final class BridgeStore: ObservableObject {
         let alert = NSAlert()
         alert.messageText = "Install missing Companion Realtime Voice dependencies?"
         alert.informativeText = companionVoiceDependencyInstallSummary.isEmpty
-            ? "VoiceClaw Companion will install missing local speech dependencies needed for Companion Realtime Voice."
+            ? "VoiceClaw Realtime Companion will install missing local speech dependencies needed for Companion Realtime Voice."
             : companionVoiceDependencyInstallSummary
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Install")
@@ -1631,6 +1783,97 @@ final class BridgeStore: ObservableObject {
         }
     }
 
+    private func localBridgeRequest(
+        port explicitPort: Int? = nil,
+        path: String,
+        method: String = "GET",
+        json: [String: Any]? = nil
+    ) throws -> URLRequest {
+        let portValue: Int
+        if let explicitPort {
+            portValue = explicitPort
+        } else if let parsed = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  (1...65_535).contains(parsed) {
+            portValue = parsed
+        } else {
+            throw BridgeProcessError(message: "Choose a valid bridge port first.")
+        }
+
+        guard let url = URL(string: "http://127.0.0.1:\(portValue)\(path)") else {
+            throw BridgeProcessError(message: "The local Companion bridge URL is invalid.")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let json {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: json)
+        }
+        applyBridgeAuthHeaders(to: &request)
+        return request
+    }
+
+    private func bridgeData(for request: URLRequest) async throws -> Data {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BridgeProcessError(message: "The local Companion bridge did not return an HTTP response.")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let message: String
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = object["error"] as? [String: Any],
+               let serverMessage = error["message"] as? String,
+               !serverMessage.isEmpty {
+                message = serverMessage
+            } else if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                message = text
+            } else {
+                message = "The local Companion bridge returned HTTP \(http.statusCode)."
+            }
+            throw BridgeProcessError(message: message)
+        }
+        return data
+    }
+
+    private func bridgeJSON<T: Decodable>(_ type: T.Type, request: URLRequest) async throws -> T {
+        let data = try await bridgeData(for: request)
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            throw BridgeProcessError(message: "The local Companion bridge returned an unreadable response: \(error.localizedDescription)")
+        }
+    }
+
+    private func encodedPathComponent(_ value: String) throws -> String {
+        guard let encoded = value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              !encoded.isEmpty
+        else {
+            throw BridgeProcessError(message: "The Companion item identifier is invalid.")
+        }
+        return encoded
+    }
+
+    private func confirmArtifactDeletion(_ artifact: CompanionArtifact) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Delete \(artifact.displayName)?"
+        alert.informativeText = "This permanently removes the file from the VoiceClaw Realtime Companion Artifact Inbox. Other files are not changed."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete File")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmEmptyArtifactInbox() -> Bool {
+        let count = artifacts.count
+        let alert = NSAlert()
+        alert.messageText = "Empty the Artifact Inbox?"
+        alert.informativeText = "This permanently removes all \(count) file\(count == 1 ? "" : "s") currently retained by VoiceClaw Realtime Companion. Files are never evicted automatically; this action cannot be undone."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Empty Inbox")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private func resolveNodeExecutable() async throws -> String {
         let candidates = [
             "/opt/homebrew/bin/node",
@@ -1655,7 +1898,7 @@ final class BridgeStore: ObservableObject {
             }
         } catch {}
 
-        throw BridgeProcessError(message: "Node.js is not installed or is not available to apps launched from Finder. Install Node.js, reopen VoiceClaw Companion, then click Install and Start again.")
+        throw BridgeProcessError(message: "Node.js is not installed or is not available to apps launched from Finder. Install Node.js, reopen VoiceClaw Realtime Companion, then click Install and Start again.")
     }
 
     private static func userFacingSetupError(_ error: Error) -> String {
@@ -1663,12 +1906,12 @@ final class BridgeStore: ObservableObject {
         let lower = raw.lowercased()
 
         if lower.contains("node") && (lower.contains("no such file") || lower.contains("not installed") || lower.contains("not found")) {
-            return "Node.js is required to run the local bridge, but VoiceClaw Companion could not find it. Install Node.js, reopen the companion app, then click Install and Start again."
+            return "Node.js is required to run the local bridge, but VoiceClaw Realtime Companion could not find it. Install Node.js, reopen the companion app, then click Install and Start again."
         }
 
         if lower.contains("tailscale") {
             let detail = raw.isEmpty ? "" : "\n\nTailscale detail: \(raw)"
-            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local VoiceClaw bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the phone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoiceClaw looks for the Tailscale command in the standard macOS install locations and only changes Tailscale Serve when you click Install and Start. Verify Runtime checks status and can refresh VoiceClaw's own stale LaunchAgent runtime when safe, but it does not reset Tailscale Serve mappings.\(detail)"
+            return "Tailscale Serve could not be configured. Serve is Tailscale's private HTTPS proxy for exposing this Mac's local VoiceClaw Realtime bridge only inside your tailnet.\n\nTry these in order:\n1. Open Tailscale on this Mac and confirm it is signed in.\n2. In the Tailscale admin console, make sure HTTPS certificates are enabled for the tailnet.\n3. Confirm this Mac and the phone are in the same tailnet.\n4. Come back here and click Install and Start again.\n\nVoiceClaw Realtime looks for the Tailscale command in the standard macOS install locations and only changes Tailscale Serve when you click Install and Start. Verify Runtime checks status and can refresh VoiceClaw Realtime's own stale LaunchAgent runtime when safe, but it does not reset Tailscale Serve mappings.\(detail)"
         }
 
         if lower.contains("openclaw config was not found") || lower.contains("openclaw.json") {
@@ -1676,7 +1919,7 @@ final class BridgeStore: ObservableObject {
         }
 
         if lower.contains("launchctl") || lower.contains("bootstrap") || lower.contains("launch agent") {
-            return "macOS could not install or start the VoiceClaw LaunchAgent. Make sure this user account can write to ~/Library/LaunchAgents, then try Install and Start again."
+            return "macOS could not install or start the VoiceClaw Realtime LaunchAgent. Make sure this user account can write to ~/Library/LaunchAgents, then try Install and Start again."
         }
 
         if raw.isEmpty {
@@ -1780,13 +2023,13 @@ final class BridgeStore: ObservableObject {
     private static func launchAtStartupSummary(for status: SMAppService.Status) -> String {
         switch status {
         case .enabled:
-            return "VoiceClaw Companion will open automatically when this Mac user logs in."
+            return "VoiceClaw Realtime Companion will open automatically when this Mac user logs in."
         case .requiresApproval:
-            return "VoiceClaw Companion is registered for login, but macOS needs approval in System Settings > General > Login Items."
+            return "VoiceClaw Realtime Companion is registered for login, but macOS needs approval in System Settings > General > Login Items."
         case .notRegistered:
-            return "VoiceClaw Companion is not currently set to open at login."
+            return "VoiceClaw Realtime Companion is not currently set to open at login."
         case .notFound:
-            return "macOS could not find this app as a login item. Move VoiceClaw Companion to Applications, reopen it, then enable Launch upon Startup."
+            return "macOS could not find this app as a login item. Move VoiceClaw Realtime Companion to Applications, reopen it, then enable Launch upon Startup."
         @unknown default:
             return "macOS returned an unknown Launch upon Startup status."
         }
@@ -1877,18 +2120,34 @@ final class BridgeStore: ObservableObject {
         // Start from the complete persisted config. Canonical aliases below
         // normalize values for iOS without silently dropping future fields.
         var payload = config
-        payload["VoiceClawSetupVersion"] = 2
-        payload["TailscaleBaseURL"] = config["tailscaleBaseURL"] as? String ?? ""
+        payload["VoiceClawSetupVersion"] = VoiceClawSetupContract.schemaVersion
+        payload["TailscaleBaseURL"] = config["tailscaleBaseURL"] as? String
+            ?? config["TailscaleBaseURL"] as? String
+            ?? ""
         payload["BridgePath"] = "/realtime/openclaw-turn"
-        payload["OpenClawInstallPath"] = config["openClawInstallPath"] as? String ?? "\(NSHomeDirectory())/.openclaw"
-        payload["OpenClawGatewayToken"] = config["gatewayToken"] as? String ?? ""
-        payload["OpenClawGatewayPassword"] = config["gatewayPassword"] as? String ?? ""
+        payload["OpenClawInstallPath"] = config["openClawInstallPath"] as? String
+            ?? config["OpenClawInstallPath"] as? String
+            ?? "\(NSHomeDirectory())/.openclaw"
+        payload["OpenClawGatewayToken"] = config["gatewayToken"] as? String
+            ?? config["OpenClawGatewayToken"] as? String
+            ?? ""
+        payload["OpenClawGatewayPassword"] = config["gatewayPassword"] as? String
+            ?? config["OpenClawGatewayPassword"] as? String
+            ?? ""
         payload["RouteMode"] = "openclaw-bridge"
         payload["RealtimeModel"] = "gpt-realtime-2.1-mini"
-        payload["InstantModel"] = config["instantModel"] as? String ?? "gpt-5-chat-latest"
-        payload["InstantWebSearch"] = config["instantWebSearch"] as? Bool ?? true
-        payload["RealtimeAuthMode"] = config["realtimeAuthMode"] as? String ?? CompanionRealtimeAuthMode.apiKey.rawValue
-        payload["RealtimeAuthFallbackToAPIKey"] = config["realtimeAuthFallbackToAPIKey"] as? Bool ?? false
+        payload["InstantModel"] = config["instantModel"] as? String
+            ?? config["InstantModel"] as? String
+            ?? "gpt-5-chat-latest"
+        payload["InstantWebSearch"] = config["instantWebSearch"] as? Bool
+            ?? config["InstantWebSearch"] as? Bool
+            ?? true
+        payload["RealtimeAuthMode"] = config["realtimeAuthMode"] as? String
+            ?? config["RealtimeAuthMode"] as? String
+            ?? CompanionRealtimeAuthMode.apiKey.rawValue
+        payload["RealtimeAuthFallbackToAPIKey"] = config["realtimeAuthFallbackToAPIKey"] as? Bool
+            ?? config["RealtimeAuthFallbackToAPIKey"] as? Bool
+            ?? false
         payload["OpenAIAPIKey"] = config["openAIAPIKey"] as? String
             ?? config["OpenAIAPIKey"] as? String
             ?? config["openAIApiKey"] as? String
@@ -1921,7 +2180,7 @@ final class BridgeStore: ObservableObject {
         payload["CompanionVersion"] = Self.currentCompanionVersion ?? ""
         payload["CompanionBuild"] = Self.currentCompanionBuild ?? ""
         payload["CompanionReleaseTag"] = Self.currentCompanionReleaseTag
-        return payload
+        return VoiceClawSetupContract.decorating(payload)
     }
 
     private static func deepLink(for json: String) -> String {
@@ -1933,12 +2192,18 @@ final class BridgeStore: ObservableObject {
         return "voiceclaw://setup?payload=\(encoded)"
     }
 
-    private static func compactDeepLink(for payload: [String: Any]) -> String? {
+    private static func compactDeepLink(
+        for payload: [String: Any],
+        includeBridgeCredentials: Bool,
+        includeChatGPTOAuth: Bool
+    ) -> String? {
         let includeOpenAIKey = (payload["OpenAIAPIKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         let includeCerebrasKey = (payload["CerebrasAPIKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         let gatewayToken = (payload["OpenClawGatewayToken"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let gatewayPassword = (payload["OpenClawGatewayPassword"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !gatewayToken.isEmpty || !gatewayPassword.isEmpty else { return nil }
+        guard includeBridgeCredentials,
+              !gatewayToken.isEmpty || !gatewayPassword.isEmpty
+        else { return nil }
 
         let baseURLCandidates = [
             payload["WatchPublicBridgeURL"] as? String,
@@ -1955,6 +2220,8 @@ final class BridgeStore: ObservableObject {
                 var payloadQueryItems = payloadComponents.queryItems ?? []
                 payloadQueryItems.append(URLQueryItem(name: "include_openai_key", value: includeOpenAIKey ? "1" : "0"))
                 payloadQueryItems.append(URLQueryItem(name: "include_cerebras_key", value: includeCerebrasKey ? "1" : "0"))
+                payloadQueryItems.append(URLQueryItem(name: "include_bridge_credentials", value: includeBridgeCredentials ? "1" : "0"))
+                payloadQueryItems.append(URLQueryItem(name: "include_chatgpt_oauth", value: includeChatGPTOAuth ? "1" : "0"))
                 payloadComponents.queryItems = payloadQueryItems
                 if let url = payloadComponents.url { result.append(url) }
             }

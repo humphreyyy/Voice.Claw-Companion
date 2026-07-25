@@ -1,4 +1,4 @@
-# VoiceClaw Companion Feature Inventory
+# VoiceClaw Realtime Companion Feature Inventory
 
 Reviewed from source on 2026-05-15.
 
@@ -6,16 +6,22 @@ This document inventories the macOS Companion app and its bundled bridge runtime
 
 ## Purpose
 
-VoiceClaw Companion is the Mac bridge for the iOS and watchOS VoiceClaw apps. It installs and runs a local Node bridge, connects it to the user's OpenClaw installation, and publishes the bridge privately through Tailscale Serve. It can also provide a public HTTPS bridge URL for Watch cellular use if the user intentionally configures one outside the app.
+VoiceClaw Realtime Companion is the Mac bridge for the iOS and watchOS VoiceClaw Realtime apps. It installs and runs a local Node bridge, connects it to the user's OpenClaw installation, and publishes the bridge privately through Tailscale Serve. It can also provide a public HTTPS bridge URL for Watch cellular use if the user intentionally configures one outside the app.
 
 ## Main Window
 
-The Companion is a native SwiftUI macOS app with a sidebar and four sections:
+The Companion is a native SwiftUI macOS app with a sidebar and six visible sections:
 
 - Set Up
-- Pair iPhone
+- Access
+- Tasks & Files
+- Pair Phone
 - Tailscale
 - Diagnostics
+
+Companion Voice and Powerhouse implementations remain in source but are hidden
+by `VoiceClawProductSurfacePolicy` and do not participate in setup guidance or
+overall readiness while the policy disables them.
 
 The toolbar has:
 
@@ -23,15 +29,15 @@ The toolbar has:
 
 ## Menu Bar
 
-The app has a menu bar extra named `VoiceClaw` with:
+The app has a menu bar extra named `VoiceClaw Realtime` with:
 
-- Show VoiceClaw Companion
+- Show VoiceClaw Realtime Companion
 - Check Status
 - Copy iPhone Setup
 - Check for Updates
 - Download update DMG when an update is available
 - current bridge status
-- Quit VoiceClaw Companion
+- Quit VoiceClaw Realtime Companion
 
 The menu bar icon uses the system `waveform.circle.fill` symbol. If a custom branded status item is desired later, that is not currently implemented.
 
@@ -49,8 +55,8 @@ Buttons:
 - Fresh Test Port: asks the setup script for an unused high port. It does not change the Mac until Install and Start is clicked.
 - Install and Start: creates config, installs LaunchAgent, starts the bridge, and configures Tailscale Serve.
 - Check Again: read-only diagnostics refresh.
-- Reset First-Run State: removes only VoiceClaw local LaunchAgent/config.
-- Reset App + Tailscale Mapping: removes VoiceClaw local state and only the selected Tailscale Serve mapping when diagnostics prove it points exactly to the VoiceClaw bridge.
+- Reset First-Run State: removes only VoiceClaw Realtime local LaunchAgent/config.
+- Reset App + Tailscale Mapping: removes VoiceClaw Realtime local state and only the selected Tailscale Serve mapping when diagnostics prove it points exactly to the VoiceClaw Realtime bridge.
 
 Install and Start runs the setup script with:
 
@@ -73,6 +79,8 @@ Fields and toggles:
 - Fall back to OpenAI API key if OpenClaw OAuth fails.
 - OpenAI API Key.
 - Include API Key in Setup QR.
+- Include Bridge Credentials in Setup QR.
+- Include ChatGPT OAuth in Setup QR.
 - Optional Non-Tailscale HTTPS Bridge.
 - OpenAI Auth Status: shows whether API-key mode is configured and, when OpenClaw OAuth is selected, whether the Companion can mint a GPT-Realtime-2 client secret through the local OpenClaw login.
 
@@ -92,14 +100,38 @@ Important behavior:
 - The iPhone can override auth mode later.
 - Optional Non-Tailscale HTTPS Bridge should be an intentionally public HTTPS URL, not a private Tailscale URL with a custom port.
 
+## Tasks & Files Section
+
+The Tasks & Files screen uses the authenticated local bridge to show:
+
+- current and recent route-task state, runtime, route, agent, progress, result,
+  and error metadata;
+- Artifact Inbox usage, per-file and total capacity, content type, task ID, and
+  SHA-256 metadata;
+- Open Inbox, per-file Delete, and Empty Inbox actions.
+
+Empty Inbox requires both an explicit macOS confirmation and a short-lived
+server confirmation token. The inbox has no automatic eviction behavior.
+
+Task-scoped input attachments are stored separately under
+`~/Library/Application Support/VoiceClaw Realtime Companion/Input Attachments`.
+The iPhone must preallocate the task ID, upload files through the authenticated
+raw PUT endpoint, and include those attachment IDs when it creates the task.
+The bridge requires exact `Content-Length`, `X-VoiceClaw-Byte-Count`, and
+`X-VoiceClaw-Content-SHA256` values and resolves only verified regular files.
+Limits are 50 MB per file, 20 files per task, and 500 MB total. Terminal tasks
+are cleaned immediately; uploads not followed by task creation expire after 24
+hours. Route instructions receive verified paths without changing any external
+OpenClaw, Hermes, or Codex installation.
+
 ## Tailscale Section
 
 The Tailscale section explains:
 
 - what Tailscale Serve is.
-- why the VoiceClaw URL has a port.
+- why the VoiceClaw Realtime URL has a port.
 - what must be allowed in the tailnet.
-- why VoiceClaw avoids a full Tailscale Serve reset.
+- why VoiceClaw Realtime avoids a full Tailscale Serve reset.
 
 Buttons:
 

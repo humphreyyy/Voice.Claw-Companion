@@ -1869,7 +1869,7 @@ async function getHFRealtimeSingleStatus(options = {}) {
     ...(!cerebrasKeyReady ? [{
       id: 'cerebras-api-key',
       label: 'Cerebras API key',
-      detail: 'Add a Cerebras API key in VoiceClaw Companion or sync it from VoiceClaw Realtime before using the Cerebras Companion Realtime Voice LLM.',
+      detail: 'Add a Cerebras API key in VoiceClaw Realtime Companion or sync it from VoiceClaw Realtime before using the Cerebras Companion Realtime Voice LLM.',
       installable: false,
       command: 'manual setup required',
     }] : []),
@@ -4597,7 +4597,7 @@ export class HFRealtimeBridge {
     if (!this.toolHandler) {
       this.sendToolResult({
         callID,
-        output: JSON.stringify({ ok: false, error: `Unsupported VoiceClaw Companion tool: ${name}` }),
+        output: JSON.stringify({ ok: false, error: `Unsupported VoiceClaw Realtime Companion tool: ${name}` }),
       });
       return;
     }

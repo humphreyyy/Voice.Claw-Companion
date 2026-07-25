@@ -1,9 +1,8 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import {
   accessTokenFromValidatedVoiceAccessTokenDelegation,
@@ -17,7 +16,6 @@ import {
 const HOME = homedir();
 const execFileAsync = promisify(execFile);
 const BRIDGE_CONFIG_FILE = join(HOME, '.voiceclaw', 'bridge.json');
-const OPENCLAW_BIN = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(HOME, '.openclaw', 'openclaw.json');
 const OPENCLAW_INSTALL_PATH = process.env.OPENCLAW_INSTALL_PATH || join(HOME, '.openclaw');
 const OPENAI_CHATGPT_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
@@ -29,7 +27,6 @@ const SQLITE3_BIN = process.env.SQLITE3_BIN || '/usr/bin/sqlite3';
 export const REALTIME_AUTH_MODE_API_KEY = 'api-key';
 export const REALTIME_AUTH_MODE_OPENCLAW_OAUTH = 'openclaw-oauth';
 
-let providerAuthModulePromise = null;
 const openAIOAuthRefreshes = new Map();
 
 export function readBridgeConfig() {
@@ -104,10 +101,6 @@ async function listOpenClawAgentDirs(roots) {
   return [...dirs];
 }
 
-function sqliteLiteral(value = '') {
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
 async function readSqliteJsonRows(sqlitePath, sql) {
   try {
     const { stdout } = await execFileAsync(SQLITE3_BIN, ['-json', sqlitePath, sql], {
@@ -119,31 +112,6 @@ async function readSqliteJsonRows(sqlitePath, sql) {
   } catch {
     return [];
   }
-}
-
-async function runSqliteScript(sqlitePath, script) {
-  await new Promise((resolve, reject) => {
-    const proc = spawn(SQLITE3_BIN, [sqlitePath], { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stderr = '';
-    const timeout = setTimeout(() => {
-      proc.kill('SIGTERM');
-      reject(new Error('sqlite3 update timed out'));
-    }, 5000);
-    proc.stderr.on('data', (chunk) => { stderr += chunk; });
-    proc.on('error', (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    proc.on('close', (code) => {
-      clearTimeout(timeout);
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`sqlite3 update failed with code ${code}: ${stderr.slice(0, 300)}`));
-      }
-    });
-    proc.stdin.end(script);
-  });
 }
 
 async function listOpenClawAuthSqliteStorePaths() {
@@ -288,57 +256,14 @@ function loadOpenAIChatGPTOAuthProfilesFromBridgeConfig() {
   }];
 }
 
-async function persistRefreshedOpenAIChatGPTOAuthProfile(candidate, refreshed) {
+async function persistRefreshedOpenAIChatGPTOAuthProfile(_candidate, refreshed) {
   try {
-    if (candidate.storeKind === 'bridge') {
-      await persistOpenAIChatGPTOAuthBridgeConfig(refreshed);
-      return;
-    }
-
-    if (candidate.storeKind === 'sqlite') {
-      const rows = await readSqliteJsonRows(
-        candidate.storePath,
-        `select rowid, store_json from auth_profile_store where rowid = ${Number(candidate.sqliteRowId) || 0};`
-      );
-      const row = rows[0];
-      if (!row) return;
-      const store = JSON.parse(row.store_json || '{}');
-      const current = store?.profiles?.[candidate.profileId];
-      if (!isUsableOpenAIOAuthProfile(current)) return;
-      store.profiles[candidate.profileId] = {
-        ...current,
-        access: refreshed.access,
-        refresh: refreshed.refresh,
-        expires: refreshed.expires,
-        accountId: refreshed.accountId || current.accountId,
-      };
-      await runSqliteScript(candidate.storePath, [
-        'begin immediate;',
-        `update auth_profile_store set store_json = ${sqliteLiteral(JSON.stringify(store))} where rowid = ${Number(candidate.sqliteRowId) || 0};`,
-        'commit;',
-      ].join('\n'));
-      return;
-    }
-
-    const store = JSON.parse(await readFile(candidate.storePath, 'utf8'));
-    const current = store?.profiles?.[candidate.profileId];
-    if (!isUsableOpenAIOAuthProfile(current)) return;
-    store.profiles[candidate.profileId] = {
-      ...current,
-      access: refreshed.access,
-      refresh: refreshed.refresh,
-      expires: refreshed.expires,
-      accountId: refreshed.accountId || current.accountId,
-    };
-    await writeFile(candidate.storePath, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+    // OpenClaw stores are import sources only. Refreshes belong to VoiceClaw's
+    // private bridge config so this integration never rewrites another
+    // runtime's auth database or JSON configuration.
+    await persistOpenAIChatGPTOAuthBridgeConfig(refreshed);
   } catch (error) {
-    console.warn('[realtime-auth] failed to persist refreshed OpenAI OAuth profile:', error?.message || String(error));
-  } finally {
-    if (candidate.storeKind !== 'bridge') {
-      await persistOpenAIChatGPTOAuthBridgeConfig(refreshed).catch((error) => {
-        console.warn('[realtime-auth] failed to mirror refreshed OpenAI OAuth profile into bridge config:', error?.message || String(error));
-      });
-    }
+    console.warn('[realtime-auth] failed to persist refreshed OpenAI OAuth profile in VoiceClaw bridge config:', error?.message || String(error));
   }
 }
 
@@ -487,61 +412,6 @@ export function realtimeAuthPreferences(req) {
   };
 }
 
-function resolveOpenClawPackageRoot() {
-  try {
-    const binRealPath = realpathSync(OPENCLAW_BIN);
-    const binDir = dirname(binRealPath);
-    if (existsSync(join(binDir, 'dist', 'plugin-sdk', 'provider-auth.js'))) {
-      return binDir;
-    }
-  } catch {}
-
-  const candidates = [
-    join(OPENCLAW_INSTALL_PATH, 'node_modules', 'openclaw'),
-    OPENCLAW_INSTALL_PATH,
-    '/opt/homebrew/lib/node_modules/openclaw',
-    '/usr/local/lib/node_modules/openclaw',
-  ];
-
-  return candidates.find((candidate) => existsSync(join(candidate, 'dist', 'plugin-sdk', 'provider-auth.js'))) || '';
-}
-
-async function loadOpenClawProviderAuthModule() {
-  if (providerAuthModulePromise) return providerAuthModulePromise;
-
-  providerAuthModulePromise = (async () => {
-    const packageRoot = resolveOpenClawPackageRoot();
-    if (!packageRoot) {
-      throw new Error('OpenClaw provider auth module was not found. Install or update OpenClaw 2026.5.12 or later.');
-    }
-
-    return import(pathToFileURL(join(packageRoot, 'dist', 'plugin-sdk', 'provider-auth.js')).href);
-  })();
-
-  return providerAuthModulePromise;
-}
-
-async function resolveOpenClawOAuthBearerFromProviderModule(validateToken) {
-  const providerAuth = await loadOpenClawProviderAuthModule();
-  const cfg = readOpenClawConfig();
-  let lastError = null;
-
-  for (const provider of ['openai-codex', 'openai']) {
-    try {
-      const token = await providerAuth.resolveProviderAuthProfileApiKey({ provider, cfg });
-      if (token) {
-        await validateOpenClawOAuthToken(token, validateToken);
-        return token;
-      }
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  if (lastError) throw lastError;
-  return '';
-}
-
 async function resolveOpenClawOAuthBearer(
   validateToken,
   requestPayload = {},
@@ -557,30 +427,13 @@ async function resolveOpenClawOAuthBearer(
     return delegatedAccessToken;
   }
 
-  let profileStoreError = null;
   try {
     const token = await resolveOpenClawOAuthBearerFromProfileStore(validateToken);
-    if (token) {
-      return token;
-    }
+    if (token) return token;
   } catch (error) {
-    profileStoreError = error;
+    throw new Error(`No usable OpenClaw OpenAI OAuth profile could be imported read-only: ${error?.message || String(error)}`);
   }
-
-  let token = '';
-  try {
-    token = await resolveOpenClawOAuthBearerFromProviderModule(validateToken);
-  } catch (error) {
-    const profileMessage = profileStoreError ? ` Direct auth-profile fallback also failed: ${profileStoreError.message || String(profileStoreError)}` : '';
-    throw new Error(`${error?.message || String(error)}${profileMessage}`);
-  }
-
-  if (!token) {
-    const profileMessage = profileStoreError ? ` Direct auth-profile fallback failed: ${profileStoreError.message || String(profileStoreError)}` : '';
-    throw new Error(`No OpenClaw OpenAI OAuth profile is available. Run: openclaw models auth login --provider openai --set-default.${profileMessage}`);
-  }
-
-  return token;
+  throw new Error('No OpenClaw OpenAI OAuth profile is available for read-only import. Sign in with ChatGPT in VoiceClaw Realtime or configure OpenClaw OAuth, then pair again.');
 }
 
 export async function resolveOpenAIChatGPTOAuthBearer(validateToken, requestPayload = {}) {

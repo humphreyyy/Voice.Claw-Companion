@@ -18,7 +18,7 @@ struct ContentView: View {
                         Label(store.isCheckingBridgeRuntime ? "Checking Runtime" : "Verify Runtime", systemImage: "arrow.clockwise")
                     }
                     .disabled(store.isCheckingBridgeRuntime)
-                    .help("Run the full Companion readiness check: bridge runtime identity, local bridge, Tailscale Serve, Realtime endpoints, Companion Realtime Voice dependencies, warm runtime status, and required Mac access.")
+                    .help("Run the full Companion readiness check: bridge runtime identity, local bridge, Tailscale Serve, Realtime endpoints, and required Mac access.")
 
                 }
             }
@@ -27,12 +27,22 @@ struct ContentView: View {
             guard newSelection == .pair else { return }
             store.refreshPairingPayloadForDisplay()
         }
+        .task(id: selection) {
+            guard selection == .work else { return }
+            await store.refreshWorkCenter()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled else { return }
+                await store.refreshWorkCenter(silent: true)
+            }
+        }
     }
 }
 
 private enum CompanionSection: String, CaseIterable, Identifiable {
     case setup
     case access
+    case work
     case companionVoice
     case pair
     case tailscale
@@ -40,12 +50,20 @@ private enum CompanionSection: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    static var visibleCases: [CompanionSection] {
+        allCases.filter { section in
+            section != .companionVoice || VoiceClawProductSurfacePolicy.companionRealtimeVoiceVisible
+        }
+    }
+
     var title: String {
         switch self {
         case .setup:
             "Set Up"
         case .access:
             "Access"
+        case .work:
+            "Tasks & Files"
         case .companionVoice:
             "Companion Voice"
         case .pair:
@@ -63,6 +81,8 @@ private enum CompanionSection: String, CaseIterable, Identifiable {
             "Install bridge"
         case .access:
             "Permissions"
+        case .work:
+            "Runs and inbox"
         case .companionVoice:
             "Voice runtime"
         case .pair:
@@ -80,6 +100,8 @@ private enum CompanionSection: String, CaseIterable, Identifiable {
             "wand.and.stars"
         case .access:
             "checkmark.shield"
+        case .work:
+            "tray.full"
         case .companionVoice:
             "brain.head.profile"
         case .pair:
@@ -98,7 +120,7 @@ private struct SidebarView: View {
 
     var body: some View {
         List(selection: $selection) {
-            ForEach(CompanionSection.allCases) { section in
+            ForEach(CompanionSection.visibleCases) { section in
                 HStack(spacing: 10) {
                     Image(systemName: section.symbol)
                         .foregroundStyle(.secondary)
@@ -130,7 +152,7 @@ private struct SidebarView: View {
             }
             .padding(12)
         }
-        .navigationTitle("VoiceClaw Companion")
+        .navigationTitle(VoiceClawBranding.companionDisplayName)
     }
 
     private var statusColor: Color {
@@ -168,6 +190,8 @@ private struct DetailPane: View {
                         SetupPanel(store: store)
                     case .access:
                         AccessPanel(store: store)
+                    case .work:
+                        WorkCenterPanel(store: store)
                     case .companionVoice:
                         CompanionVoicePanel(store: store)
                     case .pair:
@@ -209,9 +233,9 @@ private struct HeroPanel: View {
                 .frame(width: 86, height: 86)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("VoiceClaw Companion")
+                Text(VoiceClawBranding.companionDisplayName)
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
-                Text("Install and manage the private Mac companion that lets VoiceClaw on your phone or watch reach OpenClaw or Hermes Agent on this Mac through Tailscale or an HTTPS tunnel.")
+                Text("Install and manage the private Mac companion that lets VoiceClaw Realtime on your phone or watch reach OpenClaw, Hermes Agent, or Codex on this Mac through Tailscale or an HTTPS tunnel.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -350,9 +374,9 @@ private struct UpdateAvailableBanner: View {
 
     private var updateTitle: String {
         if store.latestReleaseTag.isEmpty {
-            return "VoiceClaw Companion Update Available"
+            return "VoiceClaw Realtime Companion Update Available"
         }
-        return "VoiceClaw Companion \(store.latestReleaseTag) Is Available"
+        return "VoiceClaw Realtime Companion \(store.latestReleaseTag) Is Available"
     }
 }
 
@@ -386,7 +410,7 @@ private struct LaunchAtStartupPanel: View {
             ))
             .toggleStyle(.switch)
             .disabled(store.isUpdatingLaunchAtStartup)
-            .help("Open VoiceClaw Companion automatically when this Mac user logs in.")
+            .help("Open VoiceClaw Realtime Companion automatically when this Mac user logs in.")
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -483,16 +507,16 @@ private struct SetupPanel: View {
                         TextField("main", text: $store.openClawAgentName)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 260)
-                        Text("Leave this as main unless setup fails and you want to try another OpenClaw agent. Hermes routes do not use this field; the Companion resumes Hermes CLI sessions by VoiceClaw session token.")
+                        Text("Leave this as main unless setup fails and you want to try another OpenClaw agent. Hermes routes do not use this field; the Companion resumes Hermes CLI sessions by VoiceClaw Realtime session token.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
             }
 
-            InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates VoiceClaw's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. The same bridge serves OpenClaw routes, Hermes Agent routes, GPT-Realtime-2 signaling, Apple Watch relay, and Companion Realtime Voice. Verify Runtime runs the full readiness check and can refresh VoiceClaw's own stale LaunchAgent runtime when the installed app safely owns it.")
+            InfoCallout(symbol: "checkmark.shield", title: "What Install and Start Changes", bodyText: "This button creates VoiceClaw Realtime's local config, installs a LaunchAgent for this user, starts the bridge, and configures Tailscale Serve for the selected port. The same bridge serves OpenClaw routes, Hermes Agent routes, Codex routes, GPT Realtime signaling, and Apple Watch relay. Verify Runtime runs the full readiness check and can refresh VoiceClaw Realtime's own stale LaunchAgent runtime when the installed app safely owns it.")
             InfoCallout(symbol: "sparkles", title: "Hermes Agent Routes", bodyText: "Hermes via Tailscale and Hermes HTTPS Tunnel do not need a Hermes path in this app. The bridge starts normally, then calls the hermes CLI from the user's PATH (or HERMES_BIN) with HERMES_HOME. Use Hermes routes in the phone or watch app after installing Hermes Agent and confirming it works in Terminal.")
-            InfoCallout(symbol: "arrow.counterclockwise", title: "Testing First-Run Setup", bodyText: "Reset First-Run State removes only VoiceClaw's LaunchAgent and local bridge config. Use Reset App + Tailscale Mapping only when Diagnostics says the selected port is a VoiceClaw mapping; it will refuse to touch other Serve mappings.")
+            InfoCallout(symbol: "arrow.counterclockwise", title: "Testing First-Run Setup", bodyText: "Reset First-Run State removes only VoiceClaw Realtime's LaunchAgent and local bridge config. Use Reset App + Tailscale Mapping only when Diagnostics says the selected port is a VoiceClaw Realtime mapping; it will refuse to touch other Serve mappings.")
             InfoCallout(symbol: "lightbulb", title: "Recommended Next Step", bodyText: store.setupAdvice)
 
             HStack(spacing: 10) {
@@ -528,12 +552,12 @@ private struct SetupPanel: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(store.status.isWorking || !store.canResetTailscaleMapping)
-                .help(store.canResetTailscaleMapping ? "Remove VoiceClaw's local state and the selected Tailscale Serve mapping." : "Available only when Diagnostics identifies the selected port as a VoiceClaw Tailscale Serve mapping.")
+                .help(store.canResetTailscaleMapping ? "Remove VoiceClaw Realtime's local state and the selected Tailscale Serve mapping." : "Available only when Diagnostics identifies the selected port as a VoiceClaw Realtime Tailscale Serve mapping.")
             }
         }
         .panelStyle()
         .confirmationDialog(
-            "Remove the selected VoiceClaw Tailscale Serve mapping?",
+            "Remove the selected VoiceClaw Realtime Tailscale Serve mapping?",
             isPresented: $showingNetworkResetConfirmation,
             titleVisibility: .visible
         ) {
@@ -542,7 +566,7 @@ private struct SetupPanel: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes VoiceClaw's LaunchAgent and local bridge config, then removes only the selected Tailscale Serve port if it maps exactly to the VoiceClaw bridge. Tailscale, OpenClaw, and Node.js remain installed.")
+            Text("This removes VoiceClaw Realtime's LaunchAgent and local bridge config, then removes only the selected Tailscale Serve port if it maps exactly to the VoiceClaw Realtime bridge. Tailscale, OpenClaw, and Node.js remain installed.")
         }
     }
 }
@@ -561,12 +585,12 @@ private struct AccessPanel: View {
             InfoCallout(
                 symbol: "hand.raised.fill",
                 title: "What macOS requires",
-                bodyText: "VoiceClaw can install local runtimes and open the right settings panes, but macOS still requires the user to approve protected permissions such as Login Items, Microphone, Full Disk Access, Files and Folders, and Local Network when those prompts appear."
+                bodyText: "VoiceClaw Realtime can install local runtimes and open the right settings panes, but macOS still requires the user to approve protected permissions such as Login Items, Microphone, Full Disk Access, Files and Folders, and Local Network when those prompts appear."
             )
             InfoCallout(
                 symbol: "externaldrive.connected.to.line.below",
-                title: "What VoiceClaw uses",
-                bodyText: "The Companion writes local config under ~/.voiceclaw, stores HF voice models in the Hugging Face cache, starts a per-user LaunchAgent, serves a local bridge on the selected port, and can run OpenClaw or Hermes commands from this Mac when those routes are selected."
+                title: "What VoiceClaw Realtime uses",
+                bodyText: "The Companion writes local config under ~/.voiceclaw, starts a per-user LaunchAgent, serves a local bridge on the selected port, and can run OpenClaw, Hermes Agent, or Codex work from this Mac when those routes are selected."
             )
 
             VStack(alignment: .leading, spacing: 10) {
@@ -579,7 +603,9 @@ private struct AccessPanel: View {
                     StatusRow(title: "Local Bridge", value: store.localBridgeSummary, symbol: "server.rack")
                     StatusRow(title: "Bridge Runtime", value: store.runtimeIntegritySummary, symbol: "checkmark.seal")
                     StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
-                    StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
+                    if VoiceClawProductSurfacePolicy.companionRealtimeVoiceVisible {
+                        StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
+                    }
                     StatusRow(title: "OpenClaw Folder", value: store.openClawInstallPath, symbol: "folder")
                 } else {
                     Text(store.accessSummary)
@@ -652,13 +678,15 @@ private struct AccessPanel: View {
                     Button {
                         store.openVoiceClawSupportFolder()
                     } label: {
-                        Label("Open VoiceClaw Data", systemImage: "externaldrive")
+                        Label("Open VoiceClaw Realtime Data", systemImage: "externaldrive")
                     }
 
-                    Button {
-                        store.openHuggingFaceCacheFolder()
-                    } label: {
-                        Label("Open HF Model Cache", systemImage: "shippingbox")
+                    if VoiceClawProductSurfacePolicy.companionRealtimeVoiceVisible {
+                        Button {
+                            store.openHuggingFaceCacheFolder()
+                        } label: {
+                            Label("Open HF Model Cache", systemImage: "shippingbox")
+                        }
                     }
 
                     Button {
@@ -692,7 +720,8 @@ private struct AccessPanel: View {
                 }
                 .buttonStyle(.bordered)
 
-                if store.companionVoiceDependencyInstallAvailable {
+                if VoiceClawProductSurfacePolicy.companionRealtimeVoiceVisible,
+                   store.companionVoiceDependencyInstallAvailable {
                     Button {
                         Task { await store.installMissingCompanionVoiceDependencies() }
                     } label: {
@@ -711,7 +740,7 @@ private struct AccessPanel: View {
                 .disabled(store.status.isWorking)
             }
 
-            Text("VoiceClaw does not use or contact unrelated local services outside its own bridge/runtime paths. Personal development services on other ports should remain isolated from Companion setup.")
+            Text("VoiceClaw Realtime does not use or contact unrelated local services outside its own bridge/runtime paths. Personal development services on other ports should remain isolated from Companion setup.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -727,7 +756,7 @@ private struct CompanionVoicePanel: View {
         VStack(alignment: .leading, spacing: 16) {
             PanelHeader(
                 title: "Companion Realtime Voice",
-                subtitle: "Prepare this Mac to run VoiceClaw's local speech-to-text, Companion Realtime Voice LLM, and text-to-speech pipeline for the Companion Realtime Voice engine.",
+                subtitle: "Prepare this Mac to run VoiceClaw Realtime's local speech-to-text, Companion Realtime Voice LLM, and text-to-speech pipeline for the Companion Realtime Voice engine.",
                 symbol: "brain.head.profile"
             )
 
@@ -761,7 +790,7 @@ private struct CompanionVoicePanel: View {
             InfoCallout(
                 symbol: "arrow.triangle.2.circlepath",
                 title: "Voice sessions and agent sessions are separate",
-                bodyText: "Restarting the VoiceClaw voice session should restart audio and realtime transport only. It should not reset an OpenClaw or Hermes conversation unless the user explicitly asks to start a new agent session."
+                bodyText: "Restarting the VoiceClaw Realtime voice session should restart audio and realtime transport only. It should not reset an OpenClaw or Hermes conversation unless the user explicitly asks to start a new agent session."
             )
 
             VStack(alignment: .leading, spacing: 12) {
@@ -769,7 +798,7 @@ private struct CompanionVoicePanel: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Powerhouse Mode")
                             .font(.headline)
-                        Text("Choose how aggressively this Mac should use CPU, GPU, memory, models, and network readiness for VoiceClaw.")
+                        Text("Choose how aggressively this Mac should use CPU, GPU, memory, models, and network readiness for VoiceClaw Realtime.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1226,7 +1255,7 @@ private struct PairingPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Pair Phone", subtitle: "Scan this QR code in VoiceClaw Settings. It syncs the bridge URL, OpenClaw settings, Hermes-capable route support, and Realtime auth preferences. GPT-Realtime-2 currently requires API Key mode until OpenAI re-enables Sign-in-with-ChatGPT access.", symbol: "qrcode")
+            PanelHeader(title: "Pair Phone", subtitle: "Scan this QR code in VoiceClaw Realtime Settings. It syncs the bridge URL, OpenClaw settings, Hermes-capable route support, and Realtime auth preferences. GPT-Realtime-2 currently requires API Key mode until OpenAI re-enables Sign-in-with-ChatGPT access.", symbol: "qrcode")
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
                 GridRow {
@@ -1264,7 +1293,7 @@ private struct PairingPanel: View {
                         Toggle("Include API Key in Setup QR", isOn: $store.includeOpenAIAPIKeyInPairing)
                             .toggleStyle(.checkbox)
 
-                        Text("On by default. When enabled, the QR code and setup JSON include this key so VoiceClaw stores it securely on the paired phone during pairing. The preview below redacts it.")
+                        Text("On by default. When enabled, the QR code and setup JSON include this key so VoiceClaw Realtime stores it securely on the paired phone during pairing. The preview below redacts it.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1272,18 +1301,46 @@ private struct PairingPanel: View {
                 }
 
                 GridRow {
-                    FieldLabel("Cerebras API Key")
+                    FieldLabel("Bridge Credentials")
                     VStack(alignment: .leading, spacing: 6) {
-                        SecureField("csk-...", text: $store.cerebrasAPIKey)
-                            .textFieldStyle(.roundedBorder)
-
-                        Toggle("Include Cerebras Key in Setup QR", isOn: $store.includeCerebrasAPIKeyInPairing)
+                        Toggle("Include Bridge Credentials in Setup QR", isOn: $store.includeBridgeCredentialsInPairing)
                             .toggleStyle(.checkbox)
 
-                        Text("Used when VoiceClaw's Companion Realtime Voice engine is set to the Cerebras Companion Realtime Voice LLM. The preview below redacts it.")
+                        Text("On by default. The phone needs these credentials to authenticate Companion requests. Turning this off omits them and may require manual setup on the phone.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                GridRow {
+                    FieldLabel("ChatGPT OAuth")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("Include ChatGPT OAuth in Setup QR", isOn: $store.includeChatGPTOAuthInPairing)
+                            .toggleStyle(.checkbox)
+
+                        Text("On by default. Includes the Companion-managed ChatGPT OAuth credential set when available. The preview redacts token values.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if VoiceClawProductSurfacePolicy.companionRealtimeVoiceVisible {
+                    GridRow {
+                        FieldLabel("Cerebras API Key")
+                        VStack(alignment: .leading, spacing: 6) {
+                            SecureField("csk-...", text: $store.cerebrasAPIKey)
+                                .textFieldStyle(.roundedBorder)
+
+                            Toggle("Include Cerebras Key in Setup QR", isOn: $store.includeCerebrasAPIKeyInPairing)
+                                .toggleStyle(.checkbox)
+
+                            Text("Used when VoiceClaw Realtime's Companion Realtime Voice engine is set to the Cerebras Companion Realtime Voice LLM. The preview below redacts it.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
 
@@ -1302,8 +1359,8 @@ private struct PairingPanel: View {
             }
 
             InfoCallout(symbol: "key.radiowaves.forward", title: "OpenAI Auth Status", bodyText: store.realtimeAuthStatusSummary)
-            InfoCallout(symbol: "point.3.connected.trianglepath.dotted", title: "Which Runtime Handles the Work", bodyText: "The selected iOS voice engine handles live speech. GPT-Realtime-2 uses OpenAI Realtime directly; Companion Realtime Voice uses this Mac for speech-to-text, the selected Companion Realtime Voice LLM, and text-to-speech. OpenClaw routes send substantive work to OpenClaw using the OpenClaw path and agent above. Hermes routes send substantive work to Hermes Agent through the hermes CLI; the OpenClaw path is not used for Hermes.")
-            InfoCallout(symbol: "square.grid.2x2", title: "iOS Widgets and Watch Extras", bodyText: "For iPhone users, add VoiceClaw widgets from the iOS Home Screen widget gallery for one-tap route launches. You can also add VoiceClaw to the iPhone Lock Screen or Control Center for a quick Live launch; those controls open VoiceClaw directly on the iPhone, while this Companion is needed for OpenClaw and Hermes Bridge/Tunnel routes.")
+            InfoCallout(symbol: "point.3.connected.trianglepath.dotted", title: "Which Runtime Handles the Work", bodyText: "GPT Realtime handles the live conversation on iPhone or Apple Watch. OpenClaw routes send substantive work to the selected OpenClaw agent, Hermes routes use the Hermes Agent CLI, and Codex routes use Codex app-server. The Companion keeps those route tasks and returned files independent from the live voice connection.")
+            InfoCallout(symbol: "square.grid.2x2", title: "iOS Widgets and Watch Extras", bodyText: "For iPhone users, add VoiceClaw Realtime widgets from the iOS Home Screen widget gallery for one-tap route launches. You can also add VoiceClaw Realtime to the iPhone Lock Screen or Control Center for a quick Live launch; those controls open VoiceClaw Realtime directly on the iPhone, while this Companion is needed for OpenClaw and Hermes Bridge/Tunnel routes.")
 
             HStack(alignment: .top, spacing: 18) {
                 Button {
@@ -1394,7 +1451,7 @@ private struct LargeQRCodeSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Scan Setup Code")
                         .font(.title2.weight(.semibold))
-                    Text(bridgeURL.isEmpty ? "Open VoiceClaw Settings on your phone and scan this code." : bridgeURL)
+                    Text(bridgeURL.isEmpty ? "Open VoiceClaw Realtime Settings on your phone and scan this code." : bridgeURL)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
@@ -1417,17 +1474,351 @@ private struct LargeQRCodeSheet: View {
     }
 }
 
+private struct WorkCenterPanel: View {
+    @ObservedObject var store: BridgeStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            PanelHeader(
+                title: "Tasks & Files",
+                subtitle: "Monitor work delegated through the Companion and manage files explicitly returned to VoiceClaw Realtime.",
+                symbol: "tray.full"
+            )
+
+            HStack(spacing: 12) {
+                WorkMetric(
+                    title: "Active Tasks",
+                    value: String(store.routeTasks.filter { !$0.isTerminal }.count),
+                    symbol: "bolt.horizontal.circle"
+                )
+                WorkMetric(
+                    title: "Retained Files",
+                    value: String(store.artifacts.count),
+                    symbol: "doc.on.doc"
+                )
+                WorkMetric(
+                    title: "Inbox Used",
+                    value: store.artifactInboxStatus.map {
+                        ByteCountFormatter.string(fromByteCount: $0.totalBytes, countStyle: .file)
+                    } ?? "Not checked",
+                    symbol: "internaldrive"
+                )
+            }
+
+            if let inbox = store.artifactInboxStatus {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Text("Artifact Inbox Capacity")
+                            .font(.headline)
+                        Spacer()
+                        Text("\(ByteCountFormatter.string(fromByteCount: inbox.totalBytes, countStyle: .file)) of \(ByteCountFormatter.string(fromByteCount: inbox.inboxLimitBytes, countStyle: .file))")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    ProgressView(value: inbox.utilization)
+                    Text("Up to \(inbox.filesPerTaskLimit) files per task and \(ByteCountFormatter.string(fromByteCount: inbox.fileLimitBytes, countStyle: .file)) per file. VoiceClaw Realtime Companion never evicts files automatically.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await store.refreshWorkCenter() }
+                } label: {
+                    Label(store.isRefreshingWorkCenter ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isRefreshingWorkCenter)
+
+                Button {
+                    store.openArtifactInbox()
+                } label: {
+                    Label("Open Inbox", systemImage: "folder")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button(role: .destructive) {
+                    Task { await store.emptyArtifactInbox() }
+                } label: {
+                    Label("Empty Inbox", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.artifacts.isEmpty)
+
+                Spacer()
+
+                if store.isRefreshingWorkCenter {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            if !store.workCenterError.isEmpty {
+                BannerContent(
+                    symbol: "exclamationmark.triangle.fill",
+                    title: "Tasks & Files Needs Attention",
+                    bodyText: store.workCenterError,
+                    color: .orange
+                )
+            } else {
+                Text(store.workCenterSummary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Route Tasks")
+                    .font(.title3.weight(.semibold))
+
+                if store.routeTasks.isEmpty {
+                    WorkEmptyState(
+                        title: "No Route Tasks",
+                        symbol: "checklist",
+                        detail: "Tasks delegated from VoiceClaw Realtime will appear here without changing the selected voice route."
+                    )
+                } else {
+                    ForEach(Array(store.routeTasks.enumerated()), id: \.element.id) { index, task in
+                        if index > 0 { Divider() }
+                        RouteTaskRow(task: task) {
+                            Task { await store.cancelRouteTask(task) }
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Artifact Inbox")
+                    .font(.title3.weight(.semibold))
+
+                if store.artifacts.isEmpty {
+                    WorkEmptyState(
+                        title: "Inbox Empty",
+                        symbol: "tray",
+                        detail: "Files appear only when you explicitly ask an OpenClaw, Hermes, or Codex task to return them to VoiceClaw Realtime."
+                    )
+                } else {
+                    ForEach(Array(store.artifacts.enumerated()), id: \.element.id) { index, artifact in
+                        if index > 0 { Divider() }
+                        ArtifactInboxRow(artifact: artifact) {
+                            Task { await store.deleteArtifact(artifact) }
+                        }
+                    }
+                }
+            }
+
+            if let lastRefresh = store.lastWorkCenterRefreshDate {
+                Text("Last refreshed \(lastRefresh.formatted(date: .abbreviated, time: .standard)).")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .panelStyle()
+    }
+}
+
+private struct WorkMetric: View {
+    let title: String
+    let value: String
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(.cyan)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct WorkEmptyState: View {
+    let title: String
+    let symbol: String
+    let detail: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: symbol)
+                .font(.system(size: 28))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.headline)
+            Text(detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, minHeight: 120)
+    }
+}
+
+private struct RouteTaskRow: View {
+    let task: CompanionRouteTask
+    let cancel: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: stateSymbol)
+                .font(.title3)
+                .foregroundStyle(stateColor)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(task.request.summary)
+                        .font(.headline)
+                        .lineLimit(2)
+                    TaskStateBadge(state: task.state)
+                }
+
+                Text("\(task.target.runtime.capitalized) • \(task.target.route) • Agent \(task.target.agentID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                if let progress = task.progress?.summary, !progress.isEmpty {
+                    Text(progress)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let result = task.result?.text, !result.isEmpty {
+                    Text(result)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(4)
+                }
+                if let error = task.error?.message, !error.isEmpty {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text("Updated \(task.updatedDate.formatted(date: .abbreviated, time: .standard)) • \(task.taskID)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+            }
+
+            Spacer(minLength: 12)
+
+            if !task.isTerminal {
+                Button(role: .destructive, action: cancel) {
+                    Label("Cancel", systemImage: "stop.circle")
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var stateSymbol: String {
+        switch task.state {
+        case "completed", "completedWithArtifactWarning": "checkmark.circle.fill"
+        case "failed": "xmark.octagon.fill"
+        case "cancelled": "slash.circle.fill"
+        case "awaitingApproval", "waitingForUser": "person.crop.circle.badge.questionmark"
+        default: "clock.arrow.circlepath"
+        }
+    }
+
+    private var stateColor: Color {
+        switch task.state {
+        case "completed": .green
+        case "completedWithArtifactWarning", "awaitingApproval", "waitingForUser": .orange
+        case "failed": .red
+        case "cancelled": .secondary
+        default: .cyan
+        }
+    }
+}
+
+private struct TaskStateBadge: View {
+    let state: String
+
+    var body: some View {
+        Text(label)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(.quaternary, in: Capsule())
+    }
+
+    private var label: String {
+        state
+            .replacingOccurrences(of: "completedWithArtifactWarning", with: "Completed with file warning")
+            .replacingOccurrences(of: "awaitingApproval", with: "Awaiting approval")
+            .replacingOccurrences(of: "waitingForUser", with: "Waiting for you")
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
+    }
+}
+
+private struct ArtifactInboxRow: View {
+    let artifact: CompanionArtifact
+    let delete: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "doc.fill")
+                .font(.title3)
+                .foregroundStyle(.cyan)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(artifact.displayName)
+                    .font(.headline)
+                    .textSelection(.enabled)
+                Text("\(ByteCountFormatter.string(fromByteCount: artifact.byteCount, countStyle: .file)) • \(artifact.contentType) • Task \(artifact.taskID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Text("SHA-256 \(artifact.sha256)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                Text("Admitted \(artifact.admittedDate.formatted(date: .abbreviated, time: .standard))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer(minLength: 12)
+
+            Button(role: .destructive, action: delete) {
+                Label("Delete", systemImage: "trash")
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 private struct TailscalePanel: View {
     @ObservedObject var store: BridgeStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Tailscale", subtitle: "VoiceClaw uses Tailscale Serve so the paired phone can reach this Mac on your private network for OpenClaw and Hermes Agent routes.", symbol: "network")
+            PanelHeader(title: "Tailscale", subtitle: "VoiceClaw Realtime uses Tailscale Serve so the paired phone can reach this Mac on your private network for OpenClaw and Hermes Agent routes.", symbol: "network")
 
-            InfoCallout(symbol: "network.badge.shield.half.filled", title: "What Tailscale Serve Is", bodyText: "Tailscale Serve is a private HTTPS reverse proxy: it takes a Tailscale URL on this Mac and forwards it to the local VoiceClaw bridge running on 127.0.0.1. It is private to devices in your tailnet, not a public internet link.")
-            InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the VoiceClaw bridge service on this Mac. With the default, the paired phone connects to a URL ending in :12321. If you choose another free port, run Install and Start again and pair the phone with the new QR code.")
-            InfoCallout(symbol: "lock", title: "What Must Be Allowed", bodyText: "Tailscale must be installed and signed in, and HTTPS certificates must be enabled for your tailnet. If you are not the tailnet owner or admin, ask that person to enable HTTPS certificates. VoiceClaw configures Serve only when you click Install and Start. Verify Runtime checks the bridge and may refresh VoiceClaw's own stale LaunchAgent runtime, but it does not reset Tailscale mappings.")
-            InfoCallout(symbol: "trash.slash", title: "Why VoiceClaw Does Not Use Serve Reset", bodyText: "Tailscale's full Serve reset clears every Serve mapping on this Mac. VoiceClaw only offers a guarded cleanup for the selected port, and only when the mapping looks exactly like VoiceClaw's own bridge.")
+            InfoCallout(symbol: "network.badge.shield.half.filled", title: "What Tailscale Serve Is", bodyText: "Tailscale Serve is a private HTTPS reverse proxy: it takes a Tailscale URL on this Mac and forwards it to the local VoiceClaw Realtime bridge running on 127.0.0.1. It is private to devices in your tailnet, not a public internet link.")
+            InfoCallout(symbol: "number", title: "Why the URL has a port", bodyText: "The port selects the VoiceClaw Realtime bridge service on this Mac. With the default, the paired phone connects to a URL ending in :12321. If you choose another free port, run Install and Start again and pair the phone with the new QR code.")
+            InfoCallout(symbol: "lock", title: "What Must Be Allowed", bodyText: "Tailscale must be installed and signed in, and HTTPS certificates must be enabled for your tailnet. If you are not the tailnet owner or admin, ask that person to enable HTTPS certificates. VoiceClaw Realtime configures Serve only when you click Install and Start. Verify Runtime checks the bridge and may refresh VoiceClaw Realtime's own stale LaunchAgent runtime, but it does not reset Tailscale mappings.")
+            InfoCallout(symbol: "trash.slash", title: "Why VoiceClaw Realtime Does Not Use Serve Reset", bodyText: "Tailscale's full Serve reset clears every Serve mapping on this Mac. VoiceClaw Realtime only offers a guarded cleanup for the selected port, and only when the mapping looks exactly like VoiceClaw Realtime's own bridge.")
 
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
 
@@ -1471,7 +1862,7 @@ private struct StatusPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Diagnostics", subtitle: "Use this when setup fails, pairing fails, the phone cannot reach the Mac, or Companion Realtime Voice is warming slowly. Verify Runtime runs the full readiness check and updates Last Checked when the cycle completes.", symbol: "checklist")
+            PanelHeader(title: "Diagnostics", subtitle: "Use this when setup fails, pairing fails, or the phone cannot reach the Mac. Verify Runtime runs the full readiness check and updates Last Checked when the cycle completes.", symbol: "checklist")
 
             DiagnosticSummaryCard(store: store)
 
@@ -1480,15 +1871,21 @@ private struct StatusPanel: View {
             StatusRow(title: "Tailscale Serve", value: store.tailscaleSummary, symbol: "network")
             StatusRow(title: "Realtime Runtime", value: store.realtimeRuntimeSummary, symbol: "waveform.path.ecg")
             StatusRow(title: "Realtime Auth", value: "\(store.realtimeAuthMode.label), OpenAI API-key fallback \(store.realtimeAuthFallbackToAPIKey ? "on" : "off"). \(store.realtimeAuthStatusSummary)", symbol: "key.horizontal")
-            StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
-            StatusRow(title: "Companion Voice Warm Runtime", value: store.companionVoiceWarmSummary, symbol: "flame")
-            StatusRow(title: "\(store.powerhouseMode.label) Powerhouse Runtime", value: store.powerhouseSummary, symbol: "bolt.horizontal.circle")
-            StatusRow(title: "Mac Hardware Profile", value: store.powerhouseHardwareSummary, symbol: "cpu")
+            if VoiceClawProductSurfacePolicy.companionRealtimeVoiceVisible {
+                StatusRow(title: "Companion Realtime Voice", value: store.companionVoiceSummary, symbol: "brain.head.profile")
+                StatusRow(title: "Companion Voice Warm Runtime", value: store.companionVoiceWarmSummary, symbol: "flame")
+            }
+            if VoiceClawProductSurfacePolicy.powerhouseVisible {
+                StatusRow(title: "\(store.powerhouseMode.label) Powerhouse Runtime", value: store.powerhouseSummary, symbol: "bolt.horizontal.circle")
+                StatusRow(title: "Mac Hardware Profile", value: store.powerhouseHardwareSummary, symbol: "cpu")
+            }
             StatusRow(title: "Access and Permissions", value: store.accessSummary, symbol: "checkmark.shield")
-            if !store.companionVoiceDependencyInstallSummary.isEmpty {
+            if VoiceClawProductSurfacePolicy.companionRealtimeVoiceVisible,
+               !store.companionVoiceDependencyInstallSummary.isEmpty {
                 StatusRow(title: "Voice Dependency Install", value: store.companionVoiceDependencyInstallSummary, symbol: "square.and.arrow.down")
             }
-            if !store.powerhouseWorkerItems.isEmpty {
+            if VoiceClawProductSurfacePolicy.powerhouseVisible,
+               !store.powerhouseWorkerItems.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Powerhouse Worker Plan")
                         .font(.headline)
@@ -1502,12 +1899,12 @@ private struct StatusPanel: View {
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
             StatusRow(title: "Launch upon Startup", value: store.launchAtStartupSummary, symbol: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
-            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw checks for signed GitHub Release updates every \(store.automaticUpdateCheckInterval.shortLabel)." : "Automatic checks are off. The menu bar icon shows an update warning; use Check Updates when you want to compare against the latest release.", symbol: "clock.arrow.circlepath")
+            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw Realtime checks for signed GitHub Release updates every \(store.automaticUpdateCheckInterval.shortLabel)." : "Automatic checks are off. The menu bar icon shows an update warning; use Check Updates when you want to compare against the latest release.", symbol: "clock.arrow.circlepath")
             StatusRow(
                 title: "Update Install",
                 value: store.automaticUpdateInstallsEnabled
-                    ? "Automatic Sparkle downloads are on. Visible Install Update buttons open the signed updater so VoiceClaw can download, verify, replace, and relaunch the app."
-                    : "Automatic install is off. VoiceClaw will still show available updates, but you decide when to install them.",
+                    ? "Automatic Sparkle downloads are on. Visible Install Update buttons open the signed updater so VoiceClaw Realtime can download, verify, replace, and relaunch the app."
+                    : "Automatic install is off. VoiceClaw Realtime will still show available updates, but you decide when to install them.",
                 symbol: store.automaticUpdateInstallsEnabled ? "arrow.down.app.fill" : "arrow.down.app"
             )
 
@@ -1567,7 +1964,8 @@ private struct StatusPanel: View {
                     }
                     .buttonStyle(.bordered)
 
-                    if store.companionVoiceDependencyInstallAvailable {
+                    if VoiceClawProductSurfacePolicy.companionRealtimeVoiceVisible,
+                       store.companionVoiceDependencyInstallAvailable {
                         Button {
                             Task { await store.installMissingCompanionVoiceDependencies() }
                         } label: {
@@ -1618,12 +2016,12 @@ private struct StatusPanel: View {
                 .frame(maxWidth: 360)
                 .disabled(!store.automaticUpdateChecksEnabled)
 
-                Text("VoiceClaw checks once at launch and then repeats at this interval while the companion is open.")
+                Text("VoiceClaw Realtime checks once at launch and then repeats at this interval while the companion is open.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Verify Runtime checks the installed bridge runtime identity, local bridge process, Tailscale Serve mapping, Realtime endpoints, Companion Realtime Voice dependencies, warm HF runtime, and Mac access. It updates Last Checked when the cycle completes and may refresh VoiceClaw's own stale LaunchAgent runtime when safe.")
+                Text("Verify Runtime checks the installed bridge runtime identity, local bridge process, Tailscale Serve mapping, Realtime endpoints, and Mac access. It updates Last Checked when the cycle completes and may refresh VoiceClaw Realtime's own stale LaunchAgent runtime when safe.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1810,13 +2208,13 @@ private struct DiagnosticsVersionFooter: View {
 
         switch (version?.isEmpty == false ? version : nil, build?.isEmpty == false ? build : nil) {
         case let (.some(version), .some(build)):
-            return "VoiceClaw Companion \(version) (\(build))"
+            return "VoiceClaw Realtime Companion \(version) (\(build))"
         case let (.some(version), .none):
-            return "VoiceClaw Companion \(version)"
+            return "VoiceClaw Realtime Companion \(version)"
         case let (.none, .some(build)):
-            return "VoiceClaw Companion build \(build)"
+            return "VoiceClaw Realtime Companion build \(build)"
         case (.none, .none):
-            return "VoiceClaw Companion version unavailable"
+            return "VoiceClaw Realtime Companion version unavailable"
         }
     }
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -619,6 +620,9 @@ test('HTTP and WebSocket routes enforce the credential boundary before runtime a
     futureSetupField: {
       nested: ['preserve', 7, true],
     },
+    capabilities: { futureRuntime: 9 },
+    limits: { futureLimitBytes: 321 },
+    productSurfaces: { futureSurfaceVisible: true },
   }));
   process.env.VOICECLAW_OUTER_HF_TEST = '1';
   process.env.VOICECLAW_CONFIG_PATH = configPath;
@@ -630,6 +634,9 @@ test('HTTP and WebSocket routes enforce the credential boundary before runtime a
   process.env.COMPANION_VOICE_HF_KEEPHOT = '0';
   process.env.OPENCLAW_INSTALL_PATH = join(testRoot, 'missing-openclaw');
   process.env.OPENCLAW_CONFIG = join(testRoot, 'missing-openclaw.json');
+  process.env.VOICECLAW_INPUT_ATTACHMENT_PATH = join(testRoot, 'input-attachments');
+  process.env.VOICECLAW_ROUTE_TASKS_PATH = join(testRoot, 'route-tasks.json');
+  process.env.VOICECLAW_ARTIFACT_INBOX_PATH = join(testRoot, 'artifact-inbox');
 
   const { outerHFIntegration } = await import('../server/index.js');
   const { httpServer, wsPath } = outerHFIntegration;
@@ -639,6 +646,51 @@ test('HTTP and WebSocket routes enforce the credential boundary before runtime a
   const origin = `http://127.0.0.1:${address.port}`;
 
   try {
+    const protectedPaths = ['/realtime/tasks', '/realtime/artifacts', '/realtime/setup-payload'];
+    for (const path of protectedPaths) {
+      const rejected = await fetch(`${origin}${path}`);
+      assert.equal(rejected.status, 401, `${path} must reject an unauthenticated request`);
+      const accepted = await fetch(`${origin}${path}`, {
+        headers: { Authorization: 'Bearer credential-route-bridge-token' },
+      });
+      assert.equal(accepted.status, 200, `${path} must accept bridge authentication`);
+      const body = await accepted.json();
+      if (path === '/realtime/setup-payload') assert.equal(body.setupSchemaVersion, 3);
+      else assert.equal(body.ok, true);
+    }
+
+    const attachmentBody = Buffer.from('{"refresh_token":"byte-exact attachment content"}');
+    const attachmentURL = `${origin}/realtime/tasks/preallocated-task/attachments/input-1`;
+    const attachmentHeaders = {
+      'Content-Type': 'text/plain',
+      'Content-Length': String(attachmentBody.length),
+      'X-VoiceClaw-Filename-Base64': Buffer.from('notes from iPhone.txt').toString('base64'),
+      'X-VoiceClaw-Content-SHA256': createHash('sha256').update(attachmentBody).digest('hex'),
+      'X-VoiceClaw-Byte-Count': String(attachmentBody.length),
+    };
+    const rejectedAttachment = await fetch(attachmentURL, {
+      method: 'PUT',
+      headers: attachmentHeaders,
+      body: attachmentBody,
+    });
+    assert.equal(rejectedAttachment.status, 401);
+
+    const acceptedAttachment = await fetch(attachmentURL, {
+      method: 'PUT',
+      headers: {
+        ...attachmentHeaders,
+        Authorization: 'Bearer credential-route-bridge-token',
+      },
+      body: attachmentBody,
+    });
+    assert.equal(acceptedAttachment.status, 201);
+    const acceptedAttachmentBody = await acceptedAttachment.json();
+    assert.equal(acceptedAttachmentBody.ok, true);
+    assert.equal(acceptedAttachmentBody.attachment.taskID, 'preallocated-task');
+    assert.equal(acceptedAttachmentBody.attachment.attachmentID, 'input-1');
+    assert.equal(acceptedAttachmentBody.attachment.originalName, 'notes from iPhone.txt');
+    assert.equal(acceptedAttachmentBody.attachment.byteCount, attachmentBody.length);
+
     const rejectedHTTP = await fetch(`${origin}/realtime/cancel`, {
       method: 'POST',
       headers: {
@@ -723,6 +775,33 @@ test('HTTP and WebSocket routes enforce the credential boundary before runtime a
     assert.deepEqual(setupPayload.futureSetupField, {
       nested: ['preserve', 7, true],
     });
+    assert.equal(setupPayload.capabilities.routeTasks, 1);
+    assert.equal(setupPayload.capabilities.taskInputAttachments, 1);
+    assert.equal(setupPayload.capabilities.futureRuntime, 9);
+    assert.equal(setupPayload.limits.futureLimitBytes, 321);
+    assert.equal(setupPayload.productSurfaces.companionRealtimeVoiceVisible, false);
+    assert.equal(setupPayload.productSurfaces.powerhouseVisible, false);
+    assert.equal(setupPayload.productSurfaces.futureSurfaceVisible, true);
+
+    const healthResponse = await fetch(`${origin}/healthz`);
+    assert.equal(healthResponse.status, 200);
+    const health = await healthResponse.json();
+    assert.equal('tts' in health, false);
+    assert.equal('powerhouse' in health, false);
+
+    const configResponse = await fetch(`${origin}/config`, {
+      headers: { Authorization: 'Bearer credential-route-bridge-token' },
+    });
+    assert.equal(configResponse.status, 200);
+    const config = await configResponse.json();
+    assert.equal('companionVoice' in config.realtime, false);
+    assert.equal('tts' in config, false);
+
+    const statusResponse = await fetch(`${origin}/realtime/status`, {
+      headers: { Authorization: 'Bearer credential-route-bridge-token' },
+    });
+    assert.equal(statusResponse.status, 200);
+    assert.equal('tts' in await statusResponse.json(), false);
 
     const setupWithoutProviderKeys = await fetch(
       `${origin}/realtime/setup-payload?include_openai_key=0&include_cerebras_key=0`,
@@ -730,8 +809,8 @@ test('HTTP and WebSocket routes enforce the credential boundary before runtime a
     );
     assert.equal(setupWithoutProviderKeys.status, 200);
     const optedOutPayload = await setupWithoutProviderKeys.json();
-    assert.equal(optedOutPayload.OpenAIAPIKey, '');
-    assert.equal(optedOutPayload.CerebrasAPIKey, '');
+    assert.equal('OpenAIAPIKey' in optedOutPayload, false);
+    assert.equal('CerebrasAPIKey' in optedOutPayload, false);
     assert.equal('openAIAPIKey' in optedOutPayload, false);
     assert.equal('cerebrasAPIKey' in optedOutPayload, false);
     assert.equal(optedOutPayload.ChatGPTOAuthAccessToken, 'outgoing-access-value');
@@ -739,6 +818,29 @@ test('HTTP and WebSocket routes enforce the credential boundary before runtime a
     assert.deepEqual(optedOutPayload.futureSetupField, {
       nested: ['preserve', 7, true],
     });
+
+    const setupWithoutAnySecrets = await fetch(
+      `${origin}/realtime/setup-payload?include_openai_key=0&include_cerebras_key=0&include_bridge_credentials=0&include_chatgpt_oauth=0`,
+      { headers: { Authorization: 'Bearer credential-route-bridge-token' } },
+    );
+    assert.equal(setupWithoutAnySecrets.status, 200);
+    const noSecrets = await setupWithoutAnySecrets.json();
+    for (const field of [
+      'OpenAIAPIKey', 'openAIAPIKey', 'CerebrasAPIKey', 'cerebrasAPIKey',
+      'OpenClawGatewayToken', 'OpenClawGatewayPassword', 'gatewayToken', 'gatewayPassword',
+      'ChatGPTOAuthAccessToken', 'ChatGPTOAuthRefreshToken', 'ChatGPTOAuthAccountID',
+    ]) {
+      assert.equal(field in noSecrets, false, `${field} must obey its setup inclusion toggle`);
+    }
+    assert.deepEqual(noSecrets.futureSetupField, { nested: ['preserve', 7, true] });
+    assert.equal(noSecrets.capabilities.futureRuntime, 9);
+
+    const oversizedSetup = await fetch(
+      `${origin}/realtime/setup-payload?padding=${'x'.repeat(8300)}`,
+      { headers: { Authorization: 'Bearer credential-route-bridge-token' } },
+    );
+    assert.equal(oversizedSetup.status, 414);
+    assert.equal((await oversizedSetup.json()).error.code, 'request_target_too_large');
 
     const before = outerHFIntegration.credentialBoundaryRuntimeSnapshot();
     const events = [];

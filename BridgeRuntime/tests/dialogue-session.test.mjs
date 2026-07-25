@@ -135,7 +135,7 @@ test('OpenClaw gateway lookup prefers the package beside the configured CLI and 
   ]);
 });
 
-test('OpenClaw session normalization accepts current and legacy response fields', () => {
+test('OpenClaw session normalization accepts current, legacy, snake-case, and nested response fields', () => {
   const current = __dialogueTestHooks.normalizedOpenClawSessionRow({
     key: 'agent:julian:current',
     sessionId: 'current-session',
@@ -147,6 +147,14 @@ test('OpenClaw session normalization accepts current and legacy response fields'
     sessionID: 'legacy-session',
     activeRunID: 'legacy-run',
   });
+  const snakeCase = __dialogueTestHooks.normalizedOpenClawSessionRow({
+    session_key: 'agent:julian:snake',
+    session_id: 'snake-session',
+    active_run_ids: ['snake-run'],
+    has_active_run: true,
+    session_started_at: 1_800_000_000,
+    updated_at: 1_800_000_100,
+  });
 
   assert.equal(current.sessionID, 'current-session');
   assert.equal(current.sessionKey, 'agent:julian:current');
@@ -155,10 +163,54 @@ test('OpenClaw session normalization accepts current and legacy response fields'
   assert.equal(legacy.sessionKey, 'agent:julian:legacy');
   assert.deepEqual(legacy.activeRunIDs, ['legacy-run']);
   assert.equal(legacy.hasActiveRun, true);
+  assert.equal(snakeCase.sessionID, 'snake-session');
+  assert.equal(snakeCase.sessionKey, 'agent:julian:snake');
+  assert.deepEqual(snakeCase.activeRunIDs, ['snake-run']);
+  assert.equal(snakeCase.createdAt, 1_800_000_000_000);
+  assert.equal(snakeCase.updatedAt, 1_800_000_100_000);
   assert.deepEqual(
-    __dialogueTestHooks.openClawSessionRows({ data: { sessions: [{ sessionID: 'nested' }] } }),
+    __dialogueTestHooks.openClawSessionRows({ result: { items: [{ sessionID: 'nested' }] } }),
     [{ sessionID: 'nested' }],
   );
+});
+
+test('Hermes session normalization accepts old and new gateway/store schemas', () => {
+  assert.deepEqual(
+    __dialogueTestHooks.hermesSessionRows({ result: { items: [{ sessionId: 'live-modern' }] } }),
+    [{ sessionId: 'live-modern' }],
+  );
+
+  const legacy = __dialogueTestHooks.normalizedHermesLiveSessionRow({
+    id: 'live-legacy',
+    session_key: 'stored-legacy',
+    status: 'streaming',
+  });
+  const current = __dialogueTestHooks.normalizedHermesSessionResult({
+    data: {
+      sessionId: 'live-current',
+      storedSessionId: 'stored-current',
+      runState: 'running',
+    },
+  });
+  const stored = __dialogueTestHooks.normalizedHermesStoredSessionRow({
+    session: {
+      sessionId: 'stored-current',
+      startedAt: 1_800_000_000_000,
+      updatedAt: '2027-01-15T08:01:00.000Z',
+    },
+  });
+
+  assert.deepEqual(
+    { live: legacy.liveSessionID, stored: legacy.storedSessionID, status: legacy.status },
+    { live: 'live-legacy', stored: 'stored-legacy', status: 'streaming' },
+  );
+  assert.deepEqual(
+    { live: current.liveSessionID, stored: current.storedSessionID, status: current.status },
+    { live: 'live-current', stored: 'stored-current', status: 'running' },
+  );
+  assert.equal(stored.sessionID, 'stored-current');
+  assert.equal(stored.createdAt, 1_800_000_000_000);
+  assert.equal(stored.updatedAt, Date.parse('2027-01-15T08:01:00.000Z'));
 });
 
 test('OpenClaw context overflow detection is canonical and does not match ordinary discussion', () => {

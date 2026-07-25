@@ -1,7 +1,7 @@
 // TTS module — OpenAI streaming-first voice plus local fallbacks
 import { spawn, execFile as execFileCb } from 'node:child_process';
 import { readFile, unlink, access, readdir } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
@@ -13,8 +13,18 @@ import { executablePath, normalizeProcessPath } from './bin-paths.js';
 const execFile = promisify(execFileCb);
 normalizeProcessPath();
 
-const DEFAULT_PIPER_MODEL = process.env.PIPER_MODEL || join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-libritts-high.onnx');
-const PIPER_MODEL_DIR = process.env.PIPER_MODEL_DIR || join(os.homedir(), '.openclaw', 'models', 'piper');
+const VOICECLAW_PIPER_MODEL_DIR = join(
+  os.homedir(),
+  'Library',
+  'Application Support',
+  'VoiceClaw Realtime Companion',
+  'Models',
+  'piper',
+);
+const LEGACY_OPENCLAW_PIPER_MODEL_DIR = join(os.homedir(), '.openclaw', 'models', 'piper');
+const PIPER_MODEL_DIR = process.env.PIPER_MODEL_DIR
+  || (existsSync(VOICECLAW_PIPER_MODEL_DIR) ? VOICECLAW_PIPER_MODEL_DIR : LEGACY_OPENCLAW_PIPER_MODEL_DIR);
+const DEFAULT_PIPER_MODEL = process.env.PIPER_MODEL || join(PIPER_MODEL_DIR, 'en_US-libritts-high.onnx');
 const DEFAULT_PIPER_LENGTH_SCALE = process.env.PIPER_LENGTH_SCALE || '0.7';
 const PIPER_BIN = executablePath(process.env.PIPER_BIN || 'python3');
 const FFMPEG_BIN = executablePath(process.env.FFMPEG_BIN || 'ffmpeg');
@@ -182,7 +192,7 @@ const CURATED_VOICES = [
     id: 'piper-libritts-high',
     label: 'Piper LibriTTS High',
     engine: 'piper',
-    modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-libritts-high.onnx'),
+    modelPath: join(PIPER_MODEL_DIR, 'en_US-libritts-high.onnx'),
     lengthScale: DEFAULT_PIPER_LENGTH_SCALE,
     default: !OPENAI_TTS,
   },
@@ -190,7 +200,7 @@ const CURATED_VOICES = [
     id: 'piper-ryan-high',
     label: 'Piper Ryan High',
     engine: 'piper',
-    modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx'),
+    modelPath: join(PIPER_MODEL_DIR, 'en_US-ryan-high.onnx'),
     lengthScale: DEFAULT_PIPER_LENGTH_SCALE,
     default: false,
   },
@@ -612,7 +622,7 @@ export async function synthesizeStream(text, { signal, voice, speed, onStart, on
       console.warn(`[tts-stream] OpenAI PCM streaming (${voiceCfg.id}) failed, falling back to Piper Ryan:`, err.message);
       return await synthesizePiperPCMStreaming(reply, {
         signal,
-        modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx'),
+        modelPath: join(PIPER_MODEL_DIR, 'en_US-ryan-high.onnx'),
         lengthScale: speedPreset.piperLengthScale,
         fallbackReason: 'openai-stream-failed',
         onStart,
@@ -626,7 +636,7 @@ export async function synthesizeStream(text, { signal, voice, speed, onStart, on
     console.warn(`[tts-stream] OpenAI circuit open until ${new Date(openAICircuitUntil).toISOString()}, using local streaming fallback`);
     return await synthesizePiperPCMStreaming(reply, {
       signal,
-      modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx'),
+      modelPath: join(PIPER_MODEL_DIR, 'en_US-ryan-high.onnx'),
       lengthScale: speedPreset.piperLengthScale,
       fallbackReason: 'openai-circuit-open',
       onStart,
@@ -679,7 +689,7 @@ export async function synthesizeStream(text, { signal, voice, speed, onStart, on
       console.warn(`[tts-stream] Kokoro streaming (${voiceCfg.id}) failed, falling back to Piper Ryan:`, err.message);
       return await synthesizePiperPCMStreaming(reply, {
         signal,
-        modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx'),
+        modelPath: join(PIPER_MODEL_DIR, 'en_US-ryan-high.onnx'),
         lengthScale: speedPreset.piperLengthScale,
         fallbackReason: 'kokoro-stream-failed',
         onStart,
@@ -697,7 +707,7 @@ export async function synthesizeStream(text, { signal, voice, speed, onStart, on
 
 async function synthesizeLocalFallback(text, { signal, speedPreset, reason } = {}) {
   try {
-    const audio = await synthesizePiper(text, { signal, modelPath: join(os.homedir(), '.openclaw', 'models', 'piper', 'en_US-ryan-high.onnx'), lengthScale: speedPreset.piperLengthScale });
+    const audio = await synthesizePiper(text, { signal, modelPath: join(PIPER_MODEL_DIR, 'en_US-ryan-high.onnx'), lengthScale: speedPreset.piperLengthScale });
     lastEngine = 'piper';
     lastFallback = reason || 'fallback';
     return audio;

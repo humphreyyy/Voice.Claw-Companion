@@ -10,6 +10,7 @@ import {
   attachCodexRealtimeRelaySocket,
   CodexAppServerBridge,
   CodexAppServerClient,
+  codexAppServerNegotiation,
 } from '../server/codex-app-server.js';
 
 class FakeCodexProcess extends EventEmitter {
@@ -64,7 +65,12 @@ class FakeRelaySocket extends EventEmitter {
   }
 }
 
-function createFakeCodexServer({ realtimeError = '', contextOverflowOnce = false } = {}) {
+function createFakeCodexServer({
+  realtimeError = '',
+  contextOverflowOnce = false,
+  initializeResult = null,
+  featureListError = '',
+} = {}) {
   const calls = [];
   const spawnOptions = [];
   let threadStarts = 0;
@@ -81,7 +87,7 @@ function createFakeCodexServer({ realtimeError = '', contextOverflowOnce = false
       if (message.method === 'initialize') {
         send({
           id: message.id,
-          result: {
+          result: initializeResult || {
             userAgent: 'codex_cli_rs/0.145.0 (VoiceClaw test)',
             codexHome: '/tmp/codex-home',
             platformFamily: 'unix',
@@ -101,6 +107,10 @@ function createFakeCodexServer({ realtimeError = '', contextOverflowOnce = false
         return;
       }
       if (message.method === 'experimentalFeature/list') {
+        if (featureListError) {
+          send({ id: message.id, error: { code: -32601, message: featureListError } });
+          return;
+        }
         send({
           id: message.id,
           result: {
@@ -279,7 +289,7 @@ test('initializes with VoiceClaw identity and reports capability without claimin
 
   const initialize = server.calls.find((call) => call.method === 'initialize');
   assert.equal(initialize.params.clientInfo.name, 'voiceclaw_companion');
-  assert.equal(initialize.params.clientInfo.title, 'VoiceClaw Companion');
+  assert.equal(initialize.params.clientInfo.title, 'VoiceClaw Realtime Companion');
   assert.equal(initialize.params.capabilities.experimentalApi, true);
   assert.equal(initialize.params.capabilities.requestAttestation, undefined);
   assert.ok(server.calls.some((call) => call.method === 'initialized'));
@@ -292,6 +302,57 @@ test('initializes with VoiceClaw identity and reports capability without claimin
   assert.equal(status.realtime.localFeatureEnabled, true);
   assert.equal(status.realtime.backendAdmission, 'unverified');
   assert.equal(status.realtime.available, false);
+  assert.deepEqual(status.appServer, {
+    version: '0.145.0',
+    protocolVersion: null,
+    negotiation: 'server-version',
+    compatible: true,
+  });
+  client.stop();
+});
+
+test('negotiates explicit and legacy Codex app-server initialize shapes', async () => {
+  const server = createFakeCodexServer({
+    initializeResult: {
+      protocolVersion: '2026-07-01',
+      serverInfo: {
+        version: '0.146.0',
+        userAgent: 'codex_cli_rs/0.146.0',
+        platformFamily: 'unix',
+        platformOs: 'macos',
+      },
+    },
+  });
+  const client = createClient(server);
+  const status = await client.status();
+  assert.deepEqual(status.appServer, {
+    version: '0.146.0',
+    protocolVersion: '2026-07-01',
+    negotiation: 'explicit-protocol',
+    compatible: true,
+  });
+  client.stop();
+
+  assert.deepEqual(codexAppServerNegotiation({ codexHome: '/legacy' }), {
+    mode: 'legacy-unversioned',
+    compatible: true,
+    appServerVersion: null,
+    protocolVersion: null,
+    userAgent: '',
+    platformFamily: '',
+    platformOs: '',
+  });
+});
+
+test('legacy app-server without experimental feature listing remains usable', async () => {
+  const server = createFakeCodexServer({ featureListError: 'Method not found' });
+  const client = createClient(server);
+  const status = await client.status();
+  assert.equal(status.state, 'ready');
+  assert.equal(status.account.signedIn, true);
+  assert.equal(status.realtime.featureListAvailable, false);
+  assert.match(status.realtime.featureListError, /Method not found/);
+  assert.equal(status.realtime.localFeaturePresent, false);
   client.stop();
 });
 

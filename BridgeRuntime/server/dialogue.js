@@ -504,18 +504,38 @@ function firstNonEmptyString(...values) {
 }
 
 function openClawSessionRows(result) {
-  for (const candidate of [result?.sessions, result?.items, result?.data?.sessions]) {
+  if (Array.isArray(result)) return result;
+  for (const candidate of [
+    result?.sessions,
+    result?.items,
+    result?.data?.sessions,
+    result?.data?.items,
+    result?.result?.sessions,
+    result?.result?.items,
+  ]) {
     if (Array.isArray(candidate)) return candidate;
   }
   return [];
 }
 
+function timestampMilliseconds(value, fallback = Date.now()) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric < 100_000_000_000 ? numeric * 1000 : numeric;
+  const parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function normalizedOpenClawSessionRow(row = {}) {
   const entry = row?.entry && typeof row.entry === 'object' ? row.entry : {};
-  const activeRunValues = Array.isArray(row.activeRunIds)
-    ? row.activeRunIds
-    : (Array.isArray(row.activeRunIDs) ? row.activeRunIDs : []);
-  const singularRunID = firstNonEmptyString(row.activeRunId, row.activeRunID);
+  const activeRunValues = [row.activeRunIds, row.activeRunIDs, row.active_run_ids, entry.activeRunIds, entry.active_run_ids]
+    .find((value) => Array.isArray(value)) || [];
+  const singularRunID = firstNonEmptyString(
+    row.activeRunId,
+    row.activeRunID,
+    row.active_run_id,
+    entry.activeRunId,
+    entry.active_run_id,
+  );
   const activeRunIDs = activeRunValues
     .map((value) => firstNonEmptyString(value))
     .filter(Boolean);
@@ -525,42 +545,143 @@ function normalizedOpenClawSessionRow(row = {}) {
     sessionID: firstNonEmptyString(
       row.sessionId,
       row.sessionID,
+      row.session_id,
       row.id,
       entry.sessionId,
       entry.sessionID,
+      entry.session_id,
     ),
     sessionKey: firstNonEmptyString(
       row.key,
       row.sessionKey,
       row.canonicalSessionKey,
+      row.session_key,
+      row.canonical_session_key,
       entry.key,
       entry.sessionKey,
+      entry.session_key,
     ),
     label: firstNonEmptyString(row.label, entry.label),
     activeRunIDs,
-    hasActiveRun: typeof row.hasActiveRun === 'boolean'
-      ? row.hasActiveRun
+    hasActiveRun: typeof (row.hasActiveRun ?? row.has_active_run ?? entry.hasActiveRun ?? entry.has_active_run) === 'boolean'
+      ? (row.hasActiveRun ?? row.has_active_run ?? entry.hasActiveRun ?? entry.has_active_run)
       : activeRunIDs.length > 0,
-    createdAt: Number(
+    createdAt: timestampMilliseconds(
       row.sessionStartedAt
+      || row.session_started_at
       || row.createdAt
+      || row.created_at
       || entry.sessionStartedAt
+      || entry.session_started_at
       || entry.createdAt
+      || entry.created_at
       || row.updatedAt
+      || row.updated_at
       || entry.updatedAt
-      || Date.now()
+      || entry.updated_at
     ),
-    updatedAt: Number(
+    updatedAt: timestampMilliseconds(
       row.lastInteractionAt
+      || row.last_interaction_at
       || row.updatedAt
+      || row.updated_at
       || entry.lastInteractionAt
+      || entry.last_interaction_at
       || entry.updatedAt
+      || entry.updated_at
       || row.sessionStartedAt
+      || row.session_started_at
       || entry.sessionStartedAt
-      || Date.now()
+      || entry.session_started_at
     ),
     archived: Boolean(row.archived ?? entry.archived),
-    abortedLastRun: Boolean(row.abortedLastRun ?? entry.abortedLastRun),
+    abortedLastRun: Boolean(row.abortedLastRun ?? row.aborted_last_run ?? entry.abortedLastRun ?? entry.aborted_last_run),
+  };
+}
+
+function hermesSessionRows(result) {
+  if (Array.isArray(result)) return result;
+  for (const candidate of [
+    result?.sessions,
+    result?.items,
+    result?.data?.sessions,
+    result?.data?.items,
+    result?.result?.sessions,
+    result?.result?.items,
+  ]) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
+}
+
+function normalizedHermesLiveSessionRow(row = {}) {
+  const entry = row?.session && typeof row.session === 'object'
+    ? row.session
+    : (row?.entry && typeof row.entry === 'object' ? row.entry : {});
+  return {
+    source: row,
+    liveSessionID: firstNonEmptyString(
+      row.id,
+      row.session_id,
+      row.sessionId,
+      row.sessionID,
+      entry.id,
+      entry.session_id,
+      entry.sessionId,
+    ),
+    storedSessionID: firstNonEmptyString(
+      row.session_key,
+      row.sessionKey,
+      row.stored_session_id,
+      row.storedSessionId,
+      row.storedSessionID,
+      row.resumed,
+      entry.session_key,
+      entry.sessionKey,
+      entry.stored_session_id,
+      entry.storedSessionId,
+    ),
+    status: firstNonEmptyString(
+      row.status,
+      row.state,
+      row.run_state,
+      row.runState,
+      entry.status,
+      entry.state,
+    ).toLowerCase(),
+  };
+}
+
+function normalizedHermesSessionResult(result = {}) {
+  const candidate = result?.result && typeof result.result === 'object'
+    ? result.result
+    : (result?.data && typeof result.data === 'object' ? result.data : result);
+  return normalizedHermesLiveSessionRow(candidate);
+}
+
+function normalizedHermesStoredSessionRow(row = {}) {
+  const entry = row?.session && typeof row.session === 'object' ? row.session : {};
+  return {
+    source: row,
+    sessionID: firstNonEmptyString(
+      row.id,
+      row.session_id,
+      row.sessionId,
+      row.sessionID,
+      row.key,
+      entry.id,
+      entry.session_id,
+      entry.sessionId,
+    ),
+    createdAt: timestampMilliseconds(
+      row.started_at || row.startedAt || row.created_at || row.createdAt
+      || entry.started_at || entry.startedAt || entry.created_at || entry.createdAt,
+    ),
+    updatedAt: timestampMilliseconds(
+      row.last_active || row.lastActive || row.updated_at || row.updatedAt
+      || entry.last_active || entry.lastActive || entry.updated_at || entry.updatedAt
+      || row.started_at || row.startedAt,
+    ),
   };
 }
 
@@ -763,13 +884,13 @@ function userFacingOpenClawGatewayError(error) {
     return 'OpenClaw reached the context limit for this agent session. Start a fresh agent session and retry the request.';
   }
   if (/gateway module was not found|callGateway export|module not found|cannot find module/i.test(message)) {
-    return 'OpenClaw is not available to the Companion on this Mac. Open or reinstall OpenClaw, then retry from VoiceClaw.';
+    return 'OpenClaw is not available to the Companion on this Mac. Open or reinstall OpenClaw, then retry from VoiceClaw Realtime.';
   }
   if (/ECONNREFUSED|connection refused|failed to connect|could not connect|not running|socket hang up|EHOSTUNREACH|ENETUNREACH/i.test(message)) {
-    return 'OpenClaw is not running on this Mac, or the Companion cannot reach it. Open OpenClaw, wait until it is ready, then retry from VoiceClaw.';
+    return 'OpenClaw is not running on this Mac, or the Companion cannot reach it. Open OpenClaw, wait until it is ready, then retry from VoiceClaw Realtime.';
   }
   if (/unauthorized|forbidden|login|oauth|auth/i.test(message)) {
-    return 'OpenClaw could not authenticate this request. Open OpenClaw on the Mac, confirm your ChatGPT login, then retry from VoiceClaw.';
+    return 'OpenClaw could not authenticate this request. Open OpenClaw on the Mac, confirm your ChatGPT login, then retry from VoiceClaw Realtime.';
   }
   return null;
 }
@@ -1363,10 +1484,10 @@ function userFacingHermesError(error) {
     return 'Hermes could not resume that prior VoiceClaw session. Try the request again to start a fresh Hermes session.';
   }
   if (/ENOENT|no such file|not found/i.test(combined)) {
-    return 'Hermes Agent is not available to the Companion on this Mac. Install Hermes Agent or set HERMES_BIN, then retry from VoiceClaw.';
+    return 'Hermes Agent is not available to the Companion on this Mac. Install Hermes Agent or set HERMES_BIN, then retry from VoiceClaw Realtime.';
   }
   if (/unauthorized|forbidden|login|oauth|auth/i.test(combined)) {
-    return 'Hermes could not authenticate this request. Open Hermes on the Mac, confirm its provider login, then retry from VoiceClaw.';
+    return 'Hermes could not authenticate this request. Open Hermes on the Mac, confirm its provider login, then retry from VoiceClaw Realtime.';
   }
   if (/timed out|timeout/i.test(combined)) {
     return 'Hermes took too long to finish that. Try again or make it a smaller request.';
@@ -1796,18 +1917,18 @@ export function createVoiceRemoteSessionRuntimeAdapter({
   };
   const activeHermesSessions = async () => {
     const result = await gatewayForHermes().request('session.active_list', {});
-    return Array.isArray(result?.sessions) ? result.sessions : [];
+    return hermesSessionRows(result).map(normalizedHermesLiveSessionRow);
   };
   const ensureHermesLiveBinding = async (binding) => {
     const active = await activeHermesSessions();
-    const current = active.find((row) => row.session_key === binding.runtimeSessionID
-      || row.id === binding.liveSessionID);
-    if (current?.id) {
+    const current = active.find((row) => row.storedSessionID === binding.runtimeSessionID
+      || row.liveSessionID === binding.liveSessionID);
+    if (current?.liveSessionID) {
       return hermesBinding({
         routeID: binding.routeID,
         agentID: binding.agentID,
         sessionID: binding.runtimeSessionID,
-        liveSessionID: String(current.id),
+        liveSessionID: current.liveSessionID,
       });
     }
     await hermesSessionStore.attach(binding.runtimeSessionID);
@@ -1815,10 +1936,9 @@ export function createVoiceRemoteSessionRuntimeAdapter({
       session_id: binding.runtimeSessionID,
       source: 'voiceclaw',
     });
-    const liveSessionID = String(resumed?.session_id || '').trim();
-    const storedSessionID = String(
-      resumed?.session_key || resumed?.resumed || binding.runtimeSessionID,
-    ).trim();
+    const normalizedResume = normalizedHermesSessionResult(resumed);
+    const liveSessionID = normalizedResume.liveSessionID;
+    const storedSessionID = normalizedResume.storedSessionID || binding.runtimeSessionID;
     if (!liveSessionID || storedSessionID !== binding.runtimeSessionID) {
       throw new Error('Hermes resumed a different runtime session identity.');
     }
@@ -1874,14 +1994,15 @@ export function createVoiceRemoteSessionRuntimeAdapter({
         activeHermesSessions(),
       ]);
       return (Array.isArray(rows) ? rows : []).map((row) => {
-        const sessionID = String(row.id || '').trim();
-        const live = active.find((candidate) => candidate.session_key === sessionID);
+        const stored = normalizedHermesStoredSessionRow(row);
+        const sessionID = stored.sessionID;
+        const live = active.find((candidate) => candidate.storedSessionID === sessionID);
         const running = live?.status === 'streaming' || live?.status === 'running';
         return {
           sessionID,
           sessionKey: `hermes:${sessionID}`,
-          createdAt: Number(row.started_at || Date.now()) * 1000,
-          updatedAt: Number(row.last_active || row.started_at || Date.now()) * 1000,
+          createdAt: stored.createdAt,
+          updatedAt: stored.updatedAt,
           state: 'detached',
           runID: null,
           runState: running ? 'running' : 'idle',
@@ -1889,7 +2010,7 @@ export function createVoiceRemoteSessionRuntimeAdapter({
             routeID,
             agentID,
             sessionID,
-            liveSessionID: String(live?.id || ''),
+            liveSessionID: live?.liveSessionID || '',
           }),
         };
       });
@@ -1913,8 +2034,9 @@ export function createVoiceRemoteSessionRuntimeAdapter({
         title,
         close_on_disconnect: false,
       });
-      const sessionID = String(created?.stored_session_id || '').trim();
-      const liveSessionID = String(created?.session_id || '').trim();
+      const normalizedCreate = normalizedHermesSessionResult(created);
+      const sessionID = normalizedCreate.storedSessionID;
+      const liveSessionID = normalizedCreate.liveSessionID;
       if (!sessionID || !liveSessionID) {
         if (liveSessionID) {
           await gatewayForHermes().request('session.close', { session_id: liveSessionID }).catch(() => null);
@@ -2223,8 +2345,8 @@ export function createVoiceRemoteSessionRuntimeAdapter({
     async observeSession({ session, binding, runID }) {
       if (session.runtime === 'hermes') {
         const active = await activeHermesSessions();
-        const row = active.find((candidate) => candidate.session_key === binding.runtimeSessionID
-          || candidate.id === binding.liveSessionID);
+        const row = active.find((candidate) => candidate.storedSessionID === binding.runtimeSessionID
+          || candidate.liveSessionID === binding.liveSessionID);
         const running = row?.status === 'streaming' || row?.status === 'running';
         return {
           runID,
@@ -2233,12 +2355,12 @@ export function createVoiceRemoteSessionRuntimeAdapter({
             : (session.runState === 'starting' || session.runState === 'running'
                 ? 'unknown'
                 : session.runState),
-          binding: row?.id
+          binding: row?.liveSessionID
             ? hermesBinding({
                 routeID: binding.routeID,
                 agentID: binding.agentID,
                 sessionID: binding.runtimeSessionID,
-                liveSessionID: String(row.id),
+                liveSessionID: row.liveSessionID,
               })
             : binding,
         };
@@ -2272,6 +2394,10 @@ export const __dialogueTestHooks = Object.freeze({
   openClawGatewayModuleCandidates,
   openClawSessionRows,
   normalizedOpenClawSessionRow,
+  hermesSessionRows,
+  normalizedHermesLiveSessionRow,
+  normalizedHermesSessionResult,
+  normalizedHermesStoredSessionRow,
   isOpenClawContextOverflowReply,
   compactOpenClawSession,
   parseHermesChatOutput,

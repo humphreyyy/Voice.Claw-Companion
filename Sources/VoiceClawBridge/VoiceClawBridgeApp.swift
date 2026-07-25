@@ -6,7 +6,7 @@ struct VoiceClawBridgeApp: App {
     @StateObject private var store = BridgeStore()
 
     var body: some Scene {
-        WindowGroup("VoiceClaw Companion", id: "main") {
+        WindowGroup(VoiceClawBranding.companionDisplayName, id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 920, minHeight: 660)
         }
@@ -37,7 +37,7 @@ struct VoiceClawBridgeApp: App {
     }
 
     private var menuBarTitle: String {
-        store.updateAvailable ? "Update" : "VoiceClaw"
+        store.updateAvailable ? "Update" : "VoiceClaw Realtime"
     }
 
     private var menuBarSystemImage: String {
@@ -89,7 +89,7 @@ private struct CompanionMenuBarView: View {
         Button {
             openMainWindow()
         } label: {
-            Label("Show VoiceClaw Companion", systemImage: "macwindow")
+            Label("Show VoiceClaw Realtime Companion", systemImage: "macwindow")
         }
 
         Button {
@@ -134,7 +134,7 @@ private struct CompanionMenuBarView: View {
 
         Divider()
 
-        Button("Quit VoiceClaw Companion") {
+        Button("Quit VoiceClaw Realtime Companion") {
             NSApp.terminate(nil)
         }
     }

@@ -12,9 +12,15 @@ normalizeProcessPath();
 
 const WHISPER_CLI = executablePath(process.env.WHISPER_CLI || 'whisper-cli');
 const FFMPEG_BIN = executablePath(process.env.FFMPEG_BIN || 'ffmpeg');
-const WHISPER_SMALL_MODEL = join(os.homedir(), '.openclaw', 'models', 'ggml-small.bin');
-const WHISPER_MEDIUM_MODEL = join(os.homedir(), '.openclaw', 'models', 'ggml-medium.bin');
-const WHISPER_MODEL = process.env.WHISPER_MODEL || (existsSync(WHISPER_SMALL_MODEL) ? WHISPER_SMALL_MODEL : WHISPER_MEDIUM_MODEL);
+const VOICECLAW_MODEL_DIR = process.env.VOICECLAW_MODEL_DIR
+  || join(os.homedir(), 'Library', 'Application Support', 'VoiceClaw Realtime Companion', 'Models');
+const LEGACY_OPENCLAW_MODEL_DIR = join(os.homedir(), '.openclaw', 'models');
+const WHISPER_MODEL = process.env.WHISPER_MODEL || [
+  join(VOICECLAW_MODEL_DIR, 'ggml-small.bin'),
+  join(VOICECLAW_MODEL_DIR, 'ggml-medium.bin'),
+  join(LEGACY_OPENCLAW_MODEL_DIR, 'ggml-small.bin'),
+  join(LEGACY_OPENCLAW_MODEL_DIR, 'ggml-medium.bin'),
+].find((candidate) => existsSync(candidate)) || join(VOICECLAW_MODEL_DIR, 'ggml-small.bin');
 const ASR_TIMEOUT_MS = Number.parseInt(process.env.ASR_TIMEOUT_MS || '25000', 10);
 const FFMPEG_TIMEOUT_MS = Number.parseInt(process.env.FFMPEG_TIMEOUT_MS || '12000', 10);
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(os.homedir(), '.openclaw', 'openclaw.json');
