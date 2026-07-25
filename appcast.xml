@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.131</title>
+            <pubDate>Sat, 25 Jul 2026 22:23:45 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607251922</sparkle:version>
+            <sparkle:shortVersionString>0.1.131</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.131</h2><ul><li>Uses the supported OpenClaw Gateway protocol tied to the selected OpenClaw installation, with an exact-binary CLI fallback.</li><li>Supports legacy agents.list, current agents.entries, and mixed OpenClaw agent/session response shapes.</li><li>Keeps the selected model route separate from the actual OpenClaw agent and reports structured, retryable runtime errors.</li><li>Adds runtime capability negotiation for current iPhone and Apple Watch builds while preserving compatibility with older clients.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.131/VoiceClawCompanion-0.1.131-202607251922.dmg" length="8565540" type="application/octet-stream" sparkle:edSignature="ix2w4SQLTLaqTjDJjjgMyeXGw8QegskmFVm47NvGVUFaMarrKo5LZRwgLJOkO2WvO20UBVO5omhUWCSbalXbAQ=="/>
+        </item>
+        <item>
             <title>0.1.130</title>
             <pubDate>Sat, 25 Jul 2026 08:53:01 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -28,18 +40,6 @@
 </ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.129/VoiceClawCompanion-0.1.129-202607240406.dmg" length="3780272" type="application/octet-stream" sparkle:edSignature="r3M5/VJ3oGjUD4oREFtnanxqBCdmA884Nj5t2Z/XVqXYjmigbfUaLG+vJV8fZ8/dbXqM+fNnyk5Nsg7JXO1qBg=="/>
-        </item>
-        <item>
-            <title>0.1.128</title>
-            <pubDate>Fri, 24 Jul 2026 05:06:03 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607240202</sparkle:version>
-            <sparkle:shortVersionString>0.1.128</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.128</h2><ul><li>Preserves Voice Engine continuity across supported route and agent-session changes.</li><li>Adds durable Codex threads and same-thread compaction recovery.</li><li>Adds OpenClaw same-session compaction recovery and current/legacy schema compatibility.</li><li>Synchronizes VoiceClaw route, engine, action, and agent-session capabilities.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.128/VoiceClawCompanion-0.1.128-202607240202.dmg" length="3779725" type="application/octet-stream" sparkle:edSignature="uilo5FyQWLkaODI0DSmi6ZT3UzvUuA9AtR7gFeGLmX5i9SJJGBbtT7V7kJ+jIiCj7afdLa3NW9hj6X+P/iekBg=="/>
         </item>
     </channel>
 </rss>
