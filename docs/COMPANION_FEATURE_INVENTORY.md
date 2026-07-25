@@ -1,6 +1,6 @@
 # VoiceClaw Realtime Companion Feature Inventory
 
-Reviewed from source on 2026-05-15.
+Reviewed from source on 2026-07-25.
 
 This document inventories the macOS Companion app and its bundled bridge runtime.
 
@@ -188,6 +188,10 @@ Key endpoints:
 - `GET /config`: pairing/runtime config for the phone.
 - `POST /realtime/session`: creates a GPT-Realtime-2 WebRTC session via OpenAI Realtime Calls, using API key or OpenClaw OAuth based on preferences.
 - `GET /realtime/status`: reports runtime, queue, active OpenClaw, sideband, and auth state.
+- `GET /realtime/runtime-capabilities?runtime=openclaw`: reports the selected
+  OpenClaw executable/config identity, negotiated Gateway protocol, verified
+  methods, canonical default agent, and supported session operations. A 404
+  from an older Companion is treated by newer Apple clients as legacy mode.
 - `GET /realtime/auth/status`: reports OpenClaw OAuth/API-key auth status.
 - `POST /realtime/prewarm`: prewarms OpenClaw processing.
 - `POST /realtime/openclaw-turn`: sends one OpenClaw turn.
@@ -195,6 +199,15 @@ Key endpoints:
 - `POST /realtime/cancel`: cancels active OpenClaw work.
 - `POST /realtime/disconnect`: disconnects a realtime session while preserving useful cleanup.
 - `GET /realtime` and `/realtime.html`: local web client routes retained for runtime/debugging.
+
+OpenClaw integration uses the supported Gateway client protocol associated with
+the selected OpenClaw installation. If that client cannot be loaded, the bridge
+falls back to `openclaw gateway call` through the exact selected executable. It
+must not import private `dist/call.runtime.js` files or select a globally
+installed OpenClaw runtime independently of the configured installation. Raw
+config parsing is a compatibility fallback for agent discovery, and supports
+both legacy `agents.list` and current keyed `agents.entries` layouts. The model
+route and the actual OpenClaw agent are carried as separate wire identities.
 
 ## Realtime Auth
 

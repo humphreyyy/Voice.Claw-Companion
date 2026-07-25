@@ -85,6 +85,28 @@ test('an attached agent runtime remains usable when no explicit runtime override
   assert.equal(resolved.boundRemoteSession, hermesSession);
 });
 
+test('processing normalization preserves separate model route and runtime agent identities', () => {
+  const current = outerHFIntegration.normalizeRealtimeProcessingPayload({
+    agent: 'julian',
+    openClawModel: 'gpt-5.6-sol',
+    routeMode: 'openclaw-bridge',
+    processing: {
+      agent: 'gpt-5.6-sol',
+      thinking: 'low',
+    },
+  });
+  assert.equal(current.agent, 'gpt-5.6-sol');
+  assert.equal(current.runtimeAgentID, 'julian');
+  assert.equal(current.runtime, 'openclaw');
+
+  const legacy = outerHFIntegration.normalizeRealtimeProcessingPayload({
+    agent: 'gpt-5.5',
+    routeMode: 'openclaw-bridge',
+  });
+  assert.equal(legacy.agent, 'gpt-5.5');
+  assert.equal(legacy.runtimeAgentID, undefined);
+});
+
 test('sidecar interruption aborts an actual delayed outer tool with stable downstream identity', async () => {
   const controller = new AbortController();
   let downstream = null;

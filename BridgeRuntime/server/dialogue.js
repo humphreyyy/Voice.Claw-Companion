@@ -4,17 +4,16 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+
+import { callOpenClawGateway } from './openclaw-gateway.js';
 
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw';
 const HERMES_BIN = process.env.HERMES_BIN || join(os.homedir(), '.local', 'bin', 'hermes');
 const HERMES_HOME = process.env.HERMES_HOME || join(os.homedir(), '.hermes');
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(os.homedir(), '.openclaw', 'openclaw.json');
-const OPENCLAW_INSTALL_PATH = process.env.OPENCLAW_INSTALL_PATH || join(os.homedir(), '.openclaw');
-const OPENCLAW_GATEWAY_MODULE = process.env.OPENCLAW_GATEWAY_MODULE || '';
 const DEFAULT_AGENT = process.env.INTERCOM_AGENT || process.env.OPENCLAW_AGENT || 'main';
 const DEFAULT_SESSION = process.env.INTERCOM_SESSION_ID || 'voice-intercom-default';
 const DEFAULT_THINKING = process.env.INTERCOM_THINKING || 'minimal';
@@ -454,45 +453,7 @@ function wait(ms) {
 
 async function resolveCallGateway() {
   if (callGatewayLoader) return callGatewayLoader;
-
-  callGatewayLoader = (async () => {
-    const binRealPath = (() => {
-      try { return realpathSync(OPENCLAW_BIN); } catch { return ''; }
-    })();
-    const candidates = openClawGatewayModuleCandidates({ binRealPath });
-
-    const modulePath = candidates.find((candidate) => existsSync(candidate));
-    if (!modulePath) {
-      throw new Error('OpenClaw gateway module was not found. Set OPENCLAW_GATEWAY_MODULE or install the OpenClaw CLI package.');
-    }
-
-    const module = await import(pathToFileURL(modulePath).href);
-    if (typeof module.callGateway !== 'function') {
-      throw new Error(`OpenClaw gateway module has no callGateway export: ${modulePath}`);
-    }
-    return module.callGateway;
-  })();
-
-  return callGatewayLoader;
-}
-
-function openClawGatewayModuleCandidates({
-  gatewayModule = OPENCLAW_GATEWAY_MODULE,
-  installPath = OPENCLAW_INSTALL_PATH,
-  binRealPath = '',
-} = {}) {
-  const binDirectory = binRealPath ? dirname(binRealPath) : '';
-  return [...new Set([
-    gatewayModule,
-    // Current source installs place openclaw.mjs and dist/ beside each other.
-    binDirectory ? join(binDirectory, 'dist', 'call.runtime.js') : '',
-    // Older package layouts put the executable one directory below package root.
-    binDirectory ? join(binDirectory, '..', 'dist', 'call.runtime.js') : '',
-    join(installPath, 'dist', 'call.runtime.js'),
-    join(installPath, 'node_modules', 'openclaw', 'dist', 'call.runtime.js'),
-    '/opt/homebrew/lib/node_modules/openclaw/dist/call.runtime.js',
-    '/usr/local/lib/node_modules/openclaw/dist/call.runtime.js',
-  ].filter(Boolean))];
+  return callOpenClawGateway;
 }
 
 function firstNonEmptyString(...values) {
@@ -883,7 +844,7 @@ function userFacingOpenClawGatewayError(error) {
   if (isOpenClawContextOverflowReply(message)) {
     return 'OpenClaw reached the context limit for this agent session. Start a fresh agent session and retry the request.';
   }
-  if (/gateway module was not found|callGateway export|module not found|cannot find module/i.test(message)) {
+  if (/runtime_executable_missing|configured OpenClaw executable was not found|ENOENT/i.test(message)) {
     return 'OpenClaw is not available to the Companion on this Mac. Open or reinstall OpenClaw, then retry from VoiceClaw Realtime.';
   }
   if (/ECONNREFUSED|connection refused|failed to connect|could not connect|not running|socket hang up|EHOSTUNREACH|ENETUNREACH/i.test(message)) {
@@ -2204,8 +2165,9 @@ export function createVoiceRemoteSessionRuntimeAdapter({
       const onAbort = () => {
         if (settled) return;
         settled = true;
-        const error = signal.reason instanceof Error ? signal.reason : new Error('aborted');
-        error.name = 'AbortError';
+        const reason = signal.reason instanceof Error ? signal.reason : null;
+        const error = new Error(reason?.message || 'aborted', reason ? { cause: reason } : undefined);
+        Object.defineProperty(error, 'name', { value: 'AbortError', configurable: true });
         error.cancelled = true;
         if (signal.reason?.runtimeStopConfirmed !== true) {
           gateway.request('session.interrupt', { session_id: liveSessionID }, {
@@ -2391,7 +2353,6 @@ export function createVoiceRemoteSessionRuntimeAdapter({
 }
 
 export const __dialogueTestHooks = Object.freeze({
-  openClawGatewayModuleCandidates,
   openClawSessionRows,
   normalizedOpenClawSessionRow,
   hermesSessionRows,

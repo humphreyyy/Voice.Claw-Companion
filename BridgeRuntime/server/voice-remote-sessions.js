@@ -26,13 +26,46 @@ const RUN_STATES = new Set(['idle', 'starting', 'running', 'completed', 'failed'
 const TERMINAL_RUN_STATES = new Set(['completed', 'failed', 'cancelled']);
 
 export class VoiceRemoteSessionError extends Error {
-  constructor(code, message, status = 400, details = undefined) {
+  constructor(code, message, status = 400, details = undefined, retryable = false) {
     super(message);
     this.name = 'VoiceRemoteSessionError';
     this.code = code;
     this.status = status;
     this.details = details;
+    this.retryable = retryable === true;
   }
+}
+
+function runtimeErrorDetails(error, extras = {}) {
+  const nested = error?.details && typeof error.details === 'object' && !Array.isArray(error.details)
+    ? cloneValue(error.details)
+    : {};
+  return {
+    ...nested,
+    ...extras,
+    subsystem: String(error?.subsystem || nested.subsystem || 'remote-runtime').slice(0, 128),
+    cause: String(error?.message || error || 'Runtime request failed.').slice(0, 512),
+  };
+}
+
+function voiceRemoteRuntimeError(error, {
+  fallbackCode,
+  fallbackMessage,
+  runtime = '',
+} = {}) {
+  const runtimeCode = String(error?.code || '').trim();
+  const code = /^[a-z][a-z0-9_]{1,127}$/.test(runtimeCode) ? runtimeCode : fallbackCode;
+  const status = Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599
+    ? error.status
+    : 503;
+  const retryable = error?.retryable === true;
+  return new VoiceRemoteSessionError(
+    code,
+    code === fallbackCode ? fallbackMessage : String(error?.message || fallbackMessage).slice(0, 512),
+    status,
+    runtimeErrorDetails(error, { runtime }),
+    retryable,
+  );
 }
 
 function cloneValue(value) {
@@ -891,12 +924,11 @@ export class VoiceRemoteSessionService {
     try {
       raw = await this._requireRuntimeAdapter().startSession({ ...route });
     } catch (error) {
-      throw new VoiceRemoteSessionError(
-        'runtime_start_failed',
-        `The ${route.runtime} runtime could not start a session.`,
-        503,
-        { runtime: route.runtime, cause: String(error?.message || error).slice(0, 512) },
-      );
+      throw voiceRemoteRuntimeError(error, {
+        fallbackCode: 'runtime_start_failed',
+        fallbackMessage: `The ${route.runtime} runtime could not start a session.`,
+        runtime: route.runtime,
+      });
     }
     const descriptor = normalizeRuntimeDescriptor({ ...raw, state: 'attached' }, route, now);
     const key = storageKey(route.runtime, route.agentID, descriptor.sessionID);
@@ -945,12 +977,11 @@ export class VoiceRemoteSessionService {
         recentWindowMs: this.recentWindowMs,
       });
     } catch (error) {
-      throw new VoiceRemoteSessionError(
-        'runtime_discovery_failed',
-        `The ${route.runtime} runtime could not discover recent sessions.`,
-        503,
-        { runtime: route.runtime, cause: String(error?.message || error).slice(0, 512) },
-      );
+      throw voiceRemoteRuntimeError(error, {
+        fallbackCode: 'runtime_discovery_failed',
+        fallbackMessage: `The ${route.runtime} runtime could not discover recent sessions.`,
+        runtime: route.runtime,
+      });
     }
     if (!Array.isArray(values)) {
       throw new VoiceRemoteSessionError('invalid_runtime_response', 'Runtime session discovery did not return a list.', 500);
@@ -1550,7 +1581,12 @@ export function createVoiceRemoteSessionHTTPHandler({
       } catch (error) {
         const lifecycleError = error instanceof VoiceRemoteSessionError
           ? error
-          : new VoiceRemoteSessionError('lifecycle_internal_error', 'The Companion could not complete the remote-session lifecycle request.', 500);
+          : (error?.code
+              ? voiceRemoteRuntimeError(error, {
+                  fallbackCode: 'lifecycle_internal_error',
+                  fallbackMessage: 'The Companion could not complete the remote-session lifecycle request.',
+                })
+              : new VoiceRemoteSessionError('lifecycle_internal_error', 'The Companion could not complete the remote-session lifecycle request.', 500));
         if (!(error instanceof VoiceRemoteSessionError)) console.error('[voice-remote-sessions]', error?.stack || error);
         if (!res.headersSent) {
           writeJSON(res, lifecycleError.status, {
@@ -1558,6 +1594,7 @@ export function createVoiceRemoteSessionHTTPHandler({
             error: {
               code: lifecycleError.code,
               message: lifecycleError.message,
+              retryable: lifecycleError.retryable,
               ...(lifecycleError.details ? { details: lifecycleError.details } : {}),
             },
           });

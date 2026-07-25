@@ -48,7 +48,10 @@ import {
   voiceCredentialTransportFromNodeRequest,
 } from './voice-credential-boundary.js';
 import { VoiceRemoteSessionService, createVoiceRemoteSessionHTTPHandler } from './voice-remote-sessions.js';
-import { configuredOpenClawAgents, parseOpenClawConfig } from './openclaw-config.js';
+import {
+  discoverOpenClawAgents,
+  openClawRuntimeCapabilities,
+} from './openclaw-gateway.js';
 import {
   VOICE_STREAM_WIRE_FORMAT,
   VoiceStartSessionHandshakeRegistry,
@@ -543,7 +546,7 @@ function getOpenAIApiKey() {
   return loadOpenAIKeyFromConfig() || process.env.OPENAI_API_KEY || '';
 }
 
-function voiceRemoteAgentCatalog(runtimeValue = '') {
+async function voiceRemoteAgentCatalog(runtimeValue = '') {
   const runtime = String(runtimeValue || '').trim().toLowerCase() === 'hermes'
     ? 'hermes'
     : 'openclaw';
@@ -555,33 +558,51 @@ function voiceRemoteAgentCatalog(runtimeValue = '') {
         || bridgeConfig.HermesAgent
         || 'hermes',
     ).trim() || 'hermes';
-    return [{
-      runtime,
-      id,
-      label: id === 'hermes' ? 'Hermes' : id,
-      isDefault: true,
-      sources: ['hermes-runtime'],
-    }];
+    return {
+      agents: [{
+        runtime,
+        id,
+        label: id === 'hermes' ? 'Hermes' : id,
+        isDefault: true,
+        sources: ['hermes-runtime'],
+      }],
+      defaultAgentID: id,
+      source: 'hermes-runtime',
+      degradedReasons: [],
+    };
   }
 
   try {
-    const parsed = parseOpenClawConfig(readFileSync(OPENCLAW_CONFIG, 'utf8'));
-    return configuredOpenClawAgents(parsed).agents.map((agent) => ({
-      runtime,
-      id: agent.id,
-      label: agent.id,
-      isDefault: agent.isDefault,
-      sources: agent.sources,
-    }));
-  } catch {
+    const catalog = await discoverOpenClawAgents({ selectedAgentID: OPENCLAW_AGENT_NAME });
+    return {
+      agents: catalog.agents.map((agent) => ({
+        runtime,
+        id: agent.id,
+        label: agent.label || agent.id,
+        isDefault: agent.isDefault,
+        workspace: agent.workspace || '',
+        configured: agent.configured,
+        runtimeVisible: agent.runtimeVisible,
+        sources: agent.sources,
+      })),
+      defaultAgentID: catalog.defaultAgentID,
+      source: catalog.source,
+      degradedReasons: catalog.degradedReasons,
+    };
+  } catch (error) {
     const id = String(OPENCLAW_AGENT_NAME || 'main').trim() || 'main';
-    return [{
-      runtime,
-      id,
-      label: id,
-      isDefault: true,
-      sources: ['runtime-default'],
-    }];
+    return {
+      agents: [{
+        runtime,
+        id,
+        label: id,
+        isDefault: true,
+        sources: ['runtime-default'],
+      }],
+      defaultAgentID: id,
+      source: 'runtime-default',
+      degradedReasons: [String(error?.code || 'agent_catalog_unavailable')],
+    };
   }
 }
 
@@ -3113,7 +3134,14 @@ function normalizeRealtimeProcessingPayload(payload = {}) {
   const processing = source.processing && typeof source.processing === 'object' && !Array.isArray(source.processing)
     ? { ...source.processing }
     : {};
+  if (!processing.agent && source.openClawModel) processing.agent = source.openClawModel;
   if (!processing.agent && source.agent) processing.agent = source.agent;
+  if (!processing.runtimeAgentID && source.runtimeAgentID) processing.runtimeAgentID = source.runtimeAgentID;
+  if (!processing.runtimeAgentID && source.agent && processing.agent !== source.agent) {
+    // Older Apple clients sent the actual OpenClaw agent at the top level while
+    // using processing.agent for the model route. Preserve both meanings.
+    processing.runtimeAgentID = source.agent;
+  }
   if (!processing.thinking && source.reasoning) processing.thinking = source.reasoning;
   if (!processing.runtime && !processing.agentRuntime) {
     const rawRoute = String(source.routeMode || source.route || '').toLowerCase();
@@ -5979,7 +6007,7 @@ const httpServer = createServer(async (req, res) => {
         && urlPath === `${BASE_PATH}/realtime/voice-remote-sessions/agents`) {
       const requestURL = new URL(req.url, `http://localhost:${PORT}`);
       const runtime = requestURL.searchParams.get('runtime') || 'openclaw';
-      const agents = voiceRemoteAgentCatalog(runtime);
+      const catalog = await voiceRemoteAgentCatalog(runtime);
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Cache-Control': 'no-store',
@@ -5987,9 +6015,38 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({
         ok: true,
         runtime: String(runtime).toLowerCase() === 'hermes' ? 'hermes' : 'openclaw',
-        agents,
+        agents: catalog.agents,
+        defaultAgentID: catalog.defaultAgentID,
+        source: catalog.source,
+        degradedReasons: catalog.degradedReasons,
         discoveredAt: Date.now(),
       }));
+      return;
+    }
+
+    if (req.method === 'GET'
+        && urlPath === `${BASE_PATH}/realtime/runtime-capabilities`) {
+      const requestURL = new URL(req.url, `http://localhost:${PORT}`);
+      const runtime = String(requestURL.searchParams.get('runtime') || 'openclaw').trim().toLowerCase();
+      if (runtime !== 'openclaw') {
+        res.writeHead(422, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: {
+            code: 'unsupported_runtime',
+            message: 'Runtime capability negotiation currently supports OpenClaw.',
+            retryable: false,
+            details: { runtime },
+          },
+        }));
+        return;
+      }
+      const capabilities = await openClawRuntimeCapabilities({ selectedAgentID: OPENCLAW_AGENT_NAME });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      });
+      res.end(JSON.stringify({ ok: capabilities.status !== 'unavailable', capabilities }));
       return;
     }
 

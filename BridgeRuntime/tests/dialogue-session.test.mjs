@@ -119,20 +119,8 @@ test('explicit direct route identifiers preserve raw no-OpenClaw execution', () 
   }
 });
 
-test('OpenClaw gateway lookup prefers the package beside the configured CLI and retains legacy layouts', () => {
-  const candidates = __dialogueTestHooks.openClawGatewayModuleCandidates({
-    gatewayModule: '/explicit/call.runtime.js',
-    installPath: '/configured/openclaw',
-    binRealPath: '/current/openclaw/openclaw.mjs',
-  });
-
-  assert.deepEqual(candidates.slice(0, 5), [
-    '/explicit/call.runtime.js',
-    '/current/openclaw/dist/call.runtime.js',
-    '/current/dist/call.runtime.js',
-    '/configured/openclaw/dist/call.runtime.js',
-    '/configured/openclaw/node_modules/openclaw/dist/call.runtime.js',
-  ]);
+test('OpenClaw dialogue no longer exposes private runtime module lookup', () => {
+  assert.equal(__dialogueTestHooks.openClawGatewayModuleCandidates, undefined);
 });
 
 test('OpenClaw session normalization accepts current, legacy, snake-case, and nested response fields', () => {
