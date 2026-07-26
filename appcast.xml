@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.134</title>
+            <pubDate>Sun, 26 Jul 2026 13:48:36 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607261046</sparkle:version>
+            <sparkle:shortVersionString>0.1.134</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.134</h2><ul><li>Reconciles durable Work tasks periodically and after Companion reconnects.</li><li>Recovers returned files and available OpenClaw or Hermes reply previews instead of replacing them with generic restart results.</li><li>Keeps outcome-unknown work visible for confirmation rather than falsely marking it failed.</li><li>Preserves newer or malformed task stores unchanged instead of silently resetting them.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.134/VoiceClawCompanion-0.1.134-202607261046.dmg" length="8562634" type="application/octet-stream" sparkle:edSignature="lL+bN0tu5SDtn565sNRkpb9DW4iu9lP9/DCICCKli9VqBLOxKjRuvTkjjQy2/oNsMHuXFDedP2U/PsAgcjobBw=="/>
+        </item>
+        <item>
             <title>0.1.133</title>
             <pubDate>Sun, 26 Jul 2026 09:57:24 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.132</h2><ul><li>Allows multiple independent VoiceClaw sessions for the same OpenClaw agent with collision-free runtime identities.</li><li>Discovers sessions across both current and legacy OpenClaw gateway schemas without requiring OpenClaw changes.</li><li>Improves durable Work task retries, event delivery, multiline Hermes prompts, and returned-file instructions.</li><li>Preserves existing OpenClaw, Hermes, Codex, QR setup, and older-client compatibility.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.132/VoiceClawCompanion-0.1.132-202607260150.dmg" length="7837761" type="application/octet-stream" sparkle:edSignature="24hdPzo390t/7uulKUrkd2KJi5M4Vwczji+yL+252ZgIvjBxJsezNClSnIL9jl02E2Z5grOP7r4sZm/B+pP4Bg=="/>
-        </item>
-        <item>
-            <title>0.1.131</title>
-            <pubDate>Sat, 25 Jul 2026 22:23:45 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607251922</sparkle:version>
-            <sparkle:shortVersionString>0.1.131</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.131</h2><ul><li>Uses the supported OpenClaw Gateway protocol tied to the selected OpenClaw installation, with an exact-binary CLI fallback.</li><li>Supports legacy agents.list, current agents.entries, and mixed OpenClaw agent/session response shapes.</li><li>Keeps the selected model route separate from the actual OpenClaw agent and reports structured, retryable runtime errors.</li><li>Adds runtime capability negotiation for current iPhone and Apple Watch builds while preserving compatibility with older clients.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.131/VoiceClawCompanion-0.1.131-202607251922.dmg" length="8565540" type="application/octet-stream" sparkle:edSignature="ix2w4SQLTLaqTjDJjjgMyeXGw8QegskmFVm47NvGVUFaMarrKo5LZRwgLJOkO2WvO20UBVO5omhUWCSbalXbAQ=="/>
         </item>
     </channel>
 </rss>
