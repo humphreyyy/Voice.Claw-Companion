@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
@@ -19,7 +19,11 @@ async function waitFor(check, timeout = 2_000) {
   throw new Error('Timed out waiting for route task.');
 }
 
-function mockRemoteSessionService({ delayed = false } = {}) {
+function mockRemoteSessionService({
+  delayed = false,
+  observedState = 'running',
+  recoveredReply = '',
+} = {}) {
   const turns = [];
   const stops = [];
   let release;
@@ -52,7 +56,14 @@ function mockRemoteSessionService({ delayed = false } = {}) {
     },
     async steer({ sessionID, text }) { return { runID: `steered-${sessionID}-${text.length}` }; },
     async stop(input) { stops.push(input); return { stopped: true }; },
-    async observe({ sessionID }) { return { session: { sessionID, runState: 'running' } }; },
+    async observe({ sessionID }) { return { session: { sessionID, runState: observedState } }; },
+    async events() {
+      return {
+        events: recoveredReply
+          ? [{ type: 'message.complete', data: { preview: recoveredReply } }]
+          : [],
+      };
+    },
   };
 }
 
@@ -121,6 +132,79 @@ test('different runtimes execute concurrently and remain independently visible',
   remote.release();
   await waitFor(async () => (await service.list({ states: ['completed'] })).tasks.length === 2);
   assert.equal(remote.turns.length, 2);
+});
+
+test('periodic reconciliation never invalidates work owned by the current Companion process', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-reconcile-active-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const remote = mockRemoteSessionService({ delayed: true });
+  const service = new RouteTaskService({
+    statePath: join(directory, 'state.json'),
+    remoteSessionService: remote,
+  });
+  const created = await service.create({
+    target: { runtime: 'openclaw', route: 'openclaw.bridge', agentID: 'julian' },
+    text: 'Keep working while reconciliation runs.',
+  });
+  await waitFor(async () => (await service.get(created.task.taskID)).state === 'running');
+
+  const result = await service.reconcile();
+  assert.deepEqual(result.tasks, [{
+    taskID: created.task.taskID,
+    state: 'running',
+    ownedByCurrentProcess: true,
+  }]);
+  assert.equal((await service.get(created.task.taskID)).state, 'running');
+
+  remote.release();
+  await waitFor(async () => (await service.get(created.task.taskID)).state === 'completed');
+});
+
+test('restart reconciliation recovers the persisted runtime reply instead of inventing a generic result', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-reconcile-reply-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const statePath = join(directory, 'state.json');
+  const original = new RouteTaskService({
+    statePath,
+    remoteSessionService: mockRemoteSessionService({ delayed: true }),
+  });
+  const created = await original.create({
+    target: { runtime: 'openclaw', route: 'openclaw.bridge', agentID: 'julian' },
+    text: 'Finish this after a Companion reconnect.',
+  });
+  await waitFor(async () => (await original.get(created.task.taskID)).runtime.sessionID);
+
+  const recovered = new RouteTaskService({
+    statePath,
+    remoteSessionService: mockRemoteSessionService({
+      observedState: 'completed',
+      recoveredReply: 'Recovered OpenClaw result.',
+    }),
+  });
+  const result = await recovered.reconcile();
+  assert.equal(result.tasks[0].recoveredReply, true);
+  const task = await recovered.get(created.task.taskID);
+  assert.equal(task.state, 'completed');
+  assert.equal(task.result.text, 'Recovered OpenClaw result.');
+});
+
+test('unknown route-task schemas fail closed without overwriting retained state', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-schema-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const statePath = join(directory, 'state.json');
+  const retained = JSON.stringify({
+    schemaVersion: 999,
+    tasks: { retained: { future: true } },
+    receipts: {},
+  }, null, 2);
+  await writeFile(statePath, `${retained}\n`);
+  const service = new RouteTaskService({ statePath });
+
+  await assert.rejects(
+    service.list(),
+    (error) => error instanceof RouteTaskError && error.code === 'unsupported_state_schema',
+  );
+  assert.equal(await readFile(statePath, 'utf8'), `${retained}\n`);
 });
 
 test('cancelling one task stops only its bound runtime session', async (t) => {

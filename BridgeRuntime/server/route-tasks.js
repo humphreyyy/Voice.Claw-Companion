@@ -359,14 +359,30 @@ export class RouteTaskService {
     const active = (await this.list({ states: ['queued', 'running', 'awaitingApproval', 'waitingForUser', 'completing'], limit: 500 })).tasks;
     const outcomes = [];
     for (const task of active) {
+      if (this.active.has(task.taskID)) {
+        outcomes.push({ taskID: task.taskID, state: task.state, ownedByCurrentProcess: true });
+        continue;
+      }
       if (task.state === 'queued') {
         this.#launch(task.taskID);
         outcomes.push({ taskID: task.taskID, state: 'queued', relaunched: true });
         continue;
       }
+      const recoveredArtifacts = await this.#recoverArtifacts(task);
+      if (recoveredArtifacts.artifacts.length) {
+        await this.#completeRecoveredTask(task, {
+          reply: 'The requested file was recovered from the VoiceClaw Realtime Companion Artifact Inbox after reconnect.',
+          ...recoveredArtifacts,
+        });
+        outcomes.push({ taskID: task.taskID, state: recoveredArtifacts.warning ? 'completedWithArtifactWarning' : 'completed', recoveredArtifacts: recoveredArtifacts.artifacts.length });
+        continue;
+      }
       if (task.target.runtime === 'codex' || !task.runtime.sessionID || !this.remoteSessionService) {
-        await this.#fail(task.taskID, 'companion_restarted', 'The Companion restarted before this task returned a durable terminal result. Retry the task.');
-        outcomes.push({ taskID: task.taskID, state: 'failed' });
+        await this.#markRecoveryNeedsAttention(
+          task.taskID,
+          'The Companion restarted before it received a durable terminal result. The runtime identity is preserved, but the outcome could not be confirmed automatically.',
+        );
+        outcomes.push({ taskID: task.taskID, state: 'waitingForUser', outcomeUnknown: true });
         continue;
       }
       try {
@@ -376,24 +392,99 @@ export class RouteTaskService {
           await this.#update(task.taskID, 'task.reconciled', { progress: 'The runtime task is still running after Companion reconnect.' });
           outcomes.push({ taskID: task.taskID, state: 'running' });
         } else if (runState === 'completed') {
-          await this.#update(task.taskID, 'task.completed', {
-            state: 'completed',
-            progress: 'The runtime completed after Companion reconnect.',
-          }, (draft) => {
-            draft.result = { text: 'The runtime completed after Companion reconnect; ask for the result again if it is not visible.', source: draft.target.runtime };
-            draft.timestamps.completedAt = this.now();
+          const reply = await this.#recoverRemoteReply(task);
+          await this.#completeRecoveredTask(task, {
+            reply: reply || 'The runtime completed after Companion reconnect, but did not expose a recoverable reply preview.',
+            ...recoveredArtifacts,
           });
-          outcomes.push({ taskID: task.taskID, state: 'completed' });
+          outcomes.push({ taskID: task.taskID, state: recoveredArtifacts.warning ? 'completedWithArtifactWarning' : 'completed', recoveredReply: Boolean(reply) });
+        } else if (runState === 'failed' || runState === 'cancelled') {
+          await this.#fail(task.taskID, `runtime_${runState}`, `The runtime reported that the recovered task ${runState}.`);
+          outcomes.push({ taskID: task.taskID, state: runState === 'cancelled' ? 'cancelled' : 'failed' });
         } else {
-          await this.#fail(task.taskID, 'runtime_not_running', 'The runtime no longer reports this task as active. Retry the task.');
-          outcomes.push({ taskID: task.taskID, state: 'failed' });
+          await this.#markRecoveryNeedsAttention(
+            task.taskID,
+            'The runtime no longer reports this task as active, but its final outcome is not yet recoverable. Retry only after confirming the prior work did not complete.',
+          );
+          outcomes.push({ taskID: task.taskID, state: 'waitingForUser', outcomeUnknown: true });
         }
       } catch (error) {
-        await this.#fail(task.taskID, 'reconciliation_failed', String(error?.message || error));
-        outcomes.push({ taskID: task.taskID, state: 'failed' });
+        await this.#markRecoveryNeedsAttention(
+          task.taskID,
+          `The Companion could not reconcile the preserved runtime session: ${String(error?.message || error)}`,
+        );
+        outcomes.push({ taskID: task.taskID, state: 'waitingForUser', reconciliationError: true });
       }
     }
     return { tasks: outcomes };
+  }
+
+  async #recoverArtifacts(task) {
+    if (!this.artifactInbox || !task.request.artifactReturnRequested) {
+      return { artifacts: [], warning: null };
+    }
+    let warning = null;
+    try {
+      await this.artifactInbox.scanTask(task.taskID);
+    } catch (error) {
+      warning = String(error?.message || error);
+    }
+    try {
+      const listed = await this.artifactInbox.list({ taskID: task.taskID });
+      return { artifacts: listed.artifacts || [], warning };
+    } catch (error) {
+      return {
+        artifacts: [],
+        warning: warning || String(error?.message || error),
+      };
+    }
+  }
+
+  async #recoverRemoteReply(task) {
+    if (!this.remoteSessionService?.events || !task.runtime.sessionID) return '';
+    try {
+      const result = await this.remoteSessionService.events({
+        sessionID: task.runtime.sessionID,
+        after: 0,
+      });
+      const completion = [...(result.events || [])].reverse().find((event) => (
+        event?.type === 'message.complete' && String(event?.data?.preview || '').trim()
+      ));
+      return String(completion?.data?.preview || '').trim();
+    } catch {
+      return '';
+    }
+  }
+
+  async #completeRecoveredTask(task, { reply, artifacts = [], warning = null } = {}) {
+    const state = warning ? 'completedWithArtifactWarning' : 'completed';
+    await this.#update(task.taskID, warning ? 'task.completed_with_artifact_warning' : 'task.completed', {
+      state,
+      progress: warning
+        ? 'Recovered after reconnect with an Artifact Inbox warning.'
+        : 'Recovered after Companion reconnect.',
+    }, (draft) => {
+      draft.result = {
+        text: String(reply || 'The task completed after Companion reconnect.'),
+        source: draft.target.runtime,
+        artifactWarning: warning,
+      };
+      draft.artifactIDs = artifacts.map((artifact) => artifact.artifactID);
+      draft.error = null;
+      draft.timestamps.completedAt = this.now();
+    });
+  }
+
+  async #markRecoveryNeedsAttention(taskID, message) {
+    await this.#update(taskID, 'task.recovery_needs_attention', {
+      state: 'waitingForUser',
+      progress: 'Outcome needs confirmation after Companion reconnect.',
+    }, (draft) => {
+      draft.error = {
+        code: 'recovery_outcome_unknown',
+        message: String(message || 'The task outcome could not be confirmed.').slice(0, 2_048),
+      };
+    });
   }
 
   #launch(taskID) {
@@ -645,7 +736,28 @@ export class RouteTaskService {
     if (this.state) return this.state;
     try {
       const parsed = JSON.parse(await readFile(this.statePath, 'utf8'));
-      this.state = parsed?.schemaVersion === ROUTE_TASK_SCHEMA_VERSION ? parsed : initialState();
+      if (parsed?.schemaVersion !== ROUTE_TASK_SCHEMA_VERSION) {
+        throw new RouteTaskError(
+          'unsupported_state_schema',
+          `The retained route-task store uses schema ${String(parsed?.schemaVersion ?? 'unknown')}; this Companion supports schema ${ROUTE_TASK_SCHEMA_VERSION}. The existing file was preserved and will not be overwritten.`,
+          503,
+          {
+            statePath: this.statePath,
+            foundSchemaVersion: parsed?.schemaVersion ?? null,
+            supportedSchemaVersion: ROUTE_TASK_SCHEMA_VERSION,
+          },
+        );
+      }
+      if (!parsed.tasks || typeof parsed.tasks !== 'object' || Array.isArray(parsed.tasks)
+          || !parsed.receipts || typeof parsed.receipts !== 'object' || Array.isArray(parsed.receipts)) {
+        throw new RouteTaskError(
+          'invalid_state_store',
+          'The retained route-task store is malformed. The existing file was preserved and will not be overwritten.',
+          503,
+          { statePath: this.statePath },
+        );
+      }
+      this.state = parsed;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
       this.state = initialState();

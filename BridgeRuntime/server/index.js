@@ -10409,6 +10409,12 @@ if (process.env.VOICECLAW_OUTER_HF_TEST !== '1') {
     }).catch((error) => {
       console.warn(`[voice-bridge] route-task reconciliation failed: ${error?.message || String(error)}`);
     });
+    const routeTaskReconciliationTimer = setInterval(() => {
+      routeTaskService.reconcile().catch((error) => {
+        console.warn(`[voice-bridge] periodic route-task reconciliation failed: ${error?.message || String(error)}`);
+      });
+    }, 20_000);
+    routeTaskReconciliationTimer.unref?.();
   });
 }
 
