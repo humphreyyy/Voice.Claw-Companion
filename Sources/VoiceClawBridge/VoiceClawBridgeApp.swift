@@ -1,5 +1,57 @@
 import SwiftUI
 
+extension Notification.Name {
+    static let voiceClawCompanionMainWindowActivated = Notification.Name(
+        "VoiceClawRealtimeCompanion.mainWindowActivated"
+    )
+}
+
+@MainActor
+final class CompanionWindowLifecycleMonitor {
+    private let notificationCenter: NotificationCenter
+    private var observerTokens: [NSObjectProtocol] = []
+
+    init(notificationCenter: NotificationCenter = .default) {
+        self.notificationCenter = notificationCenter
+    }
+
+    func start() {
+        guard observerTokens.isEmpty else { return }
+
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didDeminiaturizeNotification] {
+            let token = notificationCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    self?.handleWindowActivation(notification)
+                }
+            }
+            observerTokens.append(token)
+        }
+    }
+
+    func requestUpdateCheck() {
+        notificationCenter.post(name: .voiceClawCompanionMainWindowActivated, object: nil)
+    }
+
+    private func handleWindowActivation(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window.title == VoiceClawBranding.companionDisplayName
+        else {
+            return
+        }
+        requestUpdateCheck()
+    }
+
+    deinit {
+        for token in observerTokens {
+            notificationCenter.removeObserver(token)
+        }
+    }
+}
+
 @main
 struct VoiceClawBridgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -51,10 +103,22 @@ struct VoiceClawBridgeApp: App {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let windowLifecycleMonitor = CompanionWindowLifecycleMonitor()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        windowLifecycleMonitor.start()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        windowLifecycleMonitor.requestUpdateCheck()
+        return true
     }
 }
 
@@ -175,5 +239,11 @@ private struct CompanionMenuBarView: View {
         NSApp.setActivationPolicy(.regular)
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .voiceClawCompanionMainWindowActivated,
+                object: nil
+            )
+        }
     }
 }

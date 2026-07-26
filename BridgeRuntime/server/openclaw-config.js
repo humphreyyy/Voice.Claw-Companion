@@ -125,11 +125,14 @@ export function configuredOpenClawAgents(parsed, options = {}) {
   }
 
   if (records.size === 0) {
+    const implicitAgentID = nonEmptyString(options.implicitAgentID) || DEFAULT_OPENCLAW_AGENT_ID;
     addAgentRecord(records, {
-      id: DEFAULT_OPENCLAW_AGENT_ID,
+      id: implicitAgentID,
       workspace: agents.defaults?.workspace,
       isDefault: true,
-      source: 'implicit-main',
+      source: implicitAgentID === DEFAULT_OPENCLAW_AGENT_ID
+        ? 'implicit-main'
+        : 'selected-default-workspace',
     });
   }
 
@@ -166,7 +169,10 @@ export function configuredOpenClawAgents(parsed, options = {}) {
 }
 
 export function resolveConfiguredOpenClawAgent(parsed, selectedAgentID, options = {}) {
-  const catalog = configuredOpenClawAgents(parsed, options);
+  const catalog = configuredOpenClawAgents(parsed, {
+    ...options,
+    implicitAgentID: selectedAgentID,
+  });
   const selected = normalizeOpenClawAgentID(selectedAgentID || catalog.defaultAgentID);
   const agent = catalog.agents.find((candidate) => (
     candidate.normalizedID === selected

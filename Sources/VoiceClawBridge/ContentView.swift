@@ -27,6 +27,10 @@ struct ContentView: View {
             guard newSelection == .pair else { return }
             store.refreshPairingPayloadForDisplay()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .voiceClawCompanionMainWindowActivated)) { _ in
+            guard store.automaticUpdateChecksEnabled else { return }
+            Task { await store.checkForUpdates(manual: false) }
+        }
         .task(id: selection) {
             guard selection == .work else { return }
             await store.refreshWorkCenter()
@@ -1255,7 +1259,7 @@ private struct PairingPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PanelHeader(title: "Pair Phone", subtitle: "Scan this QR code in VoiceClaw Realtime Settings. It syncs the bridge URL, OpenClaw settings, Hermes-capable route support, and Realtime auth preferences. GPT-Realtime-2 currently requires API Key mode until OpenAI re-enables Sign-in-with-ChatGPT access.", symbol: "qrcode")
+            PanelHeader(title: "Pair Phone", subtitle: "Scan this QR code in VoiceClaw Realtime Settings. It syncs the bridge URL, OpenClaw settings, Hermes-capable route support, and Realtime authentication preferences.", symbol: "qrcode")
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
                 GridRow {
@@ -1277,7 +1281,7 @@ private struct PairingPanel: View {
                             .toggleStyle(.checkbox)
                             .disabled(store.realtimeAuthMode != .openClawOAuth)
 
-                        Text("When the paired phone sends its own setting, the phone wins. For current GPT-Realtime-2 Live sessions, use API Key mode with an OpenAI API key included in pairing, entered on the phone, or available to the Companion environment. OAuth is kept for future Sign-in-with-ChatGPT Realtime support, but Companion-minted OAuth client secrets are not presently admitted by Realtime signaling.")
+                        Text("Pairing transfers the selected authentication preference and any credentials you explicitly include. When the paired phone has its own setting, the phone's setting takes precedence. Diagnostics reports whether OAuth and API-key credentials are available.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1899,7 +1903,7 @@ private struct StatusPanel: View {
             StatusRow(title: "Recommended Next Step", value: store.setupAdvice, symbol: "lightbulb")
             StatusRow(title: "App Updates", value: store.updateSummary, symbol: store.updateAvailable ? "arrow.down.circle.fill" : "checkmark.seal")
             StatusRow(title: "Launch upon Startup", value: store.launchAtStartupSummary, symbol: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
-            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw Realtime checks for signed GitHub Release updates every \(store.automaticUpdateCheckInterval.shortLabel)." : "Automatic checks are off. The menu bar icon shows an update warning; use Check Updates when you want to compare against the latest release.", symbol: "clock.arrow.circlepath")
+            StatusRow(title: "Update Checks", value: store.automaticUpdateChecksEnabled ? "Automatic checks are on. VoiceClaw Realtime Companion checks at launch, when its main window is reopened or restored, and every \(store.automaticUpdateCheckInterval.shortLabel) while it remains open." : "Automatic checks are off. Use Check Updates when you want to compare against the latest signed GitHub Release.", symbol: "clock.arrow.circlepath")
             StatusRow(
                 title: "Update Install",
                 value: store.automaticUpdateInstallsEnabled
@@ -2016,7 +2020,7 @@ private struct StatusPanel: View {
                 .frame(maxWidth: 360)
                 .disabled(!store.automaticUpdateChecksEnabled)
 
-                Text("VoiceClaw Realtime checks once at launch and then repeats at this interval while the companion is open.")
+                Text("VoiceClaw Realtime Companion checks at launch, whenever its main window is reopened or restored, and then repeats at this interval while the app remains open.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

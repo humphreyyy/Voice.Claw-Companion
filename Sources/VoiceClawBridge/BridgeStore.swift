@@ -23,9 +23,9 @@ enum CompanionRealtimeAuthMode: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .apiKey:
-            "Use the OpenAI API key from the paired phone or the bridge environment. This is currently required for GPT-Realtime-2 Live sessions."
+            "Use an OpenAI API key included by the paired phone or available to the bridge environment."
         case .openClawOAuth:
-            "Reserved for ChatGPT subscription auth after OpenAI re-enables GPT-Realtime-2 Sign-in-with-ChatGPT access. Current GPT-Realtime-2 Live sessions should use API Key mode."
+            "Use the Companion-managed ChatGPT subscription credential when available. The paired phone's authentication setting takes precedence."
         }
     }
 }
@@ -866,7 +866,7 @@ final class BridgeStore: ObservableObject {
                 updateSummary = "Update \(release.tagName) is available. Use Install Update to open the signed updater. If the updater cannot complete, open the GitHub release and install the notarized DMG manually: \(latestDMGName)."
             } else {
                 updateAvailable = false
-                updateSummary = "VoiceClaw Realtime Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName). Automatic checks run \(automaticUpdateCheckInterval.label.lowercased()) when enabled."
+                updateSummary = "VoiceClaw Realtime Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName). When enabled, automatic checks run at launch, when the main window is reopened or restored, and \(automaticUpdateCheckInterval.label.lowercased())."
             }
         } catch {
             updateAvailable = false
@@ -2084,22 +2084,23 @@ final class BridgeStore: ObservableObject {
         let oauthError = oauth?["error"] as? String
 
         if mode != CompanionRealtimeAuthMode.openClawOAuth.rawValue, !oauthChecked {
-            return "API-key mode is selected from \(source). OpenAI API key available: \(apiKeyAvailable ? "yes" : "no"). This is the supported GPT-Realtime-2 Live path until OpenAI re-enables Sign-in-with-ChatGPT for GPT-Realtime-2."
+            return "API-key mode is selected from \(source). OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
         }
 
         if oauthAvailable {
             if probe == "passed" {
-                return "OAuth can mint a GPT-Realtime-2 client secret, but current /realtime/calls signaling is not admitted with OAuth-minted secrets. Use API Key mode for Live sessions. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+                return "Companion-managed OAuth is available and its Realtime client-secret probe passed. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
             }
 
-            return "Local OpenClaw OAuth profile is available, but GPT-Realtime-2 Live should use API Key mode until OpenAI re-enables subscription sign-in for Realtime signaling. API-key fallback \(fallback ? "on" : "off")."
+            let probeSummary = probe.flatMap { $0.isEmpty ? nil : $0 } ?? "not run"
+            return "Companion-managed OAuth is available. Latest Realtime client-secret probe: \(probeSummary). API-key fallback \(fallback ? "on" : "off")."
         }
 
         if let oauthError, !oauthError.isEmpty {
-            return "Local Companion OAuth is not ready: \(oauthError) Use API Key mode for GPT-Realtime-2 Live sessions. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
+            return "Companion-managed OAuth is not ready: \(oauthError) API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
         }
 
-        return "OAuth (ChatGPT Subscription) has not been checked. Use API Key mode for GPT-Realtime-2 Live sessions until OpenAI re-enables subscription sign-in. API-key fallback \(fallback ? "on" : "off")."
+        return "OAuth (ChatGPT Subscription) has not been checked. API-key fallback \(fallback ? "on" : "off"); OpenAI API key available: \(apiKeyAvailable ? "yes" : "no")."
     }
 
     private static func integerText(_ value: Any?) -> String? {

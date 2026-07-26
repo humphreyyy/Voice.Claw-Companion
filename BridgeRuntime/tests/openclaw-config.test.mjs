@@ -63,12 +63,20 @@ test('hybrid list and keyed entries merge overrides without losing list identity
   assert.deepEqual(agent?.sources, ['agents.list', 'agents.entries']);
 });
 
-test('an installation without explicit agents exposes only implicit main', () => {
+test('an installation without explicit agents exposes implicit main for unselected discovery', () => {
   const config = { agents: { defaults: { workspace: '~/.openclaw/workspace' } } };
   const catalog = configuredOpenClawAgents(config, { home: HOME });
   assert.deepEqual(catalog.ids, ['main']);
   assert.equal(resolveConfiguredOpenClawAgent(config, 'main', { home: HOME }).agent?.workspace, '/Users/tester/.openclaw/workspace');
-  assert.equal(resolveConfiguredOpenClawAgent(config, 'julian', { home: HOME }).agent, null);
+});
+
+test('a selected agent inherits the defaults workspace when no explicit ids exist', () => {
+  const config = { agents: { defaults: { workspace: '~/.openclaw/workspace' } } };
+  const { catalog, agent } = resolveConfiguredOpenClawAgent(config, 'julian', { home: HOME });
+  assert.deepEqual(catalog.ids, ['julian']);
+  assert.equal(catalog.defaultAgentID, 'julian');
+  assert.equal(agent?.workspace, '/Users/tester/.openclaw/workspace');
+  assert.deepEqual(agent?.sources, ['selected-default-workspace']);
 });
 
 test('legacy agent maps remain supported without mistaking modern container keys for ids', () => {

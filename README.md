@@ -81,11 +81,11 @@ Before installing, prepare:
     `openclaw.json` in that folder.
   - Or Hermes Agent installed so `hermes --help` works in Terminal.
 
-For **GPT Realtime Live**, use API Key mode for current sessions. You can
-include the OpenAI API key in the setup QR, enter it on iPhone, or make it
-available to the Companion runtime. The OpenClaw OAuth option is present for
-future Sign in with ChatGPT Realtime support and should not be treated as the
-default path today.
+For **GPT Realtime Live**, ChatGPT Plan (OAuth) is supported and preferred when
+available. You can also use an OpenAI API key explicitly, or allow the iPhone
+app to fall back to an available API key when its fallback setting is enabled.
+The setup QR can carry the Companion-minted OAuth credential and, when you
+choose to include it, an OpenAI API key.
 
 The dormant Companion Voice and Powerhouse implementations are preserved for a
 possible future release, but current product policy hides their controls and
@@ -260,12 +260,12 @@ Run `hermes --help` in Terminal. If that fails, install or repair Hermes first.
 If it works only from a custom shell setup, configure `HERMES_BIN` for the bridge
 environment so Companion can call the same executable.
 
-### GPT-Realtime-2 does not start
+### GPT Realtime does not start
 
-Use **API Key** mode for current GPT-Realtime-2 Live sessions. Add an OpenAI API
-key in **Pair Phone** and either include it in the setup QR or enter it on
-iPhone. OAuth is visible for future support, but current GPT-Realtime-2 Live
-sessions should not rely on Companion-minted OAuth.
+Confirm that either ChatGPT Plan (OAuth) is signed in or an OpenAI API key is
+available for explicit API-key use. Re-pair the iPhone if the Companion-minted
+OAuth credential has changed. If OAuth is selected, an API key is used only
+when **Fall back to API Key if OAuth fails** is enabled.
 
 ### Resetting setup
 

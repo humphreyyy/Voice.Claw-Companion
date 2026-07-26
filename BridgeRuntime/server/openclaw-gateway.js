@@ -557,7 +557,9 @@ export async function discoverOpenClawAgents({ selectedAgentID = '' } = {}) {
   ]);
   const gatewayConfig = configResult.status === 'fulfilled' ? gatewayConfiguration(configResult.value) : null;
   const parsed = gatewayConfig || identity.parsed;
-  const configured = parsed ? configuredOpenClawAgents(parsed) : { agents: [], defaultAgentID: '' };
+  const configured = parsed
+    ? configuredOpenClawAgents(parsed, { implicitAgentID: selectedAgentID })
+    : { agents: [], defaultAgentID: '' };
   const runtime = runtimeResult.status === 'fulfilled' ? runtimeResult.value : null;
   const catalog = mergeAgentCatalog({ configured, runtime, selectedAgentID });
   if (catalog.agents.length === 0) {
