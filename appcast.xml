@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.133</title>
+            <pubDate>Sun, 26 Jul 2026 09:57:24 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607260655</sparkle:version>
+            <sparkle:shortVersionString>0.1.133</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.133</h2><ul><li>Canonicalizes Hermes runtime identities across current and legacy persisted session schemas.</li><li>Uses the exact persisted session key, runtime, agent, and route when dispatching durable work.</li><li>Preserves distinct Hermes sessions while eliminating ambiguous inherited agent and route aliases.</li><li>Adds migration coverage for older VoiceClaw Companion session records without changing OpenClaw, Hermes, or Codex installations.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.133/VoiceClawCompanion-0.1.133-202607260655.dmg" length="8562252" type="application/octet-stream" sparkle:edSignature="fcKcJAxM5MHWngVlzvdB2hfj1WWpZDNa3DSp2nAV5bIdJyJ+ZyxCbpoDN+vjxh1rpjx3QLlfRrHRr32iIK5GDw=="/>
+        </item>
+        <item>
             <title>0.1.132</title>
             <pubDate>Sun, 26 Jul 2026 04:52:35 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.131</h2><ul><li>Uses the supported OpenClaw Gateway protocol tied to the selected OpenClaw installation, with an exact-binary CLI fallback.</li><li>Supports legacy agents.list, current agents.entries, and mixed OpenClaw agent/session response shapes.</li><li>Keeps the selected model route separate from the actual OpenClaw agent and reports structured, retryable runtime errors.</li><li>Adds runtime capability negotiation for current iPhone and Apple Watch builds while preserving compatibility with older clients.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.131/VoiceClawCompanion-0.1.131-202607251922.dmg" length="8565540" type="application/octet-stream" sparkle:edSignature="ix2w4SQLTLaqTjDJjjgMyeXGw8QegskmFVm47NvGVUFaMarrKo5LZRwgLJOkO2WvO20UBVO5omhUWCSbalXbAQ=="/>
-        </item>
-        <item>
-            <title>0.1.130</title>
-            <pubDate>Sat, 25 Jul 2026 08:53:01 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607250550</sparkle:version>
-            <sparkle:shortVersionString>0.1.130</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.130</h2><ul><li>Adds durable concurrent route tasks with live status, steering, cancellation, and restart recovery.</li><li>Adds task-scoped input attachments and a bounded Companion-owned Artifact Inbox for returning files to iPhone.</li><li>Preserves QR/setup fields and explicitly selected credential families across schema v1, v2, and v3 regeneration.</li><li>Improves compatibility with current and legacy OpenClaw, Hermes, and Codex session response formats without modifying those installations.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.130/VoiceClawCompanion-0.1.130-202607250550.dmg" length="3948078" type="application/octet-stream" sparkle:edSignature="/fyC54cM6tjAM7gd4IBXDmuuNR/B+4ZfXBvZvvQpJNLmRohLTrUgY6M2rApck/LmOZfFvt5lRkOMU9JlNQzaCg=="/>
         </item>
     </channel>
 </rss>
