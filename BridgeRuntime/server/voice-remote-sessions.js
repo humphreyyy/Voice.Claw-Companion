@@ -3,7 +3,7 @@ import { open, mkdir, readFile, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
-export const VOICE_REMOTE_SESSION_SCHEMA_VERSION = 2;
+export const VOICE_REMOTE_SESSION_SCHEMA_VERSION = 4;
 export const VOICE_REMOTE_SESSION_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const DEFAULT_STATE_PATH = join(
@@ -141,6 +141,17 @@ function normalizeRuntime(value) {
   return runtime;
 }
 
+function canonicalAgentID(runtime, value, field = 'agentID') {
+  const agentID = normalizeIdentifier(value, field);
+  // Hermes exposes one runtime identity. Historical VoiceClaw builds stored
+  // route labels and inherited OpenClaw agent names here; neither identifies
+  // a distinct Hermes runtime session.
+  if (String(runtime || '').trim().toLowerCase() === 'hermes') {
+    return 'hermes';
+  }
+  return agentID;
+}
+
 function normalizeCounter(value, field, { allowZero = false } = {}) {
   const normalized = Number(value);
   const minimum = allowZero ? 0 : 1;
@@ -166,16 +177,17 @@ function normalizeRequestID(value) {
 }
 
 function normalizeRoute(input = {}) {
+  const runtime = normalizeRuntime(input.runtime);
   return {
     routeID: normalizeIdentifier(input.routeID, 'routeID'),
-    runtime: normalizeRuntime(input.runtime),
-    agentID: normalizeIdentifier(input.agentID, 'agentID'),
+    runtime,
+    agentID: canonicalAgentID(runtime, input.agentID),
   };
 }
 
-function normalizeAgentIdentity(input = {}) {
+function normalizeAgentIdentity(input = {}, runtime = '') {
   return {
-    id: normalizeIdentifier(input.id, 'agent.id'),
+    id: canonicalAgentID(runtime, input.id, 'agent.id'),
     sessionKey: requiredString(input.sessionKey, 'agent.sessionKey'),
     runtimeSessionID: requiredString(input.runtimeSessionID, 'agent.runtimeSessionID'),
   };
@@ -183,9 +195,12 @@ function normalizeAgentIdentity(input = {}) {
 
 function normalizeExpectation(input = {}) {
   const expected = input.expected && typeof input.expected === 'object' ? input.expected : input;
+  const runtime = expected.runtime ? normalizeRuntime(expected.runtime) : null;
   const agent = expected.agent && typeof expected.agent === 'object'
     ? {
-        ...(expected.agent.id ? { id: normalizeIdentifier(expected.agent.id, 'expected.agent.id') } : {}),
+        ...(expected.agent.id
+          ? { id: canonicalAgentID(runtime, expected.agent.id, 'expected.agent.id') }
+          : {}),
         ...(expected.agent.sessionKey ? { sessionKey: requiredString(expected.agent.sessionKey, 'expected.agent.sessionKey') } : {}),
         ...(expected.agent.runtimeSessionID ? { runtimeSessionID: requiredString(expected.agent.runtimeSessionID, 'expected.agent.runtimeSessionID') } : {}),
       }
@@ -198,7 +213,7 @@ function normalizeExpectation(input = {}) {
       ? { observationCursor: normalizeCounter(expected.observationCursor, 'expected.observationCursor') }
       : {}),
     ...(expected.routeID ? { routeID: normalizeIdentifier(expected.routeID, 'expected.routeID') } : {}),
-    ...(expected.runtime ? { runtime: normalizeRuntime(expected.runtime) } : {}),
+    ...(runtime ? { runtime } : {}),
     ...(agent ? { agent } : {}),
   };
 }
@@ -213,15 +228,20 @@ function emptyState(now) {
 }
 
 function storageKey(runtime, agentID, sessionID) {
+  const canonicalAgent = canonicalAgentID(runtime, agentID);
   return createHash('sha256')
-    .update(`voiceclaw-runtime-session-v2\0${runtime}\0${agentID}\0${sessionID}`)
+    .update(`voiceclaw-runtime-session-v4\0${runtime}\0${canonicalAgent}\0${sessionID}`)
     .digest('hex');
 }
 
 function normalizeBinding(input = {}, route = {}, descriptor = {}) {
   const runtime = normalizeRuntime(input.runtime ?? route.runtime);
   const routeID = normalizeIdentifier(input.routeID ?? route.routeID, 'binding.routeID');
-  const agentID = normalizeIdentifier(input.agentID ?? route.agentID, 'binding.agentID');
+  const agentID = canonicalAgentID(
+    runtime,
+    input.agentID ?? route.agentID,
+    'binding.agentID',
+  );
   const runtimeSessionID = requiredString(
     input.runtimeSessionID ?? descriptor.sessionID,
     'binding.runtimeSessionID',
@@ -320,10 +340,11 @@ function assertStoredSession(session) {
   normalizeCounter(session.agentGeneration, 'session.agentGeneration');
   normalizeIdentifier(session.routeID, 'session.routeID');
   normalizeRuntime(session.runtime);
-  const agent = normalizeAgentIdentity(session.agent);
+  const runtime = normalizeRuntime(session.runtime);
+  const agent = normalizeAgentIdentity(session.agent, runtime);
   const binding = normalizeBinding(session.binding, {
     routeID: session.routeID,
-    runtime: session.runtime,
+    runtime,
     agentID: agent.id,
   }, {
     sessionID: session.sessionID,
@@ -331,7 +352,9 @@ function assertStoredSession(session) {
   });
   if (agent.runtimeSessionID !== session.sessionID
       || binding.runtimeSessionID !== session.sessionID
-      || binding.canonicalSessionKey !== agent.sessionKey) {
+      || binding.canonicalSessionKey !== agent.sessionKey
+      || agent.id !== session.agent.id
+      || binding.agentID !== session.binding.agentID) {
     throw new Error('stored runtime identity is inconsistent');
   }
   if (!SESSION_STATES.has(session.state)) throw new Error(`unsupported stored session state: ${session.state}`);
@@ -347,6 +370,141 @@ function assertStoredSession(session) {
     }
   }
   if (!Array.isArray(session.events)) throw new Error('stored events are missing');
+}
+
+function canonicalizeStoredSession(input) {
+  const session = cloneValue(input);
+  const runtime = normalizeRuntime(session.runtime);
+  const agentID = canonicalAgentID(runtime, session.agent?.id, 'session.agent.id');
+  session.runtime = runtime;
+  session.agent = {
+    ...session.agent,
+    id: agentID,
+  };
+  session.binding = {
+    ...session.binding,
+    runtime,
+    agentID,
+  };
+  assertStoredSession(session);
+  return session;
+}
+
+function sessionMergePriority(session) {
+  const state = session.state === 'attached' ? 3 : session.state === 'detached' ? 2 : 1;
+  const run = session.runState === 'running' || session.runState === 'starting' ? 2 : 1;
+  return [
+    state,
+    run,
+    Number(session.timestamps?.lastActivityAt) || 0,
+    Number(session.timestamps?.updatedAt) || 0,
+    Number(session.observationCursor) || 0,
+  ];
+}
+
+function compareSessionMergePriority(left, right) {
+  const leftPriority = sessionMergePriority(left);
+  const rightPriority = sessionMergePriority(right);
+  for (let index = 0; index < leftPriority.length; index += 1) {
+    if (leftPriority[index] !== rightPriority[index]) {
+      return leftPriority[index] - rightPriority[index];
+    }
+  }
+  return 0;
+}
+
+function mergeCanonicalSessions(left, right, maxEventsPerSession) {
+  if (left.runtime !== right.runtime
+      || left.sessionID !== right.sessionID
+      || left.agent.sessionKey !== right.agent.sessionKey
+      || left.agent.runtimeSessionID !== right.agent.runtimeSessionID) {
+    throw new Error('canonical runtime session identities conflict');
+  }
+
+  const preferred = compareSessionMergePriority(left, right) >= 0 ? left : right;
+  const merged = cloneValue(preferred);
+  const state = left.state === 'attached' || right.state === 'attached'
+    ? 'attached'
+    : left.state === 'detached' || right.state === 'detached'
+      ? 'detached'
+      : 'ended';
+  const activeRun = [left, right]
+    .filter((session) => session.runState === 'running' || session.runState === 'starting')
+    .sort((first, second) => compareSessionMergePriority(second, first))[0];
+
+  merged.agent.id = canonicalAgentID(merged.runtime, merged.agent.id, 'session.agent.id');
+  merged.binding.agentID = merged.agent.id;
+  merged.state = state;
+  merged.runState = activeRun?.runState || preferred.runState;
+  merged.runID = activeRun?.runID || preferred.runID || left.runID || right.runID || null;
+  merged.generation = Math.max(left.generation, right.generation);
+  merged.observationCursor = Math.max(left.observationCursor, right.observationCursor);
+  merged.voiceGeneration = Math.max(left.voiceGeneration, right.voiceGeneration);
+  merged.agentGeneration = Math.max(left.agentGeneration, right.agentGeneration);
+  merged.timestamps.createdAt = Math.min(left.timestamps.createdAt, right.timestamps.createdAt);
+  merged.timestamps.updatedAt = Math.max(left.timestamps.updatedAt, right.timestamps.updatedAt);
+  merged.timestamps.lastActivityAt = Math.max(
+    left.timestamps.lastActivityAt,
+    right.timestamps.lastActivityAt,
+  );
+  merged.timestamps.attachedAt = Math.max(
+    left.timestamps.attachedAt,
+    right.timestamps.attachedAt,
+  );
+  merged.timestamps.detachedAt = state === 'detached'
+    ? Math.max(left.timestamps.detachedAt || 0, right.timestamps.detachedAt || 0) || null
+    : null;
+  merged.timestamps.endedAt = state === 'ended'
+    ? Math.max(left.timestamps.endedAt || 0, right.timestamps.endedAt || 0) || null
+    : null;
+  merged.timestamps.voiceRestartedAt = Math.max(
+    left.timestamps.voiceRestartedAt || 0,
+    right.timestamps.voiceRestartedAt || 0,
+  ) || null;
+  merged.events = preferred.events.slice(-maxEventsPerSession);
+  assertStoredSession(merged);
+  return merged;
+}
+
+function migrateLegacyState(parsed, now, maxEventsPerSession) {
+  if (!parsed.sessions || typeof parsed.sessions !== 'object' || Array.isArray(parsed.sessions)) {
+    throw new Error('sessions map missing');
+  }
+  if (!parsed.receipts || typeof parsed.receipts !== 'object' || Array.isArray(parsed.receipts)) {
+    throw new Error('receipts map missing');
+  }
+
+  const migrated = {
+    schemaVersion: VOICE_REMOTE_SESSION_SCHEMA_VERSION,
+    updatedAt: Math.max(Number(parsed.updatedAt) || 0, now),
+    sessions: {},
+    receipts: cloneValue(parsed.receipts),
+  };
+  for (const rawSession of Object.values(parsed.sessions)) {
+    const session = canonicalizeStoredSession(rawSession);
+    const key = storageKey(session.runtime, session.agent.id, session.sessionID);
+    migrated.sessions[key] = migrated.sessions[key]
+      ? mergeCanonicalSessions(migrated.sessions[key], session, maxEventsPerSession)
+      : session;
+  }
+  const canonicalByRuntimeSession = new Map(
+    Object.values(migrated.sessions).map((session) => [
+      `${session.runtime}\0${session.sessionID}`,
+      session,
+    ]),
+  );
+  for (const receipt of Object.values(migrated.receipts)) {
+    for (const field of ['session', 'previousSession']) {
+      const storedResult = receipt?.result?.[field];
+      const canonical = storedResult
+        ? canonicalByRuntimeSession.get(
+          `${String(storedResult.runtime || '').toLowerCase()}\0${storedResult.sessionID}`,
+        )
+        : null;
+      if (canonical) receipt.result[field] = publicSession(canonical);
+    }
+  }
+  return migrated;
 }
 
 async function writeJSONAtomically(path, value) {
@@ -783,6 +941,9 @@ export class VoiceRemoteSessionService {
     const selector = {
       ...(input.sessionID ? { sessionID: requiredString(input.sessionID, 'sessionID') } : {}),
       ...(input.sessionKey ? { sessionKey: requiredString(input.sessionKey, 'sessionKey') } : {}),
+      ...(input.runtime ? { runtime: normalizeRuntime(input.runtime) } : {}),
+      ...(input.agentID ? { agentID: normalizeIdentifier(input.agentID, 'agentID') } : {}),
+      ...(input.routeID ? { routeID: normalizeIdentifier(input.routeID, 'routeID') } : {}),
     };
     if (!selector.sessionID && !selector.sessionKey) {
       throw new VoiceRemoteSessionError('invalid_request', 'A runtime session ID or canonical session key is required.', 422);
@@ -1225,13 +1386,29 @@ export class VoiceRemoteSessionService {
     const sessionID = String(selector.sessionID || '').trim();
     const sessionKey = String(selector.sessionKey || '').trim();
     const runtime = String(selector.runtime || '').trim().toLowerCase();
+    const routeID = String(selector.routeID || '').trim();
+    const agentID = String(selector.agentID || '').trim();
     const matches = Object.values(state.sessions).filter((session) => {
       if (sessionID && session.sessionID !== sessionID) return false;
       if (sessionKey && session.agent.sessionKey !== sessionKey) return false;
       if (runtime && session.runtime !== runtime) return false;
+      if (routeID && session.routeID !== routeID) return false;
+      if (agentID
+          && session.agent.id !== canonicalAgentID(session.runtime, agentID)) return false;
       return !!(sessionID || sessionKey);
     });
     if (matches.length > 1) {
+      const identities = new Set(matches.map((session) => [
+        session.runtime,
+        session.sessionID,
+        session.agent.sessionKey,
+      ].join('\0')));
+      if (identities.size === 1) {
+        return matches.sort((left, right) => (
+          right.timestamps.lastActivityAt - left.timestamps.lastActivityAt
+          || right.observationCursor - left.observationCursor
+        ))[0];
+      }
       throw new VoiceRemoteSessionError('ambiguous_session', 'The supplied runtime session selector is ambiguous.', 409);
     }
     return matches[0] || null;
@@ -1392,6 +1569,7 @@ export class VoiceRemoteSessionService {
   async _load() {
     if (this._state) return this._state;
     let parsed;
+    let migrated = false;
     try {
       parsed = JSON.parse(await readFile(this.statePath, 'utf8'));
     } catch (error) {
@@ -1408,6 +1586,14 @@ export class VoiceRemoteSessionService {
       return this._state;
     }
     try {
+      if (parsed?.schemaVersion === 2 || parsed?.schemaVersion === 3) {
+        parsed = migrateLegacyState(
+          parsed,
+          this._now(),
+          this.maxEventsPerSession,
+        );
+        migrated = true;
+      }
       if (parsed?.schemaVersion !== VOICE_REMOTE_SESSION_SCHEMA_VERSION) throw new Error('unsupported schema');
       if (!parsed.sessions || typeof parsed.sessions !== 'object' || Array.isArray(parsed.sessions)) throw new Error('sessions map missing');
       if (!parsed.receipts || typeof parsed.receipts !== 'object' || Array.isArray(parsed.receipts)) throw new Error('receipts map missing');
@@ -1421,6 +1607,10 @@ export class VoiceRemoteSessionService {
     this._prune(parsed, this._now());
     if (Object.keys(parsed.sessions).length > this.maxSessions) {
       throw new VoiceRemoteSessionError('persistence_capacity_exceeded', 'Persisted remote-session state exceeds the configured bound.', 500);
+    }
+    if (migrated) {
+      parsed.updatedAt = Math.max(Number(parsed.updatedAt) || 0, this._now());
+      await writeJSONAtomically(this.statePath, parsed);
     }
     this._state = parsed;
     return this._state;

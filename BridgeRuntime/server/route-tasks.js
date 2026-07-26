@@ -489,6 +489,10 @@ export class RouteTaskService {
       });
       result = await this.remoteSessionService.runTurn({
         sessionID: session.sessionID,
+        sessionKey: session.agent?.sessionKey,
+        runtime: session.runtime,
+        agentID: session.agent?.id,
+        routeID: session.routeID,
         text: dispatchText,
         requestID: `${task.taskID}:turn`,
         processing: {

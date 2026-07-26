@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -17,6 +18,18 @@ const route = {
   runtime: 'openclaw',
   agentID: 'main',
 };
+
+function schema2StorageKey(runtime, agentID, sessionID) {
+  return createHash('sha256')
+    .update(`voiceclaw-runtime-session-v2\0${runtime}\0${agentID}\0${sessionID}`)
+    .digest('hex');
+}
+
+function schema3StorageKey(runtime, agentID, sessionID) {
+  return createHash('sha256')
+    .update(`voiceclaw-runtime-session-v3\0${runtime}\0${agentID}\0${sessionID}`)
+    .digest('hex');
+}
 
 function deferred() {
   let resolve;
@@ -593,6 +606,117 @@ test('detach, attach, and end are explicit runtime lifecycle transitions', async
       .map((call) => call.action),
     ['detach', 'attach', 'end'],
   );
+});
+
+test('schema-2 Hermes aliases migrate into one canonical session without ending Hermes', async (t) => {
+  const context = await fixture(t);
+  const hermesRoute = {
+    routeID: 'hermes-bridge',
+    runtime: 'hermes',
+    agentID: 'hermes',
+  };
+  const started = await context.service.startNew({
+    requestID: 'hermes-migration-seed',
+    ...hermesRoute,
+  });
+  const current = JSON.parse(await readFile(context.statePath, 'utf8'));
+  const canonical = structuredClone(Object.values(current.sessions)[0]);
+  const alias = structuredClone(canonical);
+  alias.agent.id = 'hermes-bridge';
+  alias.binding.agentID = 'hermes-bridge';
+  alias.timestamps.updatedAt -= 100;
+  alias.timestamps.lastActivityAt -= 100;
+
+  await writeFile(context.statePath, JSON.stringify({
+    ...current,
+    schemaVersion: 2,
+    sessions: {
+      [schema2StorageKey('hermes', 'hermes-bridge', started.session.sessionID)]: alias,
+      [schema2StorageKey('hermes', 'hermes', started.session.sessionID)]: canonical,
+    },
+  }));
+
+  const relaunched = new VoiceRemoteSessionService(context.serviceOptions);
+  const discovered = await relaunched.discover({
+    ...hermesRoute,
+    agentID: 'hermes-bridge',
+  });
+  assert.equal(discovered.sessions.length, 1);
+  assert.equal(discovered.sessions[0].agent.id, 'hermes');
+  assert.equal(discovered.sessions[0].binding.agentID, 'hermes');
+
+  const turn = await relaunched.runTurn({
+    sessionID: started.session.sessionID,
+    sessionKey: started.session.agent.sessionKey,
+    runtime: 'hermes',
+    agentID: 'hermes-bridge',
+    routeID: 'hermes-bridge',
+    text: 'Confirm the migrated Hermes session remains usable.',
+    requestID: 'hermes-migration-turn',
+  });
+  assert.equal(turn.reply, 'hermes reply');
+  assert.equal(
+    context.runtimeAdapter.calls.filter((call) => call.action === 'end').length,
+    0,
+  );
+
+  const persisted = JSON.parse(await readFile(context.statePath, 'utf8'));
+  assert.equal(persisted.schemaVersion, VOICE_REMOTE_SESSION_SCHEMA_VERSION);
+  assert.equal(Object.keys(persisted.sessions).length, 1);
+  assert.equal(Object.values(persisted.sessions)[0].agent.id, 'hermes');
+});
+
+test('Hermes route aliases are canonicalized before runtime discovery and creation', async (t) => {
+  const context = await fixture(t);
+  const started = await context.service.start({
+    requestID: 'hermes-alias-start',
+    routeID: 'hermes-public-tunnel',
+    runtime: 'hermes',
+    agentID: 'hermes-public-tunnel',
+  });
+
+  assert.equal(started.session.agent.id, 'hermes');
+  assert.equal(started.session.binding.agentID, 'hermes');
+  assert.equal(
+    context.runtimeAdapter.calls.find((call) => call.action === 'discover')?.agentID,
+    'hermes',
+  );
+});
+
+test('schema-3 inherited OpenClaw agent names migrate to the one Hermes runtime identity', async (t) => {
+  const context = await fixture(t);
+  const started = await context.service.startNew({
+    requestID: 'hermes-schema-3-seed',
+    routeID: 'hermes-bridge',
+    runtime: 'hermes',
+    agentID: 'hermes',
+  });
+  const current = JSON.parse(await readFile(context.statePath, 'utf8'));
+  const legacy = structuredClone(Object.values(current.sessions)[0]);
+  legacy.agent.id = 'julian';
+  legacy.binding.agentID = 'julian';
+
+  await writeFile(context.statePath, JSON.stringify({
+    ...current,
+    schemaVersion: 3,
+    sessions: {
+      [schema3StorageKey('hermes', 'julian', started.session.sessionID)]: legacy,
+    },
+  }));
+
+  const relaunched = new VoiceRemoteSessionService(context.serviceOptions);
+  const discovered = await relaunched.discover({
+    routeID: 'hermes-bridge',
+    runtime: 'hermes',
+    agentID: 'julian',
+  });
+  assert.equal(discovered.sessions.length, 1);
+  assert.equal(discovered.sessions[0].agent.id, 'hermes');
+  assert.equal(discovered.sessions[0].binding.agentID, 'hermes');
+
+  const persisted = JSON.parse(await readFile(context.statePath, 'utf8'));
+  assert.equal(persisted.schemaVersion, VOICE_REMOTE_SESSION_SCHEMA_VERSION);
+  assert.equal(Object.values(persisted.sessions)[0].agent.id, 'hermes');
 });
 
 test('schema-1 synthetic identities are discarded and recovered by runtime discovery', async (t) => {
