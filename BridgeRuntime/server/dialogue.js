@@ -1825,15 +1825,22 @@ export function createVoiceRemoteSessionRuntimeAdapter({
 } = {}) {
   const gatewayForHermes = () => hermesGateway || getDefaultHermesGatewayClient();
   const labelForRoute = (routeID) => `voiceclaw:${String(routeID || '').trim()}`;
+  const openClawLabelPrefixForRoute = (routeID) => `voiceclaw:v3:${String(routeID || '').trim()}:`;
+  const newOpenClawLabelForRoute = (routeID) => `${openClawLabelPrefixForRoute(routeID)}${randomUUID()}`;
+  const isOpenClawLabelForRoute = (label, routeID) => {
+    const candidate = String(label || '').trim();
+    return candidate === labelForRoute(routeID)
+      || candidate.startsWith(openClawLabelPrefixForRoute(routeID));
+  };
   const hermesTitleForRoute = (routeID) => `${labelForRoute(routeID)}:${randomUUID()}`;
-  const openClawBinding = ({ routeID, agentID, sessionID, sessionKey }) => ({
+  const openClawBinding = ({ routeID, agentID, sessionID, sessionKey, label = '' }) => ({
     runtime: 'openclaw',
     routeID,
     agentID,
     canonicalSessionKey: sessionKey,
     dialogueSessionID: sessionID,
     runtimeSessionID: sessionID,
-    label: labelForRoute(routeID),
+    label: String(label || '').trim() || labelForRoute(routeID),
   });
   const hermesBinding = ({ routeID, agentID, sessionID, liveSessionID = '' }) => ({
     runtime: 'hermes',
@@ -1861,7 +1868,7 @@ export function createVoiceRemoteSessionRuntimeAdapter({
       ...(signal ? { signal } : {}),
     });
   };
-  const openClawDescriptor = (row, route) => {
+  const openClawDescriptor = (row, route, assumedLabel = '') => {
     const normalized = normalizedOpenClawSessionRow(row);
     const { sessionID, sessionKey, activeRunIDs } = normalized;
     if (!sessionID || !sessionKey) throw new Error('OpenClaw returned an incomplete session identity.');
@@ -1873,7 +1880,12 @@ export function createVoiceRemoteSessionRuntimeAdapter({
       state: normalized.archived ? 'ended' : 'detached',
       runID: activeRunIDs[0] || null,
       runState: normalized.hasActiveRun ? 'running' : 'idle',
-      binding: openClawBinding({ ...route, sessionID, sessionKey }),
+      binding: openClawBinding({
+        ...route,
+        sessionID,
+        sessionKey,
+        label: normalized.label || assumedLabel,
+      }),
     };
   };
   const activeHermesSessions = async () => {
@@ -1931,19 +1943,49 @@ export function createVoiceRemoteSessionRuntimeAdapter({
   const adapter = {
     async discoverSessions({ routeID, runtime, agentID, activeSince, recentWindowMs }) {
       if (runtime === 'openclaw') {
-        const result = await callOpenClaw('sessions.list', {
+        const common = {
           limit: 200,
           activeMinutes: Math.max(1, Math.ceil(Number(recentWindowMs) / 60000)),
           agentId: agentID,
-          label: labelForRoute(routeID),
           archived: false,
-        });
-        return openClawSessionRows(result)
-          .filter((row) => {
-            const label = normalizedOpenClawSessionRow(row).label;
-            return !label || label === labelForRoute(routeID);
-          })
-          .map((row) => openClawDescriptor(row, { routeID, agentID }));
+        };
+        // New VoiceClaw sessions use a unique label. The second query preserves
+        // discovery against older OpenClaw schemas that can filter by the legacy
+        // fixed label but omit that label from returned rows.
+        const [allAttempt, legacyAttempt] = await Promise.allSettled([
+          callOpenClaw('sessions.list', common),
+          callOpenClaw('sessions.list', {
+            ...common,
+            label: labelForRoute(routeID),
+          }),
+        ]);
+        if (allAttempt.status === 'rejected' && legacyAttempt.status === 'rejected') {
+          throw allAttempt.reason;
+        }
+        const allResult = allAttempt.status === 'fulfilled' ? allAttempt.value : null;
+        const legacyResult = legacyAttempt.status === 'fulfilled' ? legacyAttempt.value : null;
+        const rows = new Map();
+        for (const row of openClawSessionRows(allResult)) {
+          const normalized = normalizedOpenClawSessionRow(row);
+          if (isOpenClawLabelForRoute(normalized.label, routeID) && normalized.sessionKey) {
+            rows.set(normalized.sessionKey, { row, assumedLabel: normalized.label });
+          }
+        }
+        for (const row of openClawSessionRows(legacyResult)) {
+          const normalized = normalizedOpenClawSessionRow(row);
+          if (normalized.sessionKey) {
+            rows.set(normalized.sessionKey, {
+              row,
+              assumedLabel: normalized.label || labelForRoute(routeID),
+            });
+          }
+        }
+        return [...rows.values()]
+          .map(({ row, assumedLabel }) => openClawDescriptor(
+            row,
+            { routeID, agentID },
+            assumedLabel,
+          ));
       }
       const [rows, active] = await Promise.all([
         hermesSessionStore.discover({
@@ -1979,14 +2021,15 @@ export function createVoiceRemoteSessionRuntimeAdapter({
 
     async startSession({ routeID, runtime, agentID }) {
       if (runtime === 'openclaw') {
+        const label = newOpenClawLabelForRoute(routeID);
         const created = await callOpenClaw('sessions.create', {
           agentId: agentID,
-          label: labelForRoute(routeID),
+          label,
         });
         return openClawDescriptor({
           ...created,
-          label: labelForRoute(routeID),
-        }, { routeID, agentID });
+          label,
+        }, { routeID, agentID }, label);
       }
       if (runtime !== 'hermes') throw new Error(`Unsupported remote runtime: ${runtime}`);
       const title = hermesTitleForRoute(routeID);

@@ -407,6 +407,141 @@ test('OpenClaw adapter starts and runs with gateway-issued session and run ident
   assert.equal(calls.filter((call) => call.method === 'agent').length, 1);
 });
 
+test('OpenClaw adapter assigns a unique VoiceClaw label to every new session for the same agent', async () => {
+  const route = { routeID: 'openclaw-bridge', runtime: 'openclaw', agentID: 'julian' };
+  const calls = [];
+  let sequence = 0;
+  __dialogueTestHooks.setCallGatewayForTest((options) => {
+    calls.push(options);
+    assert.equal(options.method, 'sessions.create');
+    sequence += 1;
+    return Promise.resolve({
+      ok: true,
+      key: `agent:julian:dashboard:session-${sequence}`,
+      sessionId: `julian-session-${sequence}`,
+      entry: { updatedAt: Date.now() + sequence },
+    });
+  });
+
+  const adapter = createVoiceRemoteSessionRuntimeAdapter();
+  const first = await adapter.startSession(route);
+  const second = await adapter.startSession(route);
+  const labels = calls.map((call) => call.params.label);
+
+  assert.match(labels[0], /^voiceclaw:v3:openclaw-bridge:[0-9a-f-]+$/i);
+  assert.match(labels[1], /^voiceclaw:v3:openclaw-bridge:[0-9a-f-]+$/i);
+  assert.notEqual(labels[0], labels[1]);
+  assert.equal(first.binding.label, labels[0]);
+  assert.equal(second.binding.label, labels[1]);
+  assert.notEqual(first.sessionID, second.sessionID);
+});
+
+test('OpenClaw discovery merges modern unique labels with legacy fixed-label sessions', async () => {
+  const route = { routeID: 'openclaw-bridge', runtime: 'openclaw', agentID: 'julian' };
+  __dialogueTestHooks.setCallGatewayForTest((options) => {
+    assert.equal(options.method, 'sessions.list');
+    if (options.params.label) {
+      assert.equal(options.params.label, 'voiceclaw:openclaw-bridge');
+      return Promise.resolve({
+        sessions: [{
+          key: 'agent:julian:dashboard:legacy',
+          sessionId: 'legacy-session',
+          updatedAt: Date.now(),
+        }],
+      });
+    }
+    return Promise.resolve({
+      sessions: [
+        {
+          key: 'agent:julian:dashboard:modern',
+          sessionId: 'modern-session',
+          label: 'voiceclaw:v3:openclaw-bridge:abc123',
+          updatedAt: Date.now(),
+        },
+        {
+          key: 'agent:julian:dashboard:foreign',
+          sessionId: 'foreign-session',
+          label: 'another-client',
+          updatedAt: Date.now(),
+        },
+      ],
+    });
+  });
+
+  const adapter = createVoiceRemoteSessionRuntimeAdapter();
+  const discovered = await adapter.discoverSessions({
+    ...route,
+    activeSince: Date.now() - 60_000,
+    recentWindowMs: 24 * 60 * 60 * 1000,
+  });
+
+  assert.deepEqual(
+    discovered.map((session) => session.sessionID).sort(),
+    ['legacy-session', 'modern-session'],
+  );
+  assert.equal(
+    discovered.find((session) => session.sessionID === 'legacy-session').binding.label,
+    'voiceclaw:openclaw-bridge',
+  );
+  assert.equal(
+    discovered.find((session) => session.sessionID === 'modern-session').binding.label,
+    'voiceclaw:v3:openclaw-bridge:abc123',
+  );
+});
+
+test('OpenClaw discovery falls back to the legacy query when the modern schema rejects it', async () => {
+  const route = { routeID: 'openclaw-bridge', runtime: 'openclaw', agentID: 'julian' };
+  __dialogueTestHooks.setCallGatewayForTest((options) => {
+    assert.equal(options.method, 'sessions.list');
+    if (!options.params.label) {
+      return Promise.reject(new Error('unfiltered sessions.list is unavailable'));
+    }
+    return Promise.resolve({
+      sessions: [{
+        key: 'agent:julian:dashboard:legacy-only',
+        sessionId: 'legacy-only-session',
+        updatedAt: Date.now(),
+      }],
+    });
+  });
+
+  const adapter = createVoiceRemoteSessionRuntimeAdapter();
+  const discovered = await adapter.discoverSessions({
+    ...route,
+    activeSince: Date.now() - 60_000,
+    recentWindowMs: 24 * 60 * 60 * 1000,
+  });
+
+  assert.deepEqual(discovered.map((session) => session.sessionID), ['legacy-only-session']);
+});
+
+test('OpenClaw discovery keeps modern unique sessions when the legacy label schema rejects it', async () => {
+  const route = { routeID: 'openclaw-bridge', runtime: 'openclaw', agentID: 'julian' };
+  __dialogueTestHooks.setCallGatewayForTest((options) => {
+    assert.equal(options.method, 'sessions.list');
+    if (options.params.label) {
+      return Promise.reject(new Error('label filtering is unavailable'));
+    }
+    return Promise.resolve({
+      sessions: [{
+        key: 'agent:julian:dashboard:modern-only',
+        sessionId: 'modern-only-session',
+        label: 'voiceclaw:v3:openclaw-bridge:def456',
+        updatedAt: Date.now(),
+      }],
+    });
+  });
+
+  const adapter = createVoiceRemoteSessionRuntimeAdapter();
+  const discovered = await adapter.discoverSessions({
+    ...route,
+    activeSince: Date.now() - 60_000,
+    recentWindowMs: 24 * 60 * 60 * 1000,
+  });
+
+  assert.deepEqual(discovered.map((session) => session.sessionID), ['modern-only-session']);
+});
+
 test('OpenClaw adapter rejects an accepted key different from the runtime binding', async () => {
   const route = { routeID: 'openclaw-bridge', runtime: 'openclaw', agentID: 'main' };
   __dialogueTestHooks.setCallGatewayForTest((options) => {
@@ -531,7 +666,7 @@ test('OpenClaw adapter discovers, attaches, steers, observes, stops, and archive
 
   assert.deepEqual(
     calls.map((call) => call.method),
-    ['sessions.list', 'sessions.resolve', 'sessions.steer', 'sessions.list', 'sessions.abort', 'sessions.patch'],
+    ['sessions.list', 'sessions.list', 'sessions.resolve', 'sessions.steer', 'sessions.list', 'sessions.abort', 'sessions.patch'],
   );
   assert.equal(calls.at(-1).params.archived, true);
 });

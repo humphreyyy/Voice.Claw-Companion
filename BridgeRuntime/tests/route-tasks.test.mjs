@@ -299,3 +299,120 @@ test('idempotency fingerprint includes input attachment IDs and delivery', async
   remote.release();
   await waitFor(async () => (await service.get('fingerprint-task')).state === 'completed');
 });
+
+test('a stale fixed-label admission is retried once with a fresh remote session before dispatch', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-retry-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const turns = [];
+  const starts = [];
+  const remote = {
+    async start(input) {
+      starts.push(['start', input.requestID]);
+      const error = new Error('label already in use: voiceclaw:openclaw-bridge');
+      error.code = 'session_label_conflict';
+      throw error;
+    },
+    async startNewAgentSession(input) {
+      starts.push(['startNew', input.requestID]);
+      return {
+        session: {
+          sessionID: 'fresh-session',
+          runState: 'idle',
+          agent: { id: input.agentID, sessionKey: 'agent:julian:fresh-session' },
+        },
+      };
+    },
+    async runTurn(input) {
+      turns.push(input);
+      return { reply: 'fresh result', runID: 'fresh-run' };
+    },
+  };
+  const service = new RouteTaskService({
+    statePath: join(directory, 'tasks.json'),
+    remoteSessionService: remote,
+  });
+  const created = await service.create({
+    target: { runtime: 'openclaw', route: 'openclaw-bridge', agentID: 'julian' },
+    text: 'Open Spotify.',
+  });
+  const completed = await waitFor(async () => {
+    const task = await service.get(created.task.taskID);
+    return task.state === 'completed' ? task : null;
+  });
+
+  assert.deepEqual(starts, [
+    ['start', `${created.task.taskID}:session`],
+    ['startNew', `${created.task.taskID}:session:retry-1`],
+  ]);
+  assert.equal(turns.length, 1);
+  assert.equal(completed.runtime.sessionID, 'fresh-session');
+  assert.ok((await service.events({ taskID: created.task.taskID })).events
+    .some((event) => event.type === 'runtime.session_retry'));
+});
+
+test('returnArtifact delivery is authoritative and missing output becomes a terminal file warning', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-artifact-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const remote = mockRemoteSessionService();
+  const artifactInbox = {
+    async prepareTask(taskID) {
+      return { instruction: `Copy the result into /voiceclaw/${taskID}.` };
+    },
+    async scanTask() {
+      return { artifacts: [] };
+    },
+  };
+  const service = new RouteTaskService({
+    statePath: join(directory, 'tasks.json'),
+    remoteSessionService: remote,
+    artifactInbox,
+  });
+  const created = await service.create({
+    target: { runtime: 'openclaw', route: 'openclaw-bridge', agentID: 'julian' },
+    request: {
+      fullText: 'Return the report.',
+      delivery: 'returnArtifact',
+    },
+  });
+  const completed = await waitFor(async () => {
+    const task = await service.get(created.task.taskID);
+    return task.state === 'completedWithArtifactWarning' ? task : null;
+  });
+
+  assert.equal(completed.request.artifactReturnRequested, true);
+  assert.equal(completed.request.delivery, 'returnArtifact');
+  assert.match(completed.result.artifactWarning, /without placing a requested file/i);
+});
+
+test('event feed buffers an event committed after snapshot but before listener attachment', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-feed-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const remote = mockRemoteSessionService({ delayed: true });
+  const service = new RouteTaskService({
+    statePath: join(directory, 'tasks.json'),
+    remoteSessionService: remote,
+  });
+  const created = await service.create({
+    target: { runtime: 'openclaw', route: 'openclaw-bridge', agentID: 'julian' },
+    text: 'Long running task.',
+  });
+  await waitFor(async () => (await service.get(created.task.taskID)).runtime.sessionID);
+  const originalEvents = service.events.bind(service);
+  service.events = async (input) => {
+    const snapshot = await originalEvents(input);
+    await service.steer({
+      taskID: created.task.taskID,
+      text: 'Use the corrected title.',
+      requestID: 'feed-race-steer',
+    });
+    return snapshot;
+  };
+
+  const feed = await service.openEventFeed({ taskID: created.task.taskID, after: 0 });
+  let bufferedEvent;
+  const unsubscribe = feed.subscribe((event) => { bufferedEvent = event; });
+  unsubscribe();
+  assert.equal(bufferedEvent.type, 'task.steered');
+  remote.release();
+  await waitFor(async () => (await service.get(created.task.taskID)).state === 'completed');
+});

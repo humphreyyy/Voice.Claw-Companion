@@ -371,7 +371,6 @@ test('a turn has no run ID until runtime acceptance and streams ordered live eve
       binding: args.binding,
     };
   };
-
   const turn = context.service.runTurn({
     sessionKey: started.session.agent.sessionKey,
     text: 'Run against the bound runtime.',
@@ -414,6 +413,54 @@ test('a turn has no run ID until runtime acceptance and streams ordered live eve
   assert.deepEqual(
     events.events.map((event) => event.type),
     ['agent.started', 'run.starting', 'run.started', 'message.delta', 'run.completed'],
+  );
+});
+
+test('multiline prompt and steering text reach the runtime without identifier validation', async (t) => {
+  const context = await fixture(t);
+  const started = await context.service.startNew({ requestID: 'multiline-start', ...route });
+  const prompt = 'First line.\n\nSecond line with details.';
+  const steering = 'Correction one.\nCorrection two.';
+  const runStarted = deferred();
+  const finishRun = deferred();
+  context.runtimeAdapter.runImplementation = async (args) => {
+    assert.equal(args.text, prompt);
+    await args.onRunStarted({ runID: 'multiline-run', binding: args.binding });
+    runStarted.resolve();
+    await finishRun.promise;
+    return {
+      reply: 'multiline complete',
+      runID: 'multiline-run',
+      sessionID: args.session.sessionID,
+      sessionKey: args.binding.canonicalSessionKey,
+      binding: args.binding,
+    };
+  };
+  context.runtimeAdapter.steerImplementation = async (args) => ({
+    accepted: true,
+    runID: 'multiline-run',
+    binding: args.binding,
+  });
+
+  const turn = context.service.runTurn({
+    sessionKey: started.session.agent.sessionKey,
+    text: prompt,
+    requestID: 'multiline-turn',
+    processing: { runtime: 'openclaw' },
+  });
+  await runStarted.promise;
+  const steered = await context.service.steer({
+    sessionID: started.session.sessionID,
+    text: steering,
+    requestID: 'multiline-steer',
+  });
+  finishRun.resolve();
+  await turn;
+
+  assert.equal(steered.steered, true);
+  assert.equal(
+    context.runtimeAdapter.calls.find((call) => call.action === 'steer').text,
+    steering,
   );
 });
 

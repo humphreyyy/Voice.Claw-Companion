@@ -97,6 +97,19 @@ function requiredString(value, field, maxLength = 512) {
   return normalized;
 }
 
+function requiredText(value, field, maxLength = 64 * 1024) {
+  const normalized = String(value ?? '').trim();
+  if (!normalized || normalized.length > maxLength || normalized.includes('\0')) {
+    throw new VoiceRemoteSessionError(
+      'invalid_request',
+      `${field} must be non-empty text of at most ${maxLength} characters.`,
+      422,
+      { field },
+    );
+  }
+  return normalized;
+}
+
 function optionalString(value, field, maxLength = 512) {
   if (value === undefined || value === null || String(value).trim() === '') return null;
   return requiredString(value, field, maxLength);
@@ -669,7 +682,7 @@ export class VoiceRemoteSessionService {
   }
 
   async steer(input = {}) {
-    const text = requiredString(input.text, 'text', 16 * 1024);
+    const text = requiredText(input.text, 'text', 16 * 1024);
     const requestID = normalizeRequestID(input.requestID || input.requestId);
     return this._exclusive(async () => {
       const current = await this._load();
@@ -774,7 +787,7 @@ export class VoiceRemoteSessionService {
     if (!selector.sessionID && !selector.sessionKey) {
       throw new VoiceRemoteSessionError('invalid_request', 'A runtime session ID or canonical session key is required.', 422);
     }
-    const text = requiredString(input.text, 'text', 64 * 1024);
+    const text = requiredText(input.text, 'text', 64 * 1024);
     const requestID = requiredString(input.requestID || input.requestId || randomUUID(), 'requestID', 256);
     const controller = new AbortController();
     const upstreamSignal = input.signal || null;

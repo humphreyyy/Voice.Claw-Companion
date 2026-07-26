@@ -97,6 +97,14 @@ function normalizeAttachmentIDs(value) {
   return result;
 }
 
+function isSafeSessionAdmissionRetry(error) {
+  const code = String(error?.code || '').trim().toLowerCase();
+  const message = String(error?.message || error || '').trim().toLowerCase();
+  return code === 'label_already_in_use'
+    || code === 'session_label_conflict'
+    || message.includes('label already in use');
+}
+
 function publicTask(task) {
   return clone({
     schemaVersion: ROUTE_TASK_SCHEMA_VERSION,
@@ -176,8 +184,10 @@ export class RouteTaskService {
       512,
     );
     const attachmentIDs = normalizeAttachmentIDs(input.request?.attachmentIDs);
-    const delivery = normalizeDelivery(input.request?.delivery);
-    const artifactReturnRequested = input.request?.artifactReturnRequested === true;
+    const requestedDelivery = normalizeDelivery(input.request?.delivery);
+    const artifactReturnRequested = input.request?.artifactReturnRequested === true
+      || requestedDelivery === 'returnArtifact';
+    const delivery = artifactReturnRequested ? 'returnArtifact' : requestedDelivery;
     const providedTaskID = String(input.taskID || input.taskId || '').trim();
     if (attachmentIDs.length && !providedTaskID) {
       throw new RouteTaskError('preallocated_task_id_required', 'Upload input attachments under a preallocated task ID, then create the task with that same taskID.', 422);
@@ -282,11 +292,33 @@ export class RouteTaskService {
   }
 
   async openEventFeed({ taskID, after = 0 } = {}) {
-    const snapshot = await this.events({ taskID, after });
-    return {
-      ...snapshot,
-      subscribe: (listener) => this.#subscribe(taskID, listener),
-    };
+    const buffered = [];
+    let liveListener = null;
+    const unsubscribe = this.#subscribe(taskID, (event) => {
+      if (liveListener) liveListener(event);
+      else buffered.push(event);
+    });
+    try {
+      const snapshot = await this.events({ taskID, after });
+      const snapshotCursor = snapshot.events.reduce(
+        (maximum, event) => Math.max(maximum, Number(event.cursor) || 0),
+        Number(after) || 0,
+      );
+      return {
+        ...snapshot,
+        subscribe: (listener) => {
+          liveListener = listener;
+          for (const event of buffered) {
+            if (Number(event.cursor) > snapshotCursor) listener(clone(event));
+          }
+          buffered.length = 0;
+          return unsubscribe;
+        },
+      };
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
   }
 
   async steer({ taskID, text, requestID = randomUUID() } = {}) {
@@ -429,12 +461,25 @@ export class RouteTaskService {
         const operation = task.target.sessionMode === 'new'
           ? this.remoteSessionService.startNewAgentSession.bind(this.remoteSessionService)
           : this.remoteSessionService.start.bind(this.remoteSessionService);
-        session = (await operation({
-          runtime: task.target.runtime,
-          routeID: task.target.route,
-          agentID: task.target.agentID,
-          requestID: `${task.taskID}:session`,
-        })).session;
+        try {
+          session = (await operation({
+            runtime: task.target.runtime,
+            routeID: task.target.route,
+            agentID: task.target.agentID,
+            requestID: `${task.taskID}:session`,
+          })).session;
+        } catch (error) {
+          if (!isSafeSessionAdmissionRetry(error)) throw error;
+          await this.#update(taskID, 'runtime.session_retry', {
+            progress: `${task.target.runtime} rejected a stale session label; retrying once with a new session identity.`,
+          });
+          session = (await this.remoteSessionService.startNewAgentSession({
+            runtime: task.target.runtime,
+            routeID: task.target.route,
+            agentID: task.target.agentID,
+            requestID: `${task.taskID}:session:retry-1`,
+          })).session;
+        }
       }
       await this.#update(taskID, 'runtime.session', { progress: `${task.target.runtime} session ready.` }, (draft) => {
         draft.runtime.sessionID = session.sessionID;
@@ -467,6 +512,9 @@ export class RouteTaskService {
       try {
         const admitted = await this.artifactInbox.scanTask(taskID);
         artifacts = admitted.artifacts || [];
+        if (!artifacts.length) {
+          artifactWarning = 'The runtime completed without placing a requested file in the VoiceClaw return directory.';
+        }
       } catch (error) {
         artifactWarning = String(error?.message || error);
       }

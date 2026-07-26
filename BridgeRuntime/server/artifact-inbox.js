@@ -188,10 +188,13 @@ export class ArtifactInbox {
         admittedPath,
         instruction: [
           'The user explicitly requested that the resulting file be returned to VoiceClaw Realtime.',
-          'After completing the task, place a copy of each requested regular file in this exact directory:',
+          'VoiceClaw does not expose a separate attachment API to this runtime.',
+          'A Markdown link or a path elsewhere on this Mac is not a returned VoiceClaw file.',
+          'After completing the task, copy each requested regular file into this exact directory:',
           dropPath,
           `Each file must be ${this.fileLimitBytes} bytes (${Math.floor(this.fileLimitBytes / 1024 / 1024)} MB) or smaller.`,
           'Do not place directories, packages, symlinks, hard links, sockets, devices, or unrelated files there.',
+          'VoiceClaw Realtime Companion scans this directory after the turn and makes admitted files downloadable in the iPhone Work panel.',
           'Also describe the result normally in your response.',
         ].join('\n'),
       };
