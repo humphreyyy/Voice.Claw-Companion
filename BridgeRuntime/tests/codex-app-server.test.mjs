@@ -10,8 +10,14 @@ import {
   attachCodexRealtimeRelaySocket,
   CodexAppServerBridge,
   CodexAppServerClient,
+  CODEX_REALTIME_V3_DEFAULTS,
   codexAppServerNegotiation,
+  normalizeCodexRealtimeWebRTCOptions,
 } from '../server/codex-app-server.js';
+import {
+  compareCodexVersions,
+  selectCodexAppServerExecutable,
+} from '../server/bin-paths.js';
 
 class FakeCodexProcess extends EventEmitter {
   constructor(onMessage) {
@@ -67,9 +73,11 @@ class FakeRelaySocket extends EventEmitter {
 
 function createFakeCodexServer({
   realtimeError = '',
+  realtimeStopError = '',
   contextOverflowOnce = false,
   initializeResult = null,
   featureListError = '',
+  accountType = 'chatgpt',
 } = {}) {
   const calls = [];
   const spawnOptions = [];
@@ -100,7 +108,7 @@ function createFakeCodexServer({
         send({
           id: message.id,
           result: {
-            account: { type: 'chatgpt', email: 'test@example.invalid', planType: 'pro' },
+            account: { type: accountType, email: 'test@example.invalid', planType: 'pro' },
             requiresOpenaiAuth: true,
           },
         });
@@ -226,6 +234,10 @@ function createFakeCodexServer({
         });
         return;
       }
+      if (message.method === 'thread/realtime/stop' && realtimeStopError) {
+        send({ id: message.id, error: { code: -32000, message: realtimeStopError } });
+        return;
+      }
       if (message.method.startsWith('thread/realtime/')) {
         send({ id: message.id, result: {} });
         return;
@@ -281,6 +293,57 @@ function createClient(server) {
     realtimeTimeoutMs: 1_000,
   });
 }
+
+test('prefers the verified newer ChatGPT-bundled Codex while honoring an explicit override', () => {
+  const versions = new Map([
+    ['/test/path/codex', '0.145.0'],
+    ['/Applications/ChatGPT.app/Contents/Resources/codex', '0.146.0-alpha.3.1'],
+  ]);
+  const selected = selectCodexAppServerExecutable({
+    explicitPath: '',
+    pathCandidate: '/test/path/codex',
+    bundledCandidate: '/Applications/ChatGPT.app/Contents/Resources/codex',
+    executableCheck: (candidate) => versions.has(candidate),
+    versionReader: (candidate) => versions.get(candidate) || null,
+  });
+  assert.equal(selected.path, '/Applications/ChatGPT.app/Contents/Resources/codex');
+  assert.equal(selected.source, 'chatgpt-bundled');
+  assert.equal(selected.verifiedV3Build, true);
+  assert.equal(selected.reason, 'newer-verified-gpt-live-bundle');
+  assert.equal(compareCodexVersions('0.146.0', '0.146.0-alpha.3.1'), 1);
+
+  const overridden = selectCodexAppServerExecutable({
+    explicitPath: '/operator/codex',
+    executableCheck: () => false,
+    versionReader: () => '0.145.0',
+  });
+  assert.equal(overridden.path, '/operator/codex');
+  assert.equal(overridden.source, 'explicit');
+  assert.equal(overridden.reason, 'operator-override');
+});
+
+test('normalizes the exact GPT Live V3 defaults and rejects unsupported V3 modes', () => {
+  assert.deepEqual(normalizeCodexRealtimeWebRTCOptions({}), {
+    ...CODEX_REALTIME_V3_DEFAULTS,
+    flushTranscriptTailOnSessionEnd: undefined,
+    codexResponseItemPrefix: undefined,
+    includeStartupContext: undefined,
+    initialItems: undefined,
+    prompt: undefined,
+    realtimeSessionId: undefined,
+  });
+  assert.throws(
+    () => normalizeCodexRealtimeWebRTCOptions({ version: 'v3', outputModality: 'text' }),
+    (error) => error.code === 'CODEX_REALTIME_V3_AUDIO_REQUIRED',
+  );
+  assert.throws(
+    () => normalizeCodexRealtimeWebRTCOptions({
+      version: 'v2',
+      initialItems: [{ role: 'user', text: 'not supported' }],
+    }),
+    /supported only by V3/,
+  );
+});
 
 test('initializes with VoiceClaw identity and reports capability without claiming backend admission', async () => {
   const server = createFakeCodexServer();
@@ -452,9 +515,268 @@ test('marks experimental realtime available only after receiving a real SDP answ
   const start = server.calls.find((call) => call.method === 'thread/realtime/start');
 
   assert.equal(negotiation.sdp, 'v=0\r\no=fake-answer\r\n');
+  assert.equal(negotiation.threadID, 'thread-voiceclaw-1');
+  assert.equal(negotiation.sessionKey, 'realtime-session');
+  assert.equal(negotiation.version, 'v3');
+  assert.equal(negotiation.model, 'gpt-live-1-codex');
+  assert.equal(negotiation.voice, 'ember');
+  assert.match(negotiation.lifecycleID, /^[0-9a-f-]{36}$/);
   assert.equal(start.params.transport.sdp, 'v=0\r\no=fake-offer\r\n');
+  assert.equal(start.params.outputModality, 'audio');
+  assert.equal(start.params.clientManagedHandoffs, false);
+  assert.equal(start.params.codexResponsesAsItems, false);
+  assert.equal(start.params.codexResponseHandoffMode, 'bemTags');
+  assert.equal(start.params.flushTranscriptTailOnSessionEnd, undefined);
+  assert.equal(start.params.model, 'gpt-live-1-codex');
+  assert.equal(start.params.voice, 'ember');
+  const threadStart = server.calls.find((call) => call.method === 'thread/start');
+  assert.equal(threadStart.params.model, undefined, 'the GPT Live model must not be used as the Codex thread model');
   assert.equal(after.realtime.backendAdmission, 'verified');
   assert.equal(after.realtime.available, true);
+  assert.equal(after.realtimeLifecycle.active.lifecycleID, negotiation.lifecycleID);
+  bridge.stop();
+});
+
+test('forwards every generated V3 WebRTC field with exact names', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-v3-fields-'));
+  const server = createFakeCodexServer();
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+
+  await bridge.startRealtimeWebRTC({
+    sessionKey: 'v3-fields',
+    sdp: 'v=0\r\no=full-v3-offer\r\n',
+    version: 'v3',
+    model: 'gpt-live-1-codex',
+    voice: 'ember',
+    outputModality: 'audio',
+    clientManagedHandoffs: true,
+    flushTranscriptTailOnSessionEnd: true,
+    codexResponsesAsItems: true,
+    codexResponseItemPrefix: '[codex] ',
+    codexResponseHandoffMode: 'commentary',
+    includeStartupContext: false,
+    initialItems: [
+      { role: 'developer', text: 'Stay concise.' },
+      { role: 'user', text: 'Continue the route handoff.' },
+    ],
+    prompt: 'Use the supplied session context.',
+    realtimeSessionId: 'realtime-resume-1',
+  });
+
+  const start = server.calls.find((call) => call.method === 'thread/realtime/start');
+  assert.deepEqual(start.params, {
+    threadId: 'thread-voiceclaw-1',
+    outputModality: 'audio',
+    version: 'v3',
+    model: 'gpt-live-1-codex',
+    voice: 'ember',
+    transport: { type: 'webrtc', sdp: 'v=0\r\no=full-v3-offer\r\n' },
+    clientManagedHandoffs: true,
+    flushTranscriptTailOnSessionEnd: true,
+    codexResponsesAsItems: true,
+    codexResponseItemPrefix: '[codex] ',
+    codexResponseHandoffMode: 'commentary',
+    includeStartupContext: false,
+    initialItems: [
+      { role: 'developer', text: 'Stay concise.' },
+      { role: 'user', text: 'Continue the route handoff.' },
+    ],
+    prompt: 'Use the supplied session context.',
+    realtimeSessionId: 'realtime-resume-1',
+  });
+  bridge.stop();
+});
+
+test('requires a Codex-managed ChatGPT login before attempting GPT Live V3 admission', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-v3-auth-'));
+  const server = createFakeCodexServer({ accountType: 'apiKey' });
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+
+  await assert.rejects(
+    bridge.startRealtimeWebRTC({
+      sessionKey: 'v3-auth',
+      sdp: 'v=0\r\no=v3-auth-offer\r\n',
+    }),
+    (error) => error.code === 'CODEX_REALTIME_CHATGPT_LOGIN_REQUIRED',
+  );
+  assert.equal(server.calls.some((call) => call.method === 'thread/realtime/start'), false);
+  const status = await bridge.status();
+  assert.equal(status.realtime.protocols.v3.backendAdmission, 'rejected');
+  bridge.stop();
+});
+
+test('a locally rejected V3 start does not preempt an active V2 lease', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-v3-preflight-'));
+  const server = createFakeCodexServer({ accountType: 'apiKey' });
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+
+  const v2 = await bridge.startRealtimeWebSocket({
+    sessionKey: 'working-v2',
+    version: 'v2',
+    model: 'gpt-realtime-2.1-mini',
+    voice: 'marin',
+    leaseOwnerID: 'v2-owner',
+  });
+  await assert.rejects(
+    bridge.startRealtimeWebRTC({
+      sessionKey: 'blocked-v3',
+      sdp: 'v=0\r\no=blocked-v3-offer\r\n',
+    }),
+    (error) => error.code === 'CODEX_REALTIME_CHATGPT_LOGIN_REQUIRED',
+  );
+
+  const status = await bridge.status();
+  assert.equal(status.realtimeLifecycle.active.lifecycleID, 'v2-owner');
+  assert.equal(status.realtimeLifecycle.active.threadID, v2.threadID);
+  assert.equal(status.realtimeLifecycle.active.transport, 'websocket');
+  assert.equal(
+    server.calls.filter((call) => call.method === 'thread/realtime/stop').length,
+    0,
+  );
+  bridge.stop();
+});
+
+test('makes WebRTC text retries and lifecycle stop idempotent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-v3-lifecycle-'));
+  const server = createFakeCodexServer();
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+
+  const started = await bridge.startRealtimeWebRTC({
+    sessionKey: 'ios-live',
+    lifecycleID: 'ios-lifecycle-1',
+    sdp: 'v=0\r\no=ios-offer-1\r\n',
+  });
+  const firstText = await bridge.appendRealtimeTextIdempotent({
+    threadID: started.threadID,
+    text: 'Typed composer message',
+    role: 'user',
+    requestID: 'ios-text-request-1',
+  });
+  const duplicateText = await bridge.appendRealtimeTextIdempotent({
+    threadID: started.threadID,
+    text: 'Typed composer message',
+    role: 'user',
+    requestID: 'ios-text-request-1',
+  });
+  assert.equal(firstText.duplicate, false);
+  assert.equal(duplicateText.duplicate, true);
+  assert.equal(
+    server.calls.filter((call) => call.method === 'thread/realtime/appendText').length,
+    1,
+  );
+  await assert.rejects(
+    bridge.appendRealtimeTextIdempotent({
+      threadID: started.threadID,
+      text: 'Different payload',
+      role: 'user',
+      requestID: 'ios-text-request-1',
+    }),
+    (error) => error.code === 'CODEX_REALTIME_IDEMPOTENCY_CONFLICT',
+  );
+  await assert.rejects(
+    bridge.appendRealtimeTextIdempotent({
+      threadID: started.threadID,
+      text: 'x'.repeat(64_001),
+      role: 'user',
+      requestID: 'oversized-text',
+    }),
+    /exceeds 64000 characters/,
+  );
+
+  const stopped = await bridge.stopRealtimeWebRTC({
+    threadID: started.threadID,
+    sessionKey: started.sessionKey,
+  });
+  const textRetryAfterStop = await bridge.appendRealtimeTextIdempotent({
+    threadID: started.threadID,
+    text: 'Typed composer message',
+    role: 'user',
+    requestID: 'ios-text-request-1',
+  });
+  const repeated = await bridge.stopRealtimeWebRTC({
+    threadID: started.threadID,
+    sessionKey: started.sessionKey,
+  });
+  assert.deepEqual(stopped, {
+    stopped: true,
+    alreadyStopped: false,
+    stale: false,
+    threadID: 'thread-voiceclaw-1',
+    sessionKey: 'ios-live',
+    lifecycleID: 'ios-lifecycle-1',
+    status: 'stopped',
+  });
+  assert.equal(textRetryAfterStop.duplicate, true);
+  assert.equal(repeated.stopped, false);
+  assert.equal(repeated.alreadyStopped, true);
+  assert.equal(
+    server.calls.filter((call) => call.method === 'thread/realtime/stop').length,
+    1,
+  );
+
+  const restarted = await bridge.startRealtimeWebRTC({
+    sessionKey: 'ios-live',
+    lifecycleID: 'ios-lifecycle-2',
+    sdp: 'v=0\r\no=ios-offer-2\r\n',
+  });
+  const stale = await bridge.stopRealtimeWebRTC({
+    threadID: restarted.threadID,
+    sessionKey: restarted.sessionKey,
+    lifecycleID: 'ios-lifecycle-1',
+  });
+  assert.equal(stale.stale, true);
+  assert.equal(stale.alreadyStopped, true);
+  assert.equal(
+    server.calls.filter((call) => call.method === 'thread/realtime/stop').length,
+    1,
+  );
+  await bridge.stopRealtimeWebRTC({
+    threadID: restarted.threadID,
+    sessionKey: restarted.sessionKey,
+  });
+  assert.equal(
+    server.calls.filter((call) => call.method === 'thread/realtime/stop').length,
+    2,
+  );
+  bridge.stop();
+});
+
+test('treats an app-server already-stopped response as a successful idempotent stop', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-v3-already-stopped-'));
+  const server = createFakeCodexServer({ realtimeStopError: 'Realtime conversation is not running.' });
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+  const started = await bridge.startRealtimeWebRTC({
+    sessionKey: 'already-stopped',
+    sdp: 'v=0\r\no=already-stopped-offer\r\n',
+  });
+
+  const result = await bridge.stopRealtimeWebRTC({
+    threadID: started.threadID,
+    sessionKey: started.sessionKey,
+  });
+  assert.equal(result.stopped, false);
+  assert.equal(result.alreadyStopped, true);
+  assert.equal((await bridge.status()).realtimeLifecycle.active, null);
   bridge.stop();
 });
 

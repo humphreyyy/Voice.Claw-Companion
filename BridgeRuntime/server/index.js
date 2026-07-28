@@ -6157,11 +6157,21 @@ const httpServer = createServer(async (req, res) => {
           statusPath: `${BASE_PATH}/realtime/codex/status`,
           turnPath: `${BASE_PATH}/realtime/codex/turn`,
           webRTCPath: `${BASE_PATH}/realtime/codex/webrtc`,
+          webRTCStopPath: `${BASE_PATH}/realtime/codex/webrtc/stop`,
+          webRTCTextPath: `${BASE_PATH}/realtime/codex/webrtc/text`,
           webSocketPath: `${BASE_PATH}/realtime/codex/ws`,
           textTurns: 'supported',
           realtime: {
             v2WebSocket: 'verified-api-key-path',
-            v3Live: 'experimental-capability-gated',
+            v3Live: {
+              status: 'supported-chatgpt-app-server-webrtc-path',
+              admission: 'verified-after-sdp-answer',
+              version: 'v3',
+              model: 'gpt-live-1-codex',
+              voice: 'ember',
+              outputModality: 'audio',
+              auth: 'chatgpt-login-managed-by-codex-app-server',
+            },
           },
         },
         openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })),
@@ -6648,16 +6658,66 @@ const httpServer = createServer(async (req, res) => {
           sessionMode: payload.sessionMode || 'attach',
           sdp: payload.sdp || '',
           model: payload.model || '',
+          threadModel: payload.threadModel || '',
           version: payload.version || 'v3',
           voice: payload.voice || '',
           outputModality: payload.outputModality || 'audio',
+          clientManagedHandoffs: payload.clientManagedHandoffs,
+          flushTranscriptTailOnSessionEnd: payload.flushTranscriptTailOnSessionEnd,
+          codexResponsesAsItems: payload.codexResponsesAsItems,
+          codexResponseItemPrefix: payload.codexResponseItemPrefix,
+          codexResponseHandoffMode: payload.codexResponseHandoffMode,
+          includeStartupContext: payload.includeStartupContext,
+          initialItems: payload.initialItems,
+          prompt: payload.prompt,
+          realtimeSessionId: payload.realtimeSessionId ?? payload.realtimeSessionID,
           timeoutMs: payload.timeoutMs,
+          lifecycleID: payload.lifecycleID || '',
         });
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: true, experimental: true, ...result }));
       } catch (error) {
-        res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.writeHead(Number(error?.statusCode) || 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, experimental: true, error: error?.message || String(error), code: error?.code || null }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/codex/webrtc/stop`) {
+      const body = await readRequestBody(req, 100_000).catch(() => '{}');
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const result = await codexAppServerBridge.stopRealtimeWebRTC({
+          threadID: payload.threadID || '',
+          sessionKey: payload.sessionKey || payload.sessionToken || req.headers['x-voice-session-token'] || '',
+          lifecycleID: payload.lifecycleID || '',
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (error) {
+        res.writeHead(Number(error?.statusCode) || 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error), code: error?.code || null }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/codex/webrtc/text`) {
+      const body = await readRequestBody(req, 100_000).catch(() => '{}');
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const result = await codexAppServerBridge.appendRealtimeTextIdempotent({
+          threadID: payload.threadID || '',
+          text: payload.text,
+          role: payload.role || 'user',
+          requestID: payload.requestID || req.headers['idempotency-key'] || '',
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (error) {
+        res.writeHead(Number(error?.statusCode) || 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error), code: error?.code || null }));
       }
       return;
     }

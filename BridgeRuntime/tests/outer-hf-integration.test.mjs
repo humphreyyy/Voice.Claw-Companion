@@ -256,6 +256,43 @@ test('WebSocket authorization completes before session or HF allocation', async 
   }
 });
 
+test('GPT Live WebRTC start, stop, and text routes are authenticated and advertised', async () => {
+  const { httpServer } = outerHFIntegration;
+  httpServer.listen(0, '127.0.0.1');
+  await once(httpServer, 'listening');
+  const address = httpServer.address();
+  const origin = `http://127.0.0.1:${address.port}`;
+
+  try {
+    for (const path of [
+      '/realtime/codex/webrtc',
+      '/realtime/codex/webrtc/stop',
+      '/realtime/codex/webrtc/text',
+    ]) {
+      const response = await fetch(`${origin}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      assert.equal(response.status, 401, `${path} must reject unauthenticated requests`);
+    }
+
+    const configResponse = await fetch(`${origin}/config`, {
+      headers: { Authorization: 'Bearer outer-hf-test-token' },
+    });
+    assert.equal(configResponse.status, 200);
+    const config = await configResponse.json();
+    assert.equal(config.realtime.codexAppServer.webRTCPath, '/realtime/codex/webrtc');
+    assert.equal(config.realtime.codexAppServer.webRTCStopPath, '/realtime/codex/webrtc/stop');
+    assert.equal(config.realtime.codexAppServer.webRTCTextPath, '/realtime/codex/webrtc/text');
+    assert.equal(config.realtime.codexAppServer.realtime.v3Live.version, 'v3');
+    assert.equal(config.realtime.codexAppServer.realtime.v3Live.model, 'gpt-live-1-codex');
+    assert.equal(config.realtime.codexAppServer.realtime.v3Live.admission, 'verified-after-sdp-answer');
+  } finally {
+    await new Promise((resolve) => httpServer.close(resolve));
+  }
+});
+
 test('response.create timeout is observation-only and pending intents are bounded', async () => {
   const sessionToken = 'sideband-outcome-unknown-test';
   const sent = [];

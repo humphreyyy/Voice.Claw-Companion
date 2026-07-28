@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 
-import { executablePath } from './bin-paths.js';
+import { selectCodexAppServerExecutable } from './bin-paths.js';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_TURN_TIMEOUT_MS = 10 * 60_000;
@@ -19,6 +19,28 @@ const SESSION_SCHEMA_VERSION = 1;
 const MAX_STDERR_CHARS = 16_384;
 const CODEX_REALTIME_RELAY_MAX_INPUT_BYTES = 1_000_000;
 const CODEX_REALTIME_RELAY_MAX_BUFFERED_OUTPUT_BYTES = 8_000_000;
+const CODEX_REALTIME_INITIAL_ITEM_LIMIT = 128;
+const CODEX_REALTIME_INITIAL_TEXT_CHAR_LIMIT = 1_000_000;
+const CODEX_REALTIME_STRING_LIMIT = 1_000_000;
+const CODEX_REALTIME_APPEND_TEXT_CHAR_LIMIT = 64_000;
+const CODEX_REALTIME_TEXT_IDEMPOTENCY_LIMIT = 256;
+const CODEX_REALTIME_TEXT_IDEMPOTENCY_TTL_MS = 5 * 60_000;
+const CODEX_REALTIME_V3_VOICES = new Set([
+  'alloy', 'arbor', 'ash', 'ballad', 'breeze', 'cedar', 'coral', 'cove', 'echo',
+  'ember', 'juniper', 'maple', 'marin', 'sage', 'shimmer', 'sol', 'spruce',
+  'vale', 'verse',
+]);
+const CODEX_RESPONSE_HANDOFF_MODES = new Set(['thinking', 'commentary', 'bemTags']);
+
+export const CODEX_REALTIME_V3_DEFAULTS = Object.freeze({
+  version: 'v3',
+  model: 'gpt-live-1-codex',
+  voice: 'ember',
+  outputModality: 'audio',
+  clientManagedHandoffs: false,
+  codexResponsesAsItems: false,
+  codexResponseHandoffMode: 'bemTags',
+});
 
 const VOICECLAW_CODEX_DEVELOPER_INSTRUCTIONS = `You are the Codex reasoning layer used by VoiceClaw Realtime.
 Respond with concise plain text suitable for speech unless the user explicitly asks for detail.
@@ -54,6 +76,164 @@ function safeRealtimeVersion(value = '', fallback = 'v3') {
   return ['v1', 'v2', 'v3'].includes(version) ? version : fallback;
 }
 
+function codexRealtimeRequestError(message, code = 'CODEX_REALTIME_INVALID_REQUEST') {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = 400;
+  return error;
+}
+
+function strictRealtimeVersion(value = 'v3') {
+  const version = String(value || 'v3').trim().toLowerCase();
+  if (!['v1', 'v2', 'v3'].includes(version)) {
+    throw codexRealtimeRequestError(`Unsupported Codex realtime version: ${version || '(missing)'}.`);
+  }
+  return version;
+}
+
+function optionalNullableBoolean(source, key, defaultValue = undefined) {
+  if (!Object.hasOwn(source, key) || source[key] === undefined) return defaultValue;
+  if (source[key] === null || typeof source[key] === 'boolean') return source[key];
+  throw codexRealtimeRequestError(`Codex realtime ${key} must be a boolean or null.`);
+}
+
+function optionalNullableString(source, key, {
+  defaultValue = undefined,
+  maximumLength = CODEX_REALTIME_STRING_LIMIT,
+  trim = false,
+} = {}) {
+  if (!Object.hasOwn(source, key) || source[key] === undefined) return defaultValue;
+  if (source[key] === null) return null;
+  if (typeof source[key] !== 'string') {
+    throw codexRealtimeRequestError(`Codex realtime ${key} must be a string or null.`);
+  }
+  const value = trim ? source[key].trim() : source[key];
+  if (value.length > maximumLength) {
+    throw codexRealtimeRequestError(`Codex realtime ${key} is too large.`);
+  }
+  return value;
+}
+
+function normalizeRealtimeInitialItems(value, version) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (version !== 'v3') {
+    throw codexRealtimeRequestError('Codex realtime initialItems are supported only by V3.');
+  }
+  if (!Array.isArray(value) || value.length > CODEX_REALTIME_INITIAL_ITEM_LIMIT) {
+    throw codexRealtimeRequestError(`Codex realtime initialItems must contain at most ${CODEX_REALTIME_INITIAL_ITEM_LIMIT} items.`);
+  }
+  let totalCharacters = 0;
+  return value.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw codexRealtimeRequestError(`Codex realtime initialItems[${index}] must be an object.`);
+    }
+    const role = String(item.role || '').trim().toLowerCase();
+    if (!['user', 'developer', 'assistant'].includes(role)) {
+      throw codexRealtimeRequestError(`Codex realtime initialItems[${index}].role is invalid.`);
+    }
+    if (typeof item.text !== 'string' || !item.text.trim()) {
+      throw codexRealtimeRequestError(`Codex realtime initialItems[${index}].text is required.`);
+    }
+    totalCharacters += item.text.length;
+    if (totalCharacters > CODEX_REALTIME_INITIAL_TEXT_CHAR_LIMIT) {
+      throw codexRealtimeRequestError('Codex realtime initialItems text is too large.');
+    }
+    return { role, text: item.text };
+  });
+}
+
+/**
+ * Normalize the generated ThreadRealtimeStartParams V3 surface without inventing
+ * private protocol fields. Undefined optional fields are omitted; explicit nulls
+ * are retained because the generated app-server schema accepts them.
+ */
+export function normalizeCodexRealtimeWebRTCOptions(options = {}) {
+  const source = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+  const version = strictRealtimeVersion(source.version || CODEX_REALTIME_V3_DEFAULTS.version);
+  const outputModality = String(source.outputModality || CODEX_REALTIME_V3_DEFAULTS.outputModality)
+    .trim()
+    .toLowerCase();
+  if (!['text', 'audio'].includes(outputModality)) {
+    throw codexRealtimeRequestError('Codex realtime outputModality must be text or audio.');
+  }
+  if (version === 'v3' && outputModality !== 'audio') {
+    throw codexRealtimeRequestError(
+      'GPT Live V3 currently admits audio output only.',
+      'CODEX_REALTIME_V3_AUDIO_REQUIRED',
+    );
+  }
+
+  const model = safeModel(source.model || (version === 'v3' ? CODEX_REALTIME_V3_DEFAULTS.model : ''));
+  const voice = safeVoice(source.voice || (version === 'v3' ? CODEX_REALTIME_V3_DEFAULTS.voice : ''));
+  if (version === 'v3' && !CODEX_REALTIME_V3_VOICES.has(voice)) {
+    throw codexRealtimeRequestError(`Unsupported GPT Live V3 voice: ${voice || '(missing)'}.`);
+  }
+
+  const clientManagedHandoffs = optionalNullableBoolean(
+    source,
+    'clientManagedHandoffs',
+    version === 'v3' ? CODEX_REALTIME_V3_DEFAULTS.clientManagedHandoffs : undefined,
+  );
+  const flushTranscriptTailOnSessionEnd = optionalNullableBoolean(source, 'flushTranscriptTailOnSessionEnd');
+  const codexResponsesAsItems = optionalNullableBoolean(
+    source,
+    'codexResponsesAsItems',
+    version === 'v3' ? CODEX_REALTIME_V3_DEFAULTS.codexResponsesAsItems : undefined,
+  );
+  const includeStartupContext = optionalNullableBoolean(source, 'includeStartupContext');
+  const codexResponseItemPrefix = optionalNullableString(source, 'codexResponseItemPrefix');
+  const prompt = optionalNullableString(source, 'prompt');
+  const realtimeSessionId = optionalNullableString(source, 'realtimeSessionId', {
+    maximumLength: 512,
+    trim: true,
+  });
+  const initialItems = normalizeRealtimeInitialItems(source.initialItems, version);
+
+  let codexResponseHandoffMode;
+  if (!Object.hasOwn(source, 'codexResponseHandoffMode') || source.codexResponseHandoffMode === undefined) {
+    codexResponseHandoffMode = version === 'v3'
+      ? CODEX_REALTIME_V3_DEFAULTS.codexResponseHandoffMode
+      : undefined;
+  } else if (source.codexResponseHandoffMode === null) {
+    codexResponseHandoffMode = null;
+  } else {
+    codexResponseHandoffMode = String(source.codexResponseHandoffMode || '').trim();
+    if (!CODEX_RESPONSE_HANDOFF_MODES.has(codexResponseHandoffMode)) {
+      throw codexRealtimeRequestError('Codex realtime codexResponseHandoffMode is invalid.');
+    }
+  }
+
+  return {
+    version,
+    model,
+    voice,
+    outputModality,
+    clientManagedHandoffs,
+    flushTranscriptTailOnSessionEnd,
+    codexResponsesAsItems,
+    codexResponseItemPrefix,
+    codexResponseHandoffMode,
+    includeStartupContext,
+    initialItems,
+    prompt,
+    realtimeSessionId,
+  };
+}
+
+function validatedRealtimeWebRTCOffer(value) {
+  // SDP is a wire-format document. Preserve its CRLF terminator exactly; trimming it causes
+  // the Realtime call endpoint to reject otherwise valid browser offers with invalid_offer/EOF.
+  const offer = String(value || '');
+  if (!offer.startsWith('v=0')) {
+    throw codexRealtimeRequestError('Codex realtime needs a valid WebRTC SDP offer.');
+  }
+  if (offer.length > 2_000_000) {
+    throw codexRealtimeRequestError('Codex realtime SDP offer is too large.');
+  }
+  return offer;
+}
+
 function safeReasoningEffort(value = '') {
   const effort = String(value || '').trim().toLowerCase();
   if (!effort) return '';
@@ -66,6 +246,44 @@ function safeReasoningEffort(value = '') {
 function safeSessionKey(value = '') {
   const key = String(value || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
   return (key || 'voiceclaw-codex-default').slice(0, 160);
+}
+
+function safeLifecycleID(value = '') {
+  const lifecycleID = String(value || '').trim();
+  if (!lifecycleID) return randomUUID();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,159}$/.test(lifecycleID)) {
+    throw codexRealtimeRequestError('Codex realtime lifecycleID contains unsupported characters.');
+  }
+  return lifecycleID;
+}
+
+function isRealtimeAlreadyStoppedError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('already stopped')
+    || message.includes('not running')
+    || message.includes('not active')
+    || message.includes('session is closed')
+    || message.includes('session closed');
+}
+
+function realtimeLifecycleSnapshot(lease) {
+  if (!lease) return null;
+  return {
+    lifecycleID: lease.ownerID,
+    sessionKey: lease.sessionKey,
+    threadID: lease.threadID,
+    transport: lease.transport || null,
+    version: lease.version || null,
+    model: lease.model || null,
+    voice: lease.voice || null,
+    status: lease.status || null,
+    realtimeSessionID: lease.realtimeSessionID || null,
+    acquiredAt: lease.acquiredAt,
+    touchedAt: lease.touchedAt,
+    closedAt: lease.closedAt || null,
+    closeReason: lease.closeReason || null,
+    error: lease.error || null,
+  };
 }
 
 function errorFromRPC(error, method = '') {
@@ -189,7 +407,8 @@ function trackerText(tracker) {
 
 export class CodexAppServerClient {
   constructor({
-    codexPath = process.env.VOICECLAW_CODEX_BIN || executablePath('codex'),
+    codexPath = '',
+    codexSelection = null,
     spawnProcess = spawn,
     clientVersion = process.env.VOICECLAW_COMPANION_VERSION || 'dev',
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
@@ -198,7 +417,18 @@ export class CodexAppServerClient {
     environment = process.env,
     environmentProvider = null,
   } = {}) {
-    this.codexPath = codexPath;
+    const selectedBinary = codexSelection || (codexPath
+      ? {
+          path: String(codexPath),
+          source: 'explicit',
+          version: null,
+          available: true,
+          verifiedV3Build: false,
+          reason: 'constructor-override',
+        }
+      : selectCodexAppServerExecutable());
+    this.codexPath = selectedBinary.path;
+    this.codexSelection = Object.freeze({ ...selectedBinary });
     this.spawnProcess = spawnProcess;
     this.clientVersion = String(clientVersion || 'dev');
     this.requestTimeoutMs = boundedTimeout(requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
@@ -357,9 +587,16 @@ export class CodexAppServerClient {
     return () => this.notificationListeners.delete(listener);
   }
 
+  async readAccount({ refreshToken = false } = {}) {
+    await this.start();
+    return publicAccount(await this.request('account/read', {
+      refreshToken: refreshToken === true,
+    }));
+  }
+
   async status({ refreshToken = false } = {}) {
     await this.start();
-    const accountResult = await this.request('account/read', { refreshToken: refreshToken === true });
+    const account = await this.readAccount({ refreshToken });
     let featureResult = {};
     let featureListError = null;
     try {
@@ -382,6 +619,7 @@ export class CodexAppServerClient {
     return {
       state: 'ready',
       binary: this.codexPath,
+      binarySelection: this.codexSelection,
       generation: this.generation,
       userAgent: this.initializeNegotiation?.userAgent || '',
       platformFamily: this.initializeNegotiation?.platformFamily || '',
@@ -392,7 +630,7 @@ export class CodexAppServerClient {
         negotiation: this.initializeNegotiation?.mode || 'legacy-unversioned',
         compatible: this.initializeNegotiation?.compatible !== false,
       },
-      account: publicAccount(accountResult),
+      account,
       realtime: {
         method: 'thread/realtime/start',
         experimental: true,
@@ -429,6 +667,11 @@ export class CodexAppServerClient {
             name: 'Frameless Bidi',
             endpoint: '/v1/live',
             backendAdmission: verifiedV3 ? 'verified' : (probes.some((probe) => probe.version === 'v3') ? 'rejected' : 'unverified'),
+            supportedConfiguration: {
+              ...CODEX_REALTIME_V3_DEFAULTS,
+              transport: 'webrtc',
+              auth: 'chatgpt-login-managed-by-codex-app-server',
+            },
           },
         },
         transports: {
@@ -534,6 +777,22 @@ export class CodexAppServerClient {
     return await this.#waitForTurn(String(threadID || '').trim(), turnID, timeoutMs);
   }
 
+  async prepareRealtimeWebRTC(options = {}) {
+    const normalized = normalizeCodexRealtimeWebRTCOptions(options);
+    let account = null;
+    if (normalized.version === 'v3') {
+      account = await this.readAccount();
+      if (!account.signedIn || String(account.type || '').toLowerCase() !== 'chatgpt') {
+        const error = new Error('GPT Live V3 currently requires a ChatGPT login managed by Codex app-server.');
+        error.code = 'CODEX_REALTIME_CHATGPT_LOGIN_REQUIRED';
+        error.statusCode = 409;
+        this.#recordRealtimeProbe('webrtc', false, error, normalized);
+        throw error;
+      }
+    }
+    return { normalized, account };
+  }
+
   async startRealtimeWebRTC({
     threadID,
     sdp,
@@ -541,19 +800,38 @@ export class CodexAppServerClient {
     version = 'v3',
     voice = '',
     outputModality = 'audio',
+    clientManagedHandoffs,
+    flushTranscriptTailOnSessionEnd,
+    codexResponsesAsItems,
+    codexResponseItemPrefix,
+    codexResponseHandoffMode,
+    includeStartupContext,
+    initialItems,
+    prompt,
+    realtimeSessionId,
     timeoutMs = this.realtimeTimeoutMs,
+    prepared = null,
   } = {}) {
-    // SDP is a wire-format document. Preserve its CRLF terminator exactly; trimming it causes
-    // the Realtime call endpoint to reject otherwise valid browser offers with invalid_offer/EOF.
-    const offer = String(sdp || '');
-    if (!offer.startsWith('v=0')) throw new Error('Codex realtime needs a valid WebRTC SDP offer.');
-    if (offer.length > 2_000_000) throw new Error('Codex realtime SDP offer is too large.');
+    const offer = validatedRealtimeWebRTCOffer(sdp);
     const targetThreadID = String(threadID || '').trim();
     if (!targetThreadID) throw new Error('Codex realtime thread id is required.');
     const timeout = boundedTimeout(timeoutMs, this.realtimeTimeoutMs);
-    const requestedVersion = safeRealtimeVersion(version);
-    const requestedModel = safeModel(model);
-    const requestedVoice = safeVoice(voice);
+    const readiness = prepared || await this.prepareRealtimeWebRTC({
+      model,
+      version,
+      voice,
+      outputModality,
+      clientManagedHandoffs,
+      flushTranscriptTailOnSessionEnd,
+      codexResponsesAsItems,
+      codexResponseItemPrefix,
+      codexResponseHandoffMode,
+      includeStartupContext,
+      initialItems,
+      prompt,
+      realtimeSessionId,
+    });
+    const { normalized, account } = readiness;
     const answerPromise = this.#waitForNotification(
       (message) => message?.method === 'thread/realtime/sdp'
         && message?.params?.threadId === targetThreadID,
@@ -571,27 +849,54 @@ export class CodexAppServerClient {
       },
     );
     try {
-      await this.request('thread/realtime/start', {
+      const requestParams = {
         threadId: targetThreadID,
-        outputModality: outputModality === 'text' ? 'text' : 'audio',
-        version: requestedVersion,
-        ...(requestedModel ? { model: requestedModel } : {}),
-        ...(requestedVoice ? { voice: requestedVoice } : {}),
+        outputModality: normalized.outputModality,
+        version: normalized.version,
+        ...(normalized.model ? { model: normalized.model } : {}),
+        ...(normalized.voice ? { voice: normalized.voice } : {}),
         transport: { type: 'webrtc', sdp: offer },
-      }, { timeoutMs: timeout });
+      };
+      for (const key of [
+        'clientManagedHandoffs',
+        'flushTranscriptTailOnSessionEnd',
+        'codexResponsesAsItems',
+        'codexResponseItemPrefix',
+        'codexResponseHandoffMode',
+        'includeStartupContext',
+        'initialItems',
+        'prompt',
+        'realtimeSessionId',
+      ]) {
+        if (normalized[key] !== undefined) requestParams[key] = normalized[key];
+      }
+      await this.request('thread/realtime/start', requestParams, { timeoutMs: timeout });
       const answer = await Promise.race([answerPromise, errorPromise]);
       if (!answer.startsWith('v=0')) throw new Error('Codex realtime returned an invalid SDP answer.');
       this.#recordRealtimeProbe('webrtc', true, null, {
-        version: requestedVersion,
-        model: requestedModel,
-        voice: requestedVoice,
+        version: normalized.version,
+        model: normalized.model,
+        voice: normalized.voice,
       });
-      return { threadID: targetThreadID, sdp: answer, version: requestedVersion, model: requestedModel || null, voice: requestedVoice || null, outputModality };
+      return {
+        threadID: targetThreadID,
+        sdp: answer,
+        transport: 'webrtc',
+        version: normalized.version,
+        model: normalized.model || null,
+        voice: normalized.voice || null,
+        outputModality: normalized.outputModality,
+        auth: account ? {
+          type: 'chatgpt',
+          managedBy: 'codex-app-server',
+          credentialsExposed: false,
+        } : null,
+      };
     } catch (error) {
       this.#recordRealtimeProbe('webrtc', false, error, {
-        version: requestedVersion,
-        model: requestedModel,
-        voice: requestedVoice,
+        version: normalized.version,
+        model: normalized.model,
+        voice: normalized.voice,
       });
       throw error;
     }
@@ -897,12 +1202,24 @@ export class CodexAppServerBridge {
     this.sessions = new Map();
     this.loadedGeneration = 0;
     this.sessionLocks = new Map();
+    this.realtimeOperationLock = Promise.resolve();
     this.realtimeLease = null;
+    this.lastRealtimeLifecycle = null;
+    this.realtimeTextRequests = new Map();
     this.loadPromise = this.#loadState();
     this.client.onNotification((message) => {
-      if (message?.method === 'thread/realtime/closed'
-          && message?.params?.threadId === this.realtimeLease?.threadID) {
-        this.realtimeLease = null;
+      const lease = this.realtimeLease;
+      if (!lease || message?.params?.threadId !== lease.threadID) return;
+      if (message?.method === 'thread/realtime/started') {
+        lease.status = 'active';
+        lease.touchedAt = Date.now();
+        lease.realtimeSessionID = message?.params?.realtimeSessionId || null;
+        if (message?.params?.version) lease.version = String(message.params.version);
+      } else if (message?.method === 'thread/realtime/closed') {
+        this.#finishRealtimeLifecycle(lease, {
+          status: 'closed',
+          reason: String(message?.params?.reason || 'app-server closed'),
+        });
       }
     });
   }
@@ -926,6 +1243,10 @@ export class CodexAppServerBridge {
         acquiredAt: this.realtimeLease.acquiredAt,
         touchedAt: this.realtimeLease.touchedAt,
       } : null,
+      realtimeLifecycle: {
+        active: realtimeLifecycleSnapshot(this.realtimeLease),
+        last: realtimeLifecycleSnapshot(this.lastRealtimeLifecycle),
+      },
     };
   }
 
@@ -982,24 +1303,79 @@ export class CodexAppServerBridge {
     sessionMode = 'attach',
     sdp,
     model = '',
+    threadModel = '',
     version = 'v3',
     voice = '',
     outputModality = 'audio',
+    clientManagedHandoffs,
+    flushTranscriptTailOnSessionEnd,
+    codexResponsesAsItems,
+    codexResponseItemPrefix,
+    codexResponseHandoffMode,
+    includeStartupContext,
+    initialItems,
+    prompt,
+    realtimeSessionId,
     timeoutMs,
+    lifecycleID = '',
   } = {}) {
+    const offer = validatedRealtimeWebRTCOffer(sdp);
     const key = safeSessionKey(sessionKey);
-    return await this.#withSessionLock(key, async () => {
-      const session = await this.#ensureSession({ sessionKey: key, sessionMode, model });
-      const result = await this.client.startRealtimeWebRTC({
-        threadID: session.threadID,
-        sdp,
-        model,
-        version,
-        voice,
-        outputModality,
-        timeoutMs,
+    const normalized = normalizeCodexRealtimeWebRTCOptions({
+      model,
+      version,
+      voice,
+      outputModality,
+      clientManagedHandoffs,
+      flushTranscriptTailOnSessionEnd,
+      codexResponsesAsItems,
+      codexResponseItemPrefix,
+      codexResponseHandoffMode,
+      includeStartupContext,
+      initialItems,
+      prompt,
+      realtimeSessionId,
+    });
+    return await this.#withRealtimeLock(async () => {
+      const prepared = await this.client.prepareRealtimeWebRTC(normalized);
+      return await this.#withSessionLock(key, async () => {
+        const session = await this.#ensureSession({ sessionKey: key, sessionMode, model: threadModel });
+        const lease = await this.#acquireRealtimeLease({
+          sessionKey: key,
+          threadID: session.threadID,
+          ownerID: safeLifecycleID(lifecycleID),
+          transport: 'webrtc',
+          version: normalized.version,
+          model: normalized.model,
+          voice: normalized.voice,
+        });
+        try {
+          const result = await this.client.startRealtimeWebRTC({
+            threadID: session.threadID,
+            sdp: offer,
+            ...normalized,
+            timeoutMs,
+            prepared,
+          });
+          if (this.realtimeLease?.ownerID === lease.ownerID) {
+            lease.status = 'active';
+            lease.touchedAt = Date.now();
+          }
+          return {
+            ...result,
+            sessionKey: key,
+            lifecycleID: lease.ownerID,
+            lifecycle: realtimeLifecycleSnapshot(lease),
+          };
+        } catch (error) {
+          this.#finishRealtimeLifecycle(lease, {
+            status: 'failed',
+            reason: 'start failed',
+            error,
+          });
+          throw error;
+        }
       });
-      return { ...result, sessionKey: key };
     });
   }
 
@@ -1014,29 +1390,46 @@ export class CodexAppServerBridge {
     leaseOwnerID = '',
   } = {}) {
     const key = safeSessionKey(sessionKey);
-    return await this.#withSessionLock(key, async () => {
-      const session = await this.#ensureSession({ sessionKey: key, sessionMode, model });
-      await this.#acquireRealtimeLease({
-        sessionKey: key,
-        threadID: session.threadID,
-        ownerID: String(leaseOwnerID || randomUUID()),
-      });
-      const ownerID = this.realtimeLease?.ownerID || null;
-      try {
-        const result = await this.client.startRealtimeWebSocket({
+    return await this.#withRealtimeLock(async () => {
+      return await this.#withSessionLock(key, async () => {
+        const session = await this.#ensureSession({ sessionKey: key, sessionMode, model });
+        await this.#acquireRealtimeLease({
+          sessionKey: key,
           threadID: session.threadID,
-          model,
-          version,
-          voice,
-          outputModality,
-          timeoutMs,
+          ownerID: String(leaseOwnerID || randomUUID()),
+          transport: 'websocket',
+          version: safeRealtimeVersion(version),
+          model: safeModel(model),
+          voice: safeVoice(voice),
         });
-        return { ...result, sessionKey: key, leaseOwnerID: ownerID };
-      } catch (error) {
-        // A rejected admission must not consume the single Codex realtime slot.
-        if (ownerID && this.realtimeLease?.ownerID === ownerID) this.realtimeLease = null;
-        throw error;
-      }
+        const lease = this.realtimeLease;
+        const ownerID = lease?.ownerID || null;
+        try {
+          const result = await this.client.startRealtimeWebSocket({
+            threadID: session.threadID,
+            model,
+            version,
+            voice,
+            outputModality,
+            timeoutMs,
+          });
+          if (this.realtimeLease?.ownerID === ownerID) {
+            lease.status = 'active';
+            lease.touchedAt = Date.now();
+            lease.realtimeSessionID = result.realtimeSessionID || null;
+            lease.version = result.version || lease.version;
+          }
+          return { ...result, sessionKey: key, leaseOwnerID: ownerID };
+        } catch (error) {
+          // A rejected admission must not consume the single Codex realtime slot.
+          this.#finishRealtimeLifecycle(lease, {
+            status: 'failed',
+            reason: 'start failed',
+            error,
+          });
+          throw error;
+        }
+      });
     });
   }
 
@@ -1047,14 +1440,12 @@ export class CodexAppServerBridge {
   }
 
   async releaseRealtimeLease(ownerID, reason = 'relay stopped') {
-    const lease = this.realtimeLease;
-    if (!lease || (ownerID && lease.ownerID !== ownerID)) return false;
-    try {
-      await this.client.stopRealtime(lease.threadID);
-    } finally {
-      if (this.realtimeLease?.ownerID === lease.ownerID) this.realtimeLease = null;
-    }
-    return true;
+    return await this.#withRealtimeLock(async () => {
+      const lease = this.realtimeLease;
+      if (!lease || (ownerID && lease.ownerID !== ownerID)) return false;
+      const result = await this.#stopRealtimeLease(lease, reason);
+      return result.stopped || result.alreadyStopped;
+    });
   }
 
   onNotification(listener) {
@@ -1069,36 +1460,252 @@ export class CodexAppServerBridge {
     return await this.client.appendRealtimeText(options);
   }
 
+  async appendRealtimeTextIdempotent({
+    threadID,
+    text,
+    role = 'user',
+    requestID = '',
+  } = {}) {
+    const targetThreadID = String(threadID || '').trim();
+    if (!targetThreadID) throw codexRealtimeRequestError('Codex realtime threadID is required.');
+    if (typeof text !== 'string' || !text.trim()) {
+      throw codexRealtimeRequestError('Codex realtime text is required.');
+    }
+    if (text.length > CODEX_REALTIME_APPEND_TEXT_CHAR_LIMIT) {
+      throw codexRealtimeRequestError(`Codex realtime text exceeds ${CODEX_REALTIME_APPEND_TEXT_CHAR_LIMIT} characters.`);
+    }
+    const normalizedRole = String(role || 'user').trim().toLowerCase();
+    if (!['user', 'developer', 'assistant'].includes(normalizedRole)) {
+      throw codexRealtimeRequestError('Codex realtime text role is invalid.');
+    }
+    const id = safeLifecycleID(requestID);
+    const dedupeKey = `${targetThreadID}:${id}`;
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ threadID: targetThreadID, text, role: normalizedRole }))
+      .digest('hex');
+    this.#pruneRealtimeTextRequests();
+    const existing = this.realtimeTextRequests.get(dedupeKey);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        const error = new Error('Codex realtime requestID was reused with a different text payload.');
+        error.code = 'CODEX_REALTIME_IDEMPOTENCY_CONFLICT';
+        error.statusCode = 409;
+        throw error;
+      }
+      return { ...await existing.promise, duplicate: true };
+    }
+
+    const lease = this.realtimeLease;
+    if (!lease || lease.transport !== 'webrtc' || lease.threadID !== targetThreadID) {
+      const error = new Error('The requested GPT Live WebRTC session is not active.');
+      error.code = 'CODEX_REALTIME_SESSION_NOT_ACTIVE';
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const promise = this.client.appendRealtimeText({
+      threadID: targetThreadID,
+      text,
+      role: normalizedRole,
+    }).then(() => ({
+      appended: true,
+      duplicate: false,
+      threadID: targetThreadID,
+      requestID: id,
+      role: normalizedRole,
+    }));
+    this.realtimeTextRequests.set(dedupeKey, {
+      fingerprint,
+      createdAt: Date.now(),
+      promise,
+    });
+    this.#pruneRealtimeTextRequests();
+    try {
+      return await promise;
+    } catch (error) {
+      if (this.realtimeTextRequests.get(dedupeKey)?.promise === promise) {
+        this.realtimeTextRequests.delete(dedupeKey);
+      }
+      throw error;
+    }
+  }
+
   async appendRealtimeSpeech(options = {}) {
     return await this.client.appendRealtimeSpeech(options);
   }
 
+  async stopRealtimeWebRTC({
+    threadID,
+    sessionKey,
+    lifecycleID = '',
+  } = {}) {
+    const targetThreadID = String(threadID || '').trim();
+    const rawSessionKey = String(sessionKey || '').trim();
+    if (!targetThreadID || !rawSessionKey) {
+      throw codexRealtimeRequestError('Codex realtime stop requires threadID and sessionKey.');
+    }
+    const key = safeSessionKey(rawSessionKey);
+    const requestedLifecycleID = lifecycleID ? safeLifecycleID(lifecycleID) : '';
+    return await this.#withRealtimeLock(async () => {
+      return await this.#withSessionLock(key, async () => {
+        const lease = this.realtimeLease;
+        const matchesSession = lease
+          && lease.transport === 'webrtc'
+          && lease.threadID === targetThreadID
+          && lease.sessionKey === key;
+        if (matchesSession && requestedLifecycleID && lease.ownerID !== requestedLifecycleID) {
+          return {
+            stopped: false,
+            alreadyStopped: true,
+            stale: true,
+            threadID: targetThreadID,
+            sessionKey: key,
+            lifecycleID: requestedLifecycleID,
+            status: 'stopped',
+          };
+        }
+        if (matchesSession) return await this.#stopRealtimeLease(lease, 'client stop');
+
+        const last = this.lastRealtimeLifecycle;
+        const previouslyClosed = last
+          && last.transport === 'webrtc'
+          && last.threadID === targetThreadID
+          && last.sessionKey === key
+          && (!requestedLifecycleID || last.ownerID === requestedLifecycleID);
+        return {
+          stopped: false,
+          alreadyStopped: true,
+          stale: !!lease && !previouslyClosed,
+          threadID: targetThreadID,
+          sessionKey: key,
+          lifecycleID: requestedLifecycleID || (previouslyClosed ? last.ownerID : null),
+          status: 'stopped',
+        };
+      });
+    });
+  }
+
   async stopRealtime(threadID) {
-    const result = await this.client.stopRealtime(threadID);
-    if (this.realtimeLease?.threadID === threadID) this.realtimeLease = null;
-    return result;
+    return await this.#withRealtimeLock(async () => {
+      const targetThreadID = String(threadID || '').trim();
+      const lease = this.realtimeLease;
+      if (lease?.threadID === targetThreadID) {
+        return await this.#stopRealtimeLease(lease, 'bridge stop');
+      }
+      try {
+        return await this.client.stopRealtime(targetThreadID);
+      } catch (error) {
+        if (isRealtimeAlreadyStoppedError(error)) return {};
+        throw error;
+      }
+    });
   }
 
   stop() {
-    this.realtimeLease = null;
+    if (this.realtimeLease) {
+      this.#finishRealtimeLifecycle(this.realtimeLease, {
+        status: 'closed',
+        reason: 'bridge stopped',
+      });
+    }
+    this.realtimeTextRequests.clear();
     this.client.stop();
   }
 
-  async #acquireRealtimeLease({ sessionKey, threadID, ownerID }) {
+  async #acquireRealtimeLease({
+    sessionKey,
+    threadID,
+    ownerID,
+    transport = '',
+    version = '',
+    model = '',
+    voice = '',
+  }) {
     const current = this.realtimeLease;
     if (current) {
       // Codex currently admits one realtime session. A new VoiceClaw start owns that
       // slot and replaces the prior lease so stale/disconnected clients cannot strand it.
       try { await this.client.stopRealtime(current.threadID); } catch {}
-      if (this.realtimeLease?.ownerID === current.ownerID) this.realtimeLease = null;
+      this.#finishRealtimeLifecycle(current, {
+        status: 'closed',
+        reason: 'replaced by a newer realtime session',
+      });
     }
-    this.realtimeLease = {
+    const now = Date.now();
+    const lease = {
       sessionKey,
       threadID,
       ownerID,
-      acquiredAt: Date.now(),
-      touchedAt: Date.now(),
+      transport,
+      version,
+      model: model || null,
+      voice: voice || null,
+      status: 'starting',
+      realtimeSessionID: null,
+      acquiredAt: now,
+      touchedAt: now,
+      closedAt: null,
+      closeReason: null,
+      error: null,
     };
+    this.realtimeLease = lease;
+    return lease;
+  }
+
+  async #stopRealtimeLease(lease, reason) {
+    lease.status = 'stopping';
+    lease.touchedAt = Date.now();
+    let alreadyStopped = false;
+    try {
+      await this.client.stopRealtime(lease.threadID);
+    } catch (error) {
+      if (!isRealtimeAlreadyStoppedError(error)) {
+        if (this.realtimeLease?.ownerID === lease.ownerID) lease.status = 'active';
+        throw error;
+      }
+      alreadyStopped = true;
+    }
+    this.#finishRealtimeLifecycle(lease, {
+      status: 'closed',
+      reason: alreadyStopped ? 'already stopped' : reason,
+    });
+    return {
+      stopped: !alreadyStopped,
+      alreadyStopped,
+      stale: false,
+      threadID: lease.threadID,
+      sessionKey: lease.sessionKey,
+      lifecycleID: lease.ownerID,
+      status: 'stopped',
+    };
+  }
+
+  #finishRealtimeLifecycle(lease, {
+    status = 'closed',
+    reason = '',
+    error = null,
+  } = {}) {
+    if (!lease) return;
+    lease.status = status;
+    lease.touchedAt = Date.now();
+    lease.closedAt = Date.now();
+    lease.closeReason = reason;
+    lease.error = error ? String(error?.message || error) : null;
+    if (this.realtimeLease?.ownerID === lease.ownerID) this.realtimeLease = null;
+    this.lastRealtimeLifecycle = { ...lease };
+  }
+
+  #pruneRealtimeTextRequests() {
+    const cutoff = Date.now() - CODEX_REALTIME_TEXT_IDEMPOTENCY_TTL_MS;
+    for (const [key, entry] of this.realtimeTextRequests) {
+      if (entry.createdAt >= cutoff) continue;
+      this.realtimeTextRequests.delete(key);
+    }
+    while (this.realtimeTextRequests.size > CODEX_REALTIME_TEXT_IDEMPOTENCY_LIMIT) {
+      const oldest = this.realtimeTextRequests.keys().next().value;
+      if (!oldest) break;
+      this.realtimeTextRequests.delete(oldest);
+    }
   }
 
   async #ensureSession({ sessionKey, sessionMode, model }) {
@@ -1146,6 +1753,17 @@ export class CodexAppServerBridge {
       return await current;
     } finally {
       if (this.sessionLocks.get(sessionKey) === current) this.sessionLocks.delete(sessionKey);
+    }
+  }
+
+  async #withRealtimeLock(operation) {
+    const previous = this.realtimeOperationLock;
+    const current = previous.catch(() => {}).then(operation);
+    this.realtimeOperationLock = current;
+    try {
+      return await current;
+    } finally {
+      if (this.realtimeOperationLock === current) this.realtimeOperationLock = Promise.resolve();
     }
   }
 
