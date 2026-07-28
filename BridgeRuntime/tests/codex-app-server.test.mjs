@@ -522,7 +522,7 @@ test('marks experimental realtime available only after receiving a real SDP answ
   assert.equal(negotiation.threadID, 'thread-voiceclaw-1');
   assert.equal(negotiation.sessionKey, 'realtime-session');
   assert.equal(negotiation.version, 'v3');
-  assert.equal(negotiation.model, 'gpt-live-1-codex');
+  assert.equal(negotiation.model, 'gpt-live-1-boulder-alpha');
   assert.equal(negotiation.voice, 'ember');
   assert.match(negotiation.lifecycleID, /^[0-9a-f-]{36}$/);
   assert.equal(start.params.transport.sdp, 'v=0\r\no=fake-offer\r\n');
@@ -531,7 +531,7 @@ test('marks experimental realtime available only after receiving a real SDP answ
   assert.equal(start.params.codexResponsesAsItems, false);
   assert.equal(start.params.codexResponseHandoffMode, 'bemTags');
   assert.equal(start.params.flushTranscriptTailOnSessionEnd, undefined);
-  assert.equal(start.params.model, 'gpt-live-1-codex');
+  assert.equal(start.params.model, 'gpt-live-1-boulder-alpha');
   assert.equal(start.params.voice, 'ember');
   const threadStart = server.calls.find((call) => call.method === 'thread/start');
   assert.equal(threadStart.params.model, undefined, 'the GPT Live model must not be used as the Codex thread model');
@@ -593,7 +593,7 @@ test('forwards every generated V3 WebRTC field with exact names', async () => {
     sessionKey: 'v3-fields',
     sdp: 'v=0\r\no=full-v3-offer\r\n',
     version: 'v3',
-    model: 'gpt-live-1-codex',
+    model: 'gpt-live-1-boulder-alpha',
     voice: 'ember',
     outputModality: 'audio',
     clientManagedHandoffs: true,
@@ -615,7 +615,7 @@ test('forwards every generated V3 WebRTC field with exact names', async () => {
     threadId: 'thread-voiceclaw-1',
     outputModality: 'audio',
     version: 'v3',
-    model: 'gpt-live-1-codex',
+    model: 'gpt-live-1-boulder-alpha',
     voice: 'ember',
     transport: { type: 'webrtc', sdp: 'v=0\r\no=full-v3-offer\r\n' },
     clientManagedHandoffs: true,

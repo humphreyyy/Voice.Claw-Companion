@@ -6168,7 +6168,7 @@ const httpServer = createServer(async (req, res) => {
               status: 'supported-chatgpt-app-server-webrtc-path',
               admission: 'verified-after-sdp-answer',
               version: 'v3',
-              model: 'gpt-live-1-codex',
+              model: 'gpt-live-1-boulder-alpha',
               voice: 'ember',
               outputModality: 'audio',
               auth: 'chatgpt-login-managed-by-codex-app-server',

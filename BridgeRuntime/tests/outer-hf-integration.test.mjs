@@ -286,7 +286,7 @@ test('GPT Live WebRTC start, stop, and text routes are authenticated and adverti
     assert.equal(config.realtime.codexAppServer.webRTCStopPath, '/realtime/codex/webrtc/stop');
     assert.equal(config.realtime.codexAppServer.webRTCTextPath, '/realtime/codex/webrtc/text');
     assert.equal(config.realtime.codexAppServer.realtime.v3Live.version, 'v3');
-    assert.equal(config.realtime.codexAppServer.realtime.v3Live.model, 'gpt-live-1-codex');
+    assert.equal(config.realtime.codexAppServer.realtime.v3Live.model, 'gpt-live-1-boulder-alpha');
     assert.equal(config.realtime.codexAppServer.realtime.v3Live.admission, 'verified-after-sdp-answer');
   } finally {
     await new Promise((resolve) => httpServer.close(resolve));

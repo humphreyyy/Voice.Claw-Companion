@@ -26,15 +26,21 @@ const CODEX_REALTIME_APPEND_TEXT_CHAR_LIMIT = 64_000;
 const CODEX_REALTIME_TEXT_IDEMPOTENCY_LIMIT = 256;
 const CODEX_REALTIME_TEXT_IDEMPOTENCY_TTL_MS = 5 * 60_000;
 const CODEX_REALTIME_V3_VOICES = new Set([
-  'alloy', 'arbor', 'ash', 'ballad', 'breeze', 'cedar', 'coral', 'cove', 'echo',
-  'ember', 'juniper', 'maple', 'marin', 'sage', 'shimmer', 'sol', 'spruce',
-  'vale', 'verse',
+  'juniper',
+  'maple',
+  'spruce',
+  'ember',
+  'vale',
+  'breeze',
+  'arbor',
+  'sol',
+  'cove',
 ]);
 const CODEX_RESPONSE_HANDOFF_MODES = new Set(['thinking', 'commentary', 'bemTags']);
 
 export const CODEX_REALTIME_V3_DEFAULTS = Object.freeze({
   version: 'v3',
-  model: 'gpt-live-1-codex',
+  model: 'gpt-live-1-boulder-alpha',
   voice: 'ember',
   outputModality: 'audio',
   clientManagedHandoffs: true,
