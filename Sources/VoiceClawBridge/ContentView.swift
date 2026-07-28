@@ -23,6 +23,10 @@ struct ContentView: View {
                 }
             }
         }
+        .tint(VoiceClawCompanionTheme.cyan)
+        .accentColor(VoiceClawCompanionTheme.cyan)
+        .preferredColorScheme(.dark)
+        .background(VoiceClawCompanionTheme.background)
         .onChange(of: selection) { newSelection in
             guard newSelection == .pair else { return }
             store.refreshPairingPayloadForDisplay()
@@ -127,50 +131,68 @@ private struct SidebarView: View {
             ForEach(CompanionSection.visibleCases) { section in
                 HStack(spacing: 10) {
                     Image(systemName: section.symbol)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(
+                            section == selection
+                                ? VoiceClawCompanionTheme.cyan
+                                : VoiceClawCompanionTheme.mutedText
+                        )
+                        .frame(width: 18)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(section.title)
+                            .font(.body.weight(section == selection ? .semibold : .regular))
+                            .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                             .lineLimit(1)
                         Text(section.detail)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(VoiceClawCompanionTheme.mutedText)
                             .lineLimit(1)
                     }
                 }
+                .padding(.vertical, 3)
                 .tag(section)
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(VoiceClawCompanionTheme.backgroundElevated.opacity(0.96))
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 10) {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 9, height: 9)
+                    .shadow(color: statusColor.opacity(0.55), radius: 5)
                 Text(status.title)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                     .lineLimit(2)
                 Spacer(minLength: 0)
             }
             .padding(12)
+            .background(VoiceClawCompanionTheme.backgroundElevated.opacity(0.98))
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(VoiceClawCompanionTheme.line)
+                    .frame(height: 1)
+            }
         }
         .navigationTitle(VoiceClawBranding.companionDisplayName)
+        .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 270)
     }
 
     private var statusColor: Color {
         switch status {
         case .ready:
-            .green
+            VoiceClawCompanionTheme.green
         case .working:
-            .yellow
+            VoiceClawCompanionTheme.amber
         case .failed:
-            .red
+            VoiceClawCompanionTheme.coral
         case .warning:
-            .orange
+            VoiceClawCompanionTheme.amber
         case .idle:
-            .secondary
+            VoiceClawCompanionTheme.mutedText
         }
     }
 }
@@ -182,7 +204,7 @@ private struct DetailPane: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     HeroPanel(store: store)
                     LaunchAtStartupPanel(store: store)
                     UpdateAvailableBanner(store: store)
@@ -207,18 +229,14 @@ private struct DetailPane: View {
                     }
                 }
                 .id(selection)
-                .padding(24)
-                .frame(maxWidth: 920, alignment: .leading)
+                .padding(26)
+                .frame(maxWidth: 980, alignment: .leading)
             }
-            .background(.linearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color.cyan.opacity(0.10),
-                    Color.indigo.opacity(0.10),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ))
+            .foregroundStyle(VoiceClawCompanionTheme.primaryText)
+            .background {
+                VoiceClawCompanionBackdrop()
+                    .ignoresSafeArea()
+            }
             .onChange(of: selection) { newValue in
                 withAnimation(.easeInOut(duration: 0.18)) {
                     proxy.scrollTo(newValue, anchor: .top)
@@ -232,24 +250,29 @@ private struct HeroPanel: View {
     @ObservedObject var store: BridgeStore
 
     var body: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 16) {
             BridgeLogo()
-                .frame(width: 86, height: 86)
+                .frame(width: 76, height: 76)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 7) {
                 Text(VoiceClawBranding.companionDisplayName)
-                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                 Text("Install and manage the private Mac companion that lets VoiceClaw Realtime on your phone or watch reach OpenClaw, Hermes Agent, or Codex on this Mac through Tailscale or an HTTPS tunnel.")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Spacer(minLength: 24)
+            Spacer(minLength: 16)
 
-            StatusPill(status: store.status)
+            VStack(alignment: .trailing, spacing: 10) {
+                StatusPill(status: store.status)
+                VoiceClawSignalWaveform(intensity: 0.72)
+                    .frame(width: 132, height: 34)
+            }
         }
-        .panelStyle()
+        .companionHeroSurface()
     }
 }
 
@@ -258,12 +281,19 @@ private struct StatusPill: View {
 
     var body: some View {
         Label(status.title, systemImage: symbol)
-            .font(.headline)
+            .font(.subheadline.weight(.bold))
             .foregroundStyle(color)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(color.opacity(0.14), in: Capsule())
-            .overlay(Capsule().stroke(color.opacity(0.30)))
+            .lineLimit(1)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(
+                VoiceClawCompanionTheme.background.opacity(0.72),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(color.opacity(0.44), lineWidth: 1)
+            }
     }
 
     private var symbol: String {
@@ -284,15 +314,15 @@ private struct StatusPill: View {
     private var color: Color {
         switch status {
         case .idle:
-            .secondary
+            VoiceClawCompanionTheme.mutedText
         case .working:
-            .yellow
+            VoiceClawCompanionTheme.amber
         case .ready:
-            .green
+            VoiceClawCompanionTheme.green
         case .warning:
-            .orange
+            VoiceClawCompanionTheme.amber
         case .failed:
-            .red
+            VoiceClawCompanionTheme.coral
         }
     }
 }
@@ -305,13 +335,13 @@ private struct StatusBanner: View {
         case .idle:
             EmptyView()
         case let .working(message):
-            BannerContent(symbol: "hourglass", title: message, bodyText: "Installing the LaunchAgent and checking Tailscale Serve.", color: .yellow)
+            BannerContent(symbol: "hourglass", title: message, bodyText: "Installing the LaunchAgent and checking Tailscale Serve.", color: VoiceClawCompanionTheme.amber)
         case .ready:
             EmptyView()
         case let .warning(message):
-            BannerContent(symbol: "exclamationmark.triangle.fill", title: message, bodyText: store.lastLog, color: .orange)
+            BannerContent(symbol: "exclamationmark.triangle.fill", title: message, bodyText: store.lastLog, color: VoiceClawCompanionTheme.amber)
         case let .failed(message):
-            BannerContent(symbol: "xmark.octagon.fill", title: message, bodyText: store.lastLog.isEmpty ? "The bridge could not be installed or started. Check Diagnostics for details." : store.lastLog, color: .red)
+            BannerContent(symbol: "xmark.octagon.fill", title: message, bodyText: store.lastLog.isEmpty ? "The bridge could not be installed or started. Check Diagnostics for details." : store.lastLog, color: VoiceClawCompanionTheme.coral)
         }
     }
 }
@@ -325,7 +355,7 @@ private struct RuntimeCheckingBanner: View {
                 symbol: "bolt.horizontal.circle.fill",
                 title: "Checking Bridge Runtime",
                 bodyText: store.bridgeRuntimeCheckSummary,
-                color: .orange)
+                color: VoiceClawCompanionTheme.amber)
         }
     }
 }
@@ -338,15 +368,16 @@ private struct UpdateAvailableBanner: View {
             HStack(alignment: .center, spacing: 14) {
                 Image(systemName: "arrow.down.circle.fill")
                     .font(.system(size: 32, weight: .semibold))
-                    .foregroundStyle(.cyan)
+                    .foregroundStyle(VoiceClawCompanionTheme.cyan)
                     .frame(width: 40)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(updateTitle)
                         .font(.title3.weight(.semibold))
+                        .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                     Text(store.updateSummary)
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -367,11 +398,8 @@ private struct UpdateAvailableBanner: View {
                 .buttonStyle(.bordered)
                 .disabled(store.isCheckingForUpdates)
             }
-            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.cyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.cyan.opacity(0.45), lineWidth: 1))
-            .shadow(color: .cyan.opacity(0.12), radius: 12, y: 4)
+            .companionStatusSurface(color: VoiceClawCompanionTheme.cyan)
             .accessibilityElement(children: .combine)
         }
     }
@@ -391,15 +419,20 @@ private struct LaunchAtStartupPanel: View {
         HStack(alignment: .center, spacing: 14) {
             Image(systemName: store.launchAtStartupEnabled ? "power.circle.fill" : "power.circle")
                 .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(store.launchAtStartupEnabled ? .green : .orange)
+                .foregroundStyle(
+                    store.launchAtStartupEnabled
+                        ? VoiceClawCompanionTheme.green
+                        : VoiceClawCompanionTheme.amber
+                )
                 .frame(width: 40)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Launch upon Startup")
                     .font(.title3.weight(.semibold))
+                    .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                 Text(store.launchAtStartupSummary)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
@@ -416,10 +449,12 @@ private struct LaunchAtStartupPanel: View {
             .disabled(store.isUpdatingLaunchAtStartup)
             .help("Open VoiceClaw Realtime Companion automatically when this Mac user logs in.")
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke((store.launchAtStartupEnabled ? Color.green : Color.orange).opacity(0.30)))
+        .companionStatusSurface(
+            color: store.launchAtStartupEnabled
+                ? VoiceClawCompanionTheme.green
+                : VoiceClawCompanionTheme.amber
+        )
         .accessibilityElement(children: .combine)
     }
 }
@@ -435,24 +470,27 @@ private struct BannerContent: View {
             Image(systemName: symbol)
                 .font(.title2)
                 .foregroundStyle(color)
-                .frame(width: 28)
+                .frame(width: 32, height: 32)
+                .background(
+                    color.opacity(0.11),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.headline)
+                    .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                 if !bodyText.isEmpty {
                     Text(bodyText)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                         .textSelection(.enabled)
                 }
             }
 
             Spacer(minLength: 0)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.30)))
+        .companionStatusSurface(color: color)
     }
 }
 
@@ -622,8 +660,7 @@ private struct AccessPanel: View {
                     }
                 }
             }
-            .padding(14)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .companionInsetSurface(accent: VoiceClawCompanionTheme.cyan)
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("Prepare This Mac")
@@ -713,8 +750,7 @@ private struct AccessPanel: View {
                 }
                 .buttonStyle(.bordered)
             }
-            .padding(14)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .companionInsetSurface()
 
             HStack(spacing: 10) {
                 Button {
@@ -773,18 +809,17 @@ private struct CompanionVoicePanel: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(statusTitle)
                         .font(.title3.weight(.semibold))
+                        .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                     Text(store.companionVoiceSummary)
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
 
                 Spacer(minLength: 16)
             }
-            .padding(14)
-            .background(statusColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(statusColor.opacity(0.28)))
+            .companionStatusSurface(color: statusColor)
 
             InfoCallout(
                 symbol: "point.3.connected.trianglepath.dotted",
@@ -909,8 +944,7 @@ private struct CompanionVoicePanel: View {
                     .buttonStyle(.bordered)
                 }
             }
-            .padding(14)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .companionInsetSurface(accent: VoiceClawCompanionTheme.violet)
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("Install and Verification")
@@ -940,8 +974,7 @@ private struct CompanionVoicePanel: View {
                     symbol: "flame"
                 )
             }
-            .padding(14)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .companionInsetSurface(accent: VoiceClawCompanionTheme.green)
 
             HStack(spacing: 10) {
                 Button {
@@ -1006,13 +1039,13 @@ private struct CompanionVoicePanel: View {
     private var statusColor: Color {
         switch store.companionVoiceState {
         case "ready":
-            .green
+            VoiceClawCompanionTheme.green
         case "needs_setup":
-            .orange
+            VoiceClawCompanionTheme.amber
         case "failed":
-            .red
+            VoiceClawCompanionTheme.coral
         default:
-            .secondary
+            VoiceClawCompanionTheme.mutedText
         }
     }
 }
@@ -1023,7 +1056,11 @@ private struct DependencyItemRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: item.installable ? "square.and.arrow.down" : "exclamationmark.triangle")
-                .foregroundStyle(item.installable ? .cyan : .orange)
+                .foregroundStyle(
+                    item.installable
+                        ? VoiceClawCompanionTheme.cyan
+                        : VoiceClawCompanionTheme.amber
+                )
                 .frame(width: 24)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -1142,17 +1179,17 @@ private struct PowerhouseWorkerRow: View {
     private var color: Color {
         switch normalizedState {
         case "ready", "planned-hot":
-            .green
+            VoiceClawCompanionTheme.green
         case "planned-warm":
-            .cyan
+            VoiceClawCompanionTheme.cyan
         case "on-demand", "cold":
-            .secondary
+            VoiceClawCompanionTheme.mutedText
         case "failed", "error":
-            .red
+            VoiceClawCompanionTheme.coral
         case "degraded":
-            .orange
+            VoiceClawCompanionTheme.amber
         default:
-            .secondary
+            VoiceClawCompanionTheme.mutedText
         }
     }
 }
@@ -1225,15 +1262,15 @@ private struct AccessItemRow: View {
     private var color: Color {
         switch item.state {
         case "ready":
-            .green
+            VoiceClawCompanionTheme.green
         case "manual":
-            .cyan
+            VoiceClawCompanionTheme.cyan
         case "blocked":
-            .red
+            VoiceClawCompanionTheme.coral
         case "needs_action":
-            .orange
+            VoiceClawCompanionTheme.amber
         default:
-            .secondary
+            VoiceClawCompanionTheme.mutedText
         }
     }
 
@@ -1378,11 +1415,31 @@ private struct PairingPanel: View {
                             .id(setupCodeValue)
                             .frame(width: 180, height: 180)
                             .background(.white, in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(
+                                        VoiceClawCompanionTheme.cyan.opacity(0.70),
+                                        lineWidth: 1
+                                    )
+                            }
+                            .shadow(
+                                color: VoiceClawCompanionTheme.cyan.opacity(0.17),
+                                radius: 14,
+                                y: 5
+                            )
 
                         Label("Click to enlarge", systemImage: "arrow.up.left.and.arrow.down.right")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
+                    }
+                    .padding(14)
+                    .background(
+                        VoiceClawCompanionTheme.surfaceStrong.opacity(0.72),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(VoiceClawCompanionTheme.lineStrong, lineWidth: 1)
                     }
                     .contentShape(Rectangle())
                 }
@@ -1402,7 +1459,14 @@ private struct PairingPanel: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .background(
+                            VoiceClawCompanionTheme.background.opacity(0.72),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(VoiceClawCompanionTheme.line, lineWidth: 1)
+                        }
 
                     HStack(spacing: 10) {
                         Button {
@@ -1472,13 +1536,26 @@ private struct LargeQRCodeSheet: View {
 
             QRCodeView(value: value)
                 .frame(width: 420, height: 420)
-                .background(.white, in: RoundedRectangle(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary))
-                .shadow(color: .black.opacity(0.10), radius: 18, y: 8)
+                .background(.white, in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(VoiceClawCompanionTheme.cyan.opacity(0.68), lineWidth: 1)
+                }
+                .shadow(
+                    color: VoiceClawCompanionTheme.cyan.opacity(0.18),
+                    radius: 18,
+                    y: 8
+                )
         }
         .padding(28)
         .frame(minWidth: 520, minHeight: 560)
-        .background(.regularMaterial)
+        .foregroundStyle(VoiceClawCompanionTheme.primaryText)
+        .background {
+            VoiceClawCompanionBackdrop()
+                .ignoresSafeArea()
+        }
+        .preferredColorScheme(.dark)
+        .tint(VoiceClawCompanionTheme.cyan)
     }
 }
 
@@ -1568,7 +1645,7 @@ private struct WorkCenterPanel: View {
                     symbol: "exclamationmark.triangle.fill",
                     title: "Tasks & Files Needs Attention",
                     bodyText: store.workCenterError,
-                    color: .orange
+                    color: VoiceClawCompanionTheme.amber
                 )
             } else {
                 Text(store.workCenterSummary)
@@ -1636,7 +1713,7 @@ private struct WorkMetric: View {
         HStack(spacing: 10) {
             Image(systemName: symbol)
                 .font(.title2)
-                .foregroundStyle(.cyan)
+                .foregroundStyle(VoiceClawCompanionTheme.cyan)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(value)
@@ -1712,7 +1789,7 @@ private struct RouteTaskRow: View {
                 if let error = task.error?.message, !error.isEmpty {
                     Text(error)
                         .font(.callout)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(VoiceClawCompanionTheme.coral)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -1746,11 +1823,12 @@ private struct RouteTaskRow: View {
 
     private var stateColor: Color {
         switch task.state {
-        case "completed": .green
-        case "completedWithArtifactWarning", "awaitingApproval", "waitingForUser": .orange
-        case "failed": .red
-        case "cancelled": .secondary
-        default: .cyan
+        case "completed": VoiceClawCompanionTheme.green
+        case "completedWithArtifactWarning", "awaitingApproval", "waitingForUser":
+            VoiceClawCompanionTheme.amber
+        case "failed": VoiceClawCompanionTheme.coral
+        case "cancelled": VoiceClawCompanionTheme.mutedText
+        default: VoiceClawCompanionTheme.cyan
         }
     }
 }
@@ -1784,7 +1862,7 @@ private struct ArtifactInboxRow: View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "doc.fill")
                 .font(.title3)
-                .foregroundStyle(.cyan)
+                .foregroundStyle(VoiceClawCompanionTheme.cyan)
                 .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 5) {
@@ -1900,7 +1978,14 @@ private struct StatusPanel: View {
                     ForEach(store.powerhouseWorkerItems) { item in
                         PowerhouseWorkerRow(item: item)
                             .padding(12)
-                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .background(
+                                VoiceClawCompanionTheme.subtleFill,
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(VoiceClawCompanionTheme.line, lineWidth: 1)
+                            }
                     }
                 }
             }
@@ -1929,7 +2014,14 @@ private struct StatusPanel: View {
                     ForEach(store.accessItems) { item in
                         AccessItemRow(item: item)
                             .padding(12)
-                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .background(
+                                VoiceClawCompanionTheme.subtleFill,
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(VoiceClawCompanionTheme.line, lineWidth: 1)
+                            }
                     }
                 }
             }
@@ -1945,7 +2037,14 @@ private struct StatusPanel: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(12)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .background(
+                    VoiceClawCompanionTheme.background.opacity(0.72),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(VoiceClawCompanionTheme.line, lineWidth: 1)
+                }
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -2076,19 +2175,18 @@ private struct DiagnosticSummaryCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(store.isCheckingBridgeRuntime ? "Checking Bridge Runtime" : store.status.title)
                     .font(.title3.weight(.semibold))
+                    .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                 Text(store.bridgeRuntimeCheckSummary)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 0)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.35), lineWidth: 1))
+        .companionStatusSurface(color: color)
     }
 
     private var symbol: String {
@@ -2107,18 +2205,18 @@ private struct DiagnosticSummaryCard: View {
     }
 
     private var color: Color {
-        if store.isCheckingBridgeRuntime { return .orange }
+        if store.isCheckingBridgeRuntime { return VoiceClawCompanionTheme.amber }
         switch store.status {
         case .idle:
-            return .gray
+            return VoiceClawCompanionTheme.mutedText
         case .working:
-            return .yellow
+            return VoiceClawCompanionTheme.amber
         case .ready:
-            return .green
+            return VoiceClawCompanionTheme.green
         case .warning:
-            return .orange
+            return VoiceClawCompanionTheme.amber
         case .failed:
-            return .red
+            return VoiceClawCompanionTheme.coral
         }
     }
 }
@@ -2131,20 +2229,33 @@ private struct InfoCallout: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbol)
-                .font(.title3)
-                .foregroundStyle(.cyan)
-                .frame(width: 24)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(VoiceClawCompanionTheme.cyan)
+                .frame(width: 30, height: 30)
+                .background(
+                    VoiceClawCompanionTheme.cyan.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                 Text(bodyText)
-                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(14)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(VoiceClawCompanionTheme.subtleFill)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(VoiceClawCompanionTheme.cyan)
+                .frame(width: 2)
+        }
     }
 }
 
@@ -2156,14 +2267,25 @@ private struct PanelHeader: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(.cyan)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 4) {
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(VoiceClawCompanionTheme.cyan)
+                .frame(width: 38, height: 38)
+                .background(
+                    VoiceClawCompanionTheme.cyan.opacity(0.11),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(VoiceClawCompanionTheme.cyan.opacity(0.22), lineWidth: 1)
+                }
+            VStack(alignment: .leading, spacing: 5) {
                 Text(title)
-                    .font(.title3.weight(.semibold))
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                 Text(subtitle)
-                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -2180,7 +2302,7 @@ private struct FieldLabel: View {
     var body: some View {
         Text(text)
             .font(.subheadline.weight(.medium))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(VoiceClawCompanionTheme.mutedText)
             .frame(width: 170, alignment: .trailing)
     }
 }
@@ -2193,18 +2315,21 @@ private struct StatusRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbol)
-                .foregroundStyle(.secondary)
-                .frame(width: 24)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(VoiceClawCompanionTheme.cyan)
+                .frame(width: 26)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(VoiceClawCompanionTheme.primaryText)
                 Text(value)
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                     .textSelection(.enabled)
             }
             Spacer(minLength: 0)
         }
+        .padding(.vertical, 3)
     }
 }
 
@@ -2229,7 +2354,7 @@ private struct DiagnosticsVersionFooter: View {
     var body: some View {
         Text(versionText)
             .font(.callout.monospaced().weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(VoiceClawCompanionTheme.mutedText)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, 8)
@@ -2244,16 +2369,18 @@ private struct BridgeLogo: View {
             Image(nsImage: icon)
                 .resizable()
                 .scaledToFit()
-                .shadow(color: .black.opacity(0.16), radius: 10, y: 5)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(VoiceClawCompanionTheme.cyan.opacity(0.30), lineWidth: 1)
+                }
+                .shadow(
+                    color: VoiceClawCompanionTheme.cyan.opacity(0.20),
+                    radius: 12,
+                    y: 5
+                )
         } else {
-            ZStack {
-                RoundedRectangle(cornerRadius: 20)
-                    .fill(.linearGradient(colors: [.cyan, .indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                Image(systemName: "waveform.path.ecg")
-                    .font(.system(size: 42, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .shadow(radius: 12)
-            }
+            VoiceClawCompanionLogoMark(size: 76)
         }
     }
 
@@ -2277,14 +2404,14 @@ private struct QRCodeView: View {
             VStack(spacing: 8) {
                 Image(systemName: "qrcode")
                     .font(.largeTitle)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(VoiceClawCompanionTheme.mutedText)
                 Text(value.isEmpty ? "No Setup Code" : "Setup Code Too Large")
                     .font(.headline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(VoiceClawCompanionTheme.secondaryText)
                 if !value.isEmpty {
                     Text("Use Copy Setup JSON or Copy Setup Link.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(VoiceClawCompanionTheme.mutedText)
                         .multilineTextAlignment(.center)
                 }
             }
@@ -2307,11 +2434,7 @@ private struct QRCodeView: View {
 
 private extension View {
     func panelStyle() -> some View {
-        self
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.12)))
+        companionPanelSurface(accent: VoiceClawCompanionTheme.cyan)
     }
 }
 
