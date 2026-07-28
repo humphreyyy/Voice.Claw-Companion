@@ -37,7 +37,7 @@ export const CODEX_REALTIME_V3_DEFAULTS = Object.freeze({
   model: 'gpt-live-1-codex',
   voice: 'ember',
   outputModality: 'audio',
-  clientManagedHandoffs: false,
+  clientManagedHandoffs: true,
   codexResponsesAsItems: false,
   codexResponseHandoffMode: 'bemTags',
 });
@@ -283,6 +283,14 @@ function realtimeLifecycleSnapshot(lease) {
     closedAt: lease.closedAt || null,
     closeReason: lease.closeReason || null,
     error: lease.error || null,
+    clientManagedHandoffs: lease.clientManagedHandoffs === true,
+    broker: lease.broker ? {
+      anchorTurnsObserved: lease.broker.anchorTurnsObserved,
+      anchorTurnsInterrupted: lease.broker.anchorTurnsInterrupted,
+      interruptFailures: lease.broker.interruptFailures,
+      lastInterruptedTurnID: lease.broker.lastInterruptedTurnID || null,
+      lastInterruptError: lease.broker.lastInterruptError || null,
+    } : null,
   };
 }
 
@@ -1009,6 +1017,18 @@ export class CodexAppServerClient {
     return await this.request('thread/realtime/appendSpeech', { threadId: targetThreadID, text: value });
   }
 
+  async interruptTurn({ threadID, turnID } = {}) {
+    const targetThreadID = String(threadID || '').trim();
+    const targetTurnID = String(turnID || '').trim();
+    if (!targetThreadID || !targetTurnID) {
+      throw new Error('Codex thread and turn ids are required for interruption.');
+    }
+    return await this.request('turn/interrupt', {
+      threadId: targetThreadID,
+      turnId: targetTurnID,
+    });
+  }
+
   async stopRealtime(threadID) {
     const targetThreadID = String(threadID || '').trim();
     if (!targetThreadID) throw new Error('Codex realtime thread id is required.');
@@ -1206,6 +1226,7 @@ export class CodexAppServerBridge {
     this.realtimeLease = null;
     this.lastRealtimeLifecycle = null;
     this.realtimeTextRequests = new Map();
+    this.realtimeSpeechRequests = new Map();
     this.loadPromise = this.#loadState();
     this.client.onNotification((message) => {
       const lease = this.realtimeLease;
@@ -1219,6 +1240,27 @@ export class CodexAppServerBridge {
         this.#finishRealtimeLifecycle(lease, {
           status: 'closed',
           reason: String(message?.params?.reason || 'app-server closed'),
+        });
+      } else if (message?.method === 'turn/started' && lease.clientManagedHandoffs) {
+        const turnID = firstString(message?.params?.turn?.id, message?.params?.turnId);
+        if (!turnID || lease.interruptedTurnIDs.has(turnID)) return;
+        lease.interruptedTurnIDs.add(turnID);
+        lease.broker.anchorTurnsObserved += 1;
+        lease.touchedAt = Date.now();
+        void this.client.interruptTurn({
+          threadID: lease.threadID,
+          turnID,
+        }).then(() => {
+          if (this.realtimeLease?.ownerID !== lease.ownerID) return;
+          lease.broker.anchorTurnsInterrupted += 1;
+          lease.broker.lastInterruptedTurnID = turnID;
+          lease.broker.lastInterruptError = null;
+          lease.touchedAt = Date.now();
+        }).catch((error) => {
+          if (this.realtimeLease?.ownerID !== lease.ownerID) return;
+          lease.broker.interruptFailures += 1;
+          lease.broker.lastInterruptError = String(error?.message || error);
+          lease.touchedAt = Date.now();
         });
       }
     });
@@ -1348,6 +1390,7 @@ export class CodexAppServerBridge {
           version: normalized.version,
           model: normalized.model,
           voice: normalized.voice,
+          clientManagedHandoffs: normalized.clientManagedHandoffs === true,
         });
         try {
           const result = await this.client.startRealtimeWebRTC({
@@ -1534,6 +1577,69 @@ export class CodexAppServerBridge {
     return await this.client.appendRealtimeSpeech(options);
   }
 
+  async appendRealtimeSpeechIdempotent({
+    threadID,
+    text,
+    requestID = '',
+  } = {}) {
+    const targetThreadID = String(threadID || '').trim();
+    if (!targetThreadID) throw codexRealtimeRequestError('Codex realtime threadID is required.');
+    if (typeof text !== 'string' || !text.trim()) {
+      throw codexRealtimeRequestError('Codex realtime speech text is required.');
+    }
+    if (text.length > CODEX_REALTIME_APPEND_TEXT_CHAR_LIMIT) {
+      throw codexRealtimeRequestError(`Codex realtime speech exceeds ${CODEX_REALTIME_APPEND_TEXT_CHAR_LIMIT} characters.`);
+    }
+    const id = safeLifecycleID(requestID);
+    const dedupeKey = `${targetThreadID}:${id}`;
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ threadID: targetThreadID, text }))
+      .digest('hex');
+    this.#pruneRealtimeSpeechRequests();
+    const existing = this.realtimeSpeechRequests.get(dedupeKey);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        const error = new Error('Codex realtime requestID was reused with a different speech payload.');
+        error.code = 'CODEX_REALTIME_IDEMPOTENCY_CONFLICT';
+        error.statusCode = 409;
+        throw error;
+      }
+      return { ...await existing.promise, duplicate: true };
+    }
+
+    const lease = this.realtimeLease;
+    if (!lease || lease.transport !== 'webrtc' || lease.threadID !== targetThreadID) {
+      const error = new Error('The requested GPT Live WebRTC session is not active.');
+      error.code = 'CODEX_REALTIME_SESSION_NOT_ACTIVE';
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const promise = this.client.appendRealtimeSpeech({
+      threadID: targetThreadID,
+      text,
+    }).then(() => ({
+      appended: true,
+      duplicate: false,
+      threadID: targetThreadID,
+      requestID: id,
+    }));
+    this.realtimeSpeechRequests.set(dedupeKey, {
+      fingerprint,
+      createdAt: Date.now(),
+      promise,
+    });
+    this.#pruneRealtimeSpeechRequests();
+    try {
+      return await promise;
+    } catch (error) {
+      if (this.realtimeSpeechRequests.get(dedupeKey)?.promise === promise) {
+        this.realtimeSpeechRequests.delete(dedupeKey);
+      }
+      throw error;
+    }
+  }
+
   async stopRealtimeWebRTC({
     threadID,
     sessionKey,
@@ -1609,6 +1715,7 @@ export class CodexAppServerBridge {
       });
     }
     this.realtimeTextRequests.clear();
+    this.realtimeSpeechRequests.clear();
     this.client.stop();
   }
 
@@ -1620,6 +1727,7 @@ export class CodexAppServerBridge {
     version = '',
     model = '',
     voice = '',
+    clientManagedHandoffs = false,
   }) {
     const current = this.realtimeLease;
     if (current) {
@@ -1640,6 +1748,15 @@ export class CodexAppServerBridge {
       version,
       model: model || null,
       voice: voice || null,
+      clientManagedHandoffs: clientManagedHandoffs === true,
+      interruptedTurnIDs: new Set(),
+      broker: {
+        anchorTurnsObserved: 0,
+        anchorTurnsInterrupted: 0,
+        interruptFailures: 0,
+        lastInterruptedTurnID: null,
+        lastInterruptError: null,
+      },
       status: 'starting',
       realtimeSessionID: null,
       acquiredAt: now,
@@ -1705,6 +1822,19 @@ export class CodexAppServerBridge {
       const oldest = this.realtimeTextRequests.keys().next().value;
       if (!oldest) break;
       this.realtimeTextRequests.delete(oldest);
+    }
+  }
+
+  #pruneRealtimeSpeechRequests() {
+    const cutoff = Date.now() - CODEX_REALTIME_TEXT_IDEMPOTENCY_TTL_MS;
+    for (const [key, entry] of this.realtimeSpeechRequests) {
+      if (entry.createdAt >= cutoff) continue;
+      this.realtimeSpeechRequests.delete(key);
+    }
+    while (this.realtimeSpeechRequests.size > CODEX_REALTIME_TEXT_IDEMPOTENCY_LIMIT) {
+      const oldest = this.realtimeSpeechRequests.keys().next().value;
+      if (!oldest) break;
+      this.realtimeSpeechRequests.delete(oldest);
     }
   }
 

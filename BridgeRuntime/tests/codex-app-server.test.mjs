@@ -238,6 +238,10 @@ function createFakeCodexServer({
         send({ id: message.id, error: { code: -32000, message: realtimeStopError } });
         return;
       }
+      if (message.method === 'turn/interrupt') {
+        send({ id: message.id, result: {} });
+        return;
+      }
       if (message.method.startsWith('thread/realtime/')) {
         send({ id: message.id, result: {} });
         return;
@@ -523,7 +527,7 @@ test('marks experimental realtime available only after receiving a real SDP answ
   assert.match(negotiation.lifecycleID, /^[0-9a-f-]{36}$/);
   assert.equal(start.params.transport.sdp, 'v=0\r\no=fake-offer\r\n');
   assert.equal(start.params.outputModality, 'audio');
-  assert.equal(start.params.clientManagedHandoffs, false);
+  assert.equal(start.params.clientManagedHandoffs, true);
   assert.equal(start.params.codexResponsesAsItems, false);
   assert.equal(start.params.codexResponseHandoffMode, 'bemTags');
   assert.equal(start.params.flushTranscriptTailOnSessionEnd, undefined);
@@ -534,6 +538,45 @@ test('marks experimental realtime available only after receiving a real SDP answ
   assert.equal(after.realtime.backendAdmission, 'verified');
   assert.equal(after.realtime.available, true);
   assert.equal(after.realtimeLifecycle.active.lifecycleID, negotiation.lifecycleID);
+  bridge.stop();
+});
+
+test('interrupts Codex anchor turns when VoiceClaw owns GPT Live handoffs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-v3-broker-'));
+  const server = createFakeCodexServer();
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+
+  const started = await bridge.startRealtimeWebRTC({
+    sessionKey: 'broker-owned',
+    sdp: 'v=0\r\no=broker-offer\r\n',
+    clientManagedHandoffs: true,
+  });
+  server.process.send({
+    method: 'turn/started',
+    params: {
+      threadId: started.threadID,
+      turn: { id: 'anchor-turn-1', status: 'inProgress', items: [] },
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const interrupts = server.calls.filter((call) => call.method === 'turn/interrupt');
+  assert.equal(interrupts.length, 1);
+  assert.deepEqual(interrupts[0].params, {
+    threadId: started.threadID,
+    turnId: 'anchor-turn-1',
+  });
+  const status = await bridge.status();
+  assert.equal(status.realtimeLifecycle.active.clientManagedHandoffs, true);
+  assert.equal(status.realtimeLifecycle.active.broker.anchorTurnsObserved, 1);
+  assert.equal(status.realtimeLifecycle.active.broker.anchorTurnsInterrupted, 1);
+  assert.equal(status.realtimeLifecycle.active.broker.interruptFailures, 0);
+
   bridge.stop();
 });
 
@@ -679,6 +722,30 @@ test('makes WebRTC text retries and lifecycle stop idempotent', async () => {
   assert.equal(
     server.calls.filter((call) => call.method === 'thread/realtime/appendText').length,
     1,
+  );
+  const firstSpeech = await bridge.appendRealtimeSpeechIdempotent({
+    threadID: started.threadID,
+    text: 'Codex finished the delegated task.',
+    requestID: 'ios-speech-request-1',
+  });
+  const duplicateSpeech = await bridge.appendRealtimeSpeechIdempotent({
+    threadID: started.threadID,
+    text: 'Codex finished the delegated task.',
+    requestID: 'ios-speech-request-1',
+  });
+  assert.equal(firstSpeech.duplicate, false);
+  assert.equal(duplicateSpeech.duplicate, true);
+  assert.equal(
+    server.calls.filter((call) => call.method === 'thread/realtime/appendSpeech').length,
+    1,
+  );
+  await assert.rejects(
+    bridge.appendRealtimeSpeechIdempotent({
+      threadID: started.threadID,
+      text: 'Different spoken payload',
+      requestID: 'ios-speech-request-1',
+    }),
+    (error) => error.code === 'CODEX_REALTIME_IDEMPOTENCY_CONFLICT',
   );
   await assert.rejects(
     bridge.appendRealtimeTextIdempotent({

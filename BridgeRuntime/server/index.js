@@ -6159,6 +6159,7 @@ const httpServer = createServer(async (req, res) => {
           webRTCPath: `${BASE_PATH}/realtime/codex/webrtc`,
           webRTCStopPath: `${BASE_PATH}/realtime/codex/webrtc/stop`,
           webRTCTextPath: `${BASE_PATH}/realtime/codex/webrtc/text`,
+          webRTCSpeechPath: `${BASE_PATH}/realtime/codex/webrtc/speech`,
           webSocketPath: `${BASE_PATH}/realtime/codex/ws`,
           textTurns: 'supported',
           realtime: {
@@ -6711,6 +6712,25 @@ const httpServer = createServer(async (req, res) => {
           threadID: payload.threadID || '',
           text: payload.text,
           role: payload.role || 'user',
+          requestID: payload.requestID || req.headers['idempotency-key'] || '',
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (error) {
+        res.writeHead(Number(error?.statusCode) || 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: error?.message || String(error), code: error?.code || null }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/codex/webrtc/speech`) {
+      const body = await readRequestBody(req, 100_000).catch(() => '{}');
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const result = await codexAppServerBridge.appendRealtimeSpeechIdempotent({
+          threadID: payload.threadID || '',
+          text: payload.text,
           requestID: payload.requestID || req.headers['idempotency-key'] || '',
         });
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
