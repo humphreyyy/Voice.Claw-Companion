@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.137</title>
+            <pubDate>Tue, 28 Jul 2026 08:55:52 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607280553</sparkle:version>
+            <sparkle:shortVersionString>0.1.137</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.137</h2><ul><li>Corrects GPT Live V3 client-managed delegation so VoiceClaw routes app actions and OpenClaw, Hermes, Codex, and Direct work through the selected route.</li><li>Uses the current GPT Live V3 model and complete supported voice set from the installed Codex app-server.</li><li>Improves GPT Live signaling reliability, event correlation, idempotent delivery, and capability discovery.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.137/VoiceClawCompanion-0.1.137-202607280553.dmg" length="7298137" type="application/octet-stream" sparkle:edSignature="g8Qau/mDSH1qaIJT+j3V64aHca/tDcxvD9qgh6DosywUF9Jfb1c3WuTGeSilgA3MD50ZPH41k7VRioLqiMxAAw=="/>
+        </item>
+        <item>
             <title>0.1.136</title>
             <pubDate>Tue, 28 Jul 2026 04:55:16 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.135</h2><ul><li>Recognizes a selected OpenClaw agent that inherits the defaults workspace, including defaults-only installations.</li><li>Checks for signed updates when the Companion window is opened, restored, or brought forward.</li><li>Updates GPT Realtime OAuth and API-key guidance.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.135/VoiceClawCompanion-0.1.135-202607261330.dmg" length="8231985" type="application/octet-stream" sparkle:edSignature="Xkv051swSIOr4Km/Sbxbdo39JPKoo4qUSNf9q+c3hZlw/q7ia6VL/YoA7lgFKAfsoxT5/vO7Cxx3siE6hx8FBg=="/>
-        </item>
-        <item>
-            <title>0.1.134</title>
-            <pubDate>Sun, 26 Jul 2026 13:48:36 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607261046</sparkle:version>
-            <sparkle:shortVersionString>0.1.134</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.134</h2><ul><li>Reconciles durable Work tasks periodically and after Companion reconnects.</li><li>Recovers returned files and available OpenClaw or Hermes reply previews instead of replacing them with generic restart results.</li><li>Keeps outcome-unknown work visible for confirmation rather than falsely marking it failed.</li><li>Preserves newer or malformed task stores unchanged instead of silently resetting them.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.134/VoiceClawCompanion-0.1.134-202607261046.dmg" length="8562634" type="application/octet-stream" sparkle:edSignature="lL+bN0tu5SDtn565sNRkpb9DW4iu9lP9/DCICCKli9VqBLOxKjRuvTkjjQy2/oNsMHuXFDedP2U/PsAgcjobBw=="/>
         </item>
     </channel>
 </rss>
