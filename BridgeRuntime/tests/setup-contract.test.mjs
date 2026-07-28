@@ -6,6 +6,7 @@ import {
   VOICECLAW_SETUP_LIMITS,
   applySetupSecretPolicy,
   decorateSetupPayload,
+  removeDeviceExperiencePreferences,
   setupCompatibilityProfile,
 } from '../server/setup-contract.js';
 import { setupProductPolicy } from '../server/product-policy.js';
@@ -135,4 +136,36 @@ test('secret inclusion keeps every existing alias and unknown non-secret field',
   });
   assert.deepEqual(retained, payload);
   assert.notEqual(retained, payload);
+});
+
+test('pairing removes device experience preferences without shrinking provisioning data', () => {
+  const payload = removeDeviceExperiencePreferences({
+    RealtimeVoiceEngine: 'gpt-live',
+    routeMode: 'hermes-bridge',
+    RealtimeModel: 'gpt-realtime-2.1-mini',
+    realtimeAuthMode: 'api-key',
+    OpenClawReasoning: 'high',
+    PowerhouseMode: 'maximum',
+    TailscaleBaseURL: 'https://mac.example.ts.net',
+    OpenClawGatewayToken: 'gateway',
+    ChatGPTOAuthAccessToken: 'oauth',
+    OpenClawAgent: 'julian',
+    FutureConnectionMetadata: { revision: 9 },
+  });
+
+  for (const key of [
+    'RealtimeVoiceEngine',
+    'routeMode',
+    'RealtimeModel',
+    'realtimeAuthMode',
+    'OpenClawReasoning',
+    'PowerhouseMode',
+  ]) {
+    assert.equal(payload[key], undefined);
+  }
+  assert.equal(payload.TailscaleBaseURL, 'https://mac.example.ts.net');
+  assert.equal(payload.OpenClawGatewayToken, 'gateway');
+  assert.equal(payload.ChatGPTOAuthAccessToken, 'oauth');
+  assert.equal(payload.OpenClawAgent, 'julian');
+  assert.deepEqual(payload.FutureConnectionMetadata, { revision: 9 });
 });

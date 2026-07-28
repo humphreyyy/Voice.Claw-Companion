@@ -60,7 +60,11 @@ import {
   normalizeVoiceStreamWireFormat,
   voiceStreamOutputCapacityDecision,
 } from './voice-stream-resume.js';
-import { applySetupSecretPolicy, decorateSetupPayload } from './setup-contract.js';
+import {
+  applySetupSecretPolicy,
+  decorateSetupPayload,
+  removeDeviceExperiencePreferences,
+} from './setup-contract.js';
 import { ArtifactInbox, createArtifactInboxHTTPHandler } from './artifact-inbox.js';
 import { InputAttachmentStore, createInputAttachmentHTTPHandler } from './input-attachments.js';
 import { RouteTaskService, createRouteTaskHTTPHandler } from './route-tasks.js';
@@ -635,12 +639,6 @@ function setupPayloadFromBridgeConfig(options = {}) {
     OpenClawGatewayToken: String(cfg.gatewayToken || cfg.OpenClawGatewayToken || ''),
     OpenClawGatewayPassword: String(cfg.gatewayPassword || cfg.OpenClawGatewayPassword || ''),
     OpenClawAgent: String(cfg.openClawAgentName || cfg.openClawAgent || cfg.OpenClawAgent || 'main'),
-    RouteMode: 'openclaw-bridge',
-    RealtimeModel: REALTIME_MODEL,
-    InstantModel: String(cfg.instantModel || cfg.InstantModel || 'gpt-5-chat-latest'),
-    InstantWebSearch: (cfg.instantWebSearch ?? cfg.InstantWebSearch) !== false,
-    RealtimeAuthMode: String(cfg.realtimeAuthMode || cfg.RealtimeAuthMode || 'api-key'),
-    RealtimeAuthFallbackToAPIKey: (cfg.realtimeAuthFallbackToAPIKey ?? cfg.RealtimeAuthFallbackToAPIKey) === true,
     OpenAIAPIKey: includeOpenAIAPIKey ? String(cfg.openAIAPIKey || cfg.OpenAIAPIKey || cfg.openAIApiKey || cfg.openaiAPIKey || cfg.openaiApiKey || cfg.apiKey || '') : '',
     ChatGPTOAuthAccessToken: String(cfg.ChatGPTOAuthAccessToken || cfg.openAIChatGPTOAuthAccessToken || cfg.openAIOAuthAccessToken || ''),
     ChatGPTOAuthRefreshToken: String(cfg.ChatGPTOAuthRefreshToken || cfg.openAIChatGPTOAuthRefreshToken || cfg.openAIOAuthRefreshToken || ''),
@@ -648,12 +646,12 @@ function setupPayloadFromBridgeConfig(options = {}) {
     ChatGPTOAuthAccountID: String(cfg.ChatGPTOAuthAccountID || cfg.openAIChatGPTOAuthAccountID || cfg.openAIOAuthAccountID || ''),
     CerebrasAPIKey: includeCerebrasAPIKey ? String(cfg.cerebrasAPIKey || cfg.CerebrasAPIKey || '') : '',
     WatchPublicBridgeURL: String(cfg.watchPublicBridgeURL || cfg.WatchPublicBridgeURL || cfg.openClawPublicTunnelURL || ''),
-    PowerhouseMode: String(cfg.powerhouseMode || cfg.PowerhouseMode || cfg.CompanionPowerhouseMode || 'light'),
     CompanionVersion: RUNTIME_MANIFEST.version || '',
     CompanionBuild: RUNTIME_MANIFEST.build || '',
     CompanionReleaseTag: RUNTIME_MANIFEST.version ? `v${RUNTIME_MANIFEST.version}` : '',
   };
 
+  payload = removeDeviceExperiencePreferences(payload);
   payload = applySetupSecretPolicy(payload, {
     includeOpenAIAPIKey,
     includeCerebrasAPIKey,

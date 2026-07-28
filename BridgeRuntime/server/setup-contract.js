@@ -67,6 +67,53 @@ const CHATGPT_OAUTH_FIELDS = Object.freeze([
   'openAIOAuthAccountID',
 ]);
 
+const DEVICE_EXPERIENCE_PREFERENCE_FIELDS = new Set([
+  'RealtimeVoiceEngine', 'realtimeVoiceEngine', 'IPhoneRealtimeVoiceEngine',
+  'RouteMode', 'routeMode', 'IPhoneRouteMode', 'WatchRouteMode', 'WatchEffectiveVoiceEngine',
+  'RealtimeModel', 'realtimeModel', 'RealtimeVoice', 'realtimeVoice',
+  'ReasoningEffort', 'reasoningEffort',
+  'InstantModel', 'instantModel', 'InstantWebSearch', 'instantWebSearch',
+  'GPT55DirectReasoning', 'gpt55DirectReasoning',
+  'OpenClawModel', 'openClawModel', 'OpenClawReasoning', 'openClawReasoning',
+  'OpenClawVerbatimPassThrough', 'openClawVerbatimPassThrough',
+  'RealtimeAuthMode', 'realtimeAuthMode',
+  'RealtimeAuthFallbackToAPIKey', 'realtimeAuthFallbackToAPIKey',
+  'TurnDetection', 'turnDetection', 'NoiseReduction', 'noiseReduction',
+  'CompanionVoiceMiddleBrainMode', 'companionVoiceMiddleBrainMode',
+  'CompanionVoiceCerebrasModelID', 'companionVoiceCerebrasModelID',
+  'CompanionVoiceSTTProfile', 'companionVoiceSTTProfile',
+  'CompanionVoiceTTSVoice', 'companionVoiceTTSVoice',
+  'CompanionVoiceQwenThinkingEnabled', 'companionVoiceQwenThinkingEnabled',
+  'CompanionVoiceStreamingTransportEnabled', 'companionVoiceStreamingTransportEnabled',
+  'CompanionVoiceVADSensitivity', 'companionVoiceVADSensitivity',
+  'CompanionVoiceVADSilenceDuration', 'companionVoiceVADSilenceDuration',
+  'SpeechRecognitionSource', 'speechRecognitionSource',
+  'SpeechOutputSource', 'speechOutputSource',
+  'TurnBasedGPTModel', 'turnBasedGPTModel',
+  'STTGPTTTSGPTModel', 'sttGPTTTSGPTModel',
+  'PowerhouseMode', 'powerhouseMode', 'CompanionPowerhouseMode', 'companionPowerhouseMode',
+  'MicrophonePreference', 'microphonePreference',
+  'UseSpeakerphoneForAudioOutput', 'useSpeakerphoneForAudioOutput',
+  'ProtectLiveSessionAudio', 'protectLiveSessionAudio',
+  'LiveCaptions', 'liveCaptions', 'AutoStartMic', 'autoStartMic',
+  'ProactivityMode', 'proactivityMode',
+  'KeepScreenAwakeDuringLiveSession', 'keepScreenAwakeDuringLiveSession',
+  'HandoffAssistEnabled', 'handoffAssistEnabled',
+  'AppAppearance', 'appAppearance',
+]);
+
+/**
+ * Setup QR documents provision connectivity, credentials, runtime identity,
+ * and advertised capabilities. Engine, route, model, authentication-mode, and
+ * other device-owned experience choices remain on the phone. Unknown fields
+ * are deliberately retained for forward compatibility.
+ */
+export function removeDeviceExperiencePreferences(payload = {}) {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([key]) => !DEVICE_EXPERIENCE_PREFERENCE_FIELDS.has(key)),
+  );
+}
+
 /**
  * Applies the user's explicit setup-secret inclusion choices. Unknown fields
  * are retained so an older Companion cannot shrink a newer setup document.

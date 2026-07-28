@@ -52,6 +52,40 @@ enum VoiceClawSetupContract {
         "openAIChatGPTOAuthAccessToken", "openAIChatGPTOAuthRefreshToken", "openAIChatGPTOAuthExpiresAt", "openAIChatGPTOAuthAccountID",
         "openAIOAuthAccessToken", "openAIOAuthRefreshToken", "openAIOAuthExpiresAt", "openAIOAuthAccountID",
     ]
+    private static let deviceExperiencePreferenceFields: Set<String> = [
+        "RealtimeVoiceEngine", "realtimeVoiceEngine", "IPhoneRealtimeVoiceEngine",
+        "RouteMode", "routeMode", "IPhoneRouteMode", "WatchRouteMode", "WatchEffectiveVoiceEngine",
+        "RealtimeModel", "realtimeModel", "RealtimeVoice", "realtimeVoice",
+        "ReasoningEffort", "reasoningEffort",
+        "InstantModel", "instantModel", "InstantWebSearch", "instantWebSearch",
+        "GPT55DirectReasoning", "gpt55DirectReasoning",
+        "OpenClawModel", "openClawModel", "OpenClawReasoning", "openClawReasoning",
+        "OpenClawVerbatimPassThrough", "openClawVerbatimPassThrough",
+        "RealtimeAuthMode", "realtimeAuthMode",
+        "RealtimeAuthFallbackToAPIKey", "realtimeAuthFallbackToAPIKey",
+        "TurnDetection", "turnDetection", "NoiseReduction", "noiseReduction",
+        "CompanionVoiceMiddleBrainMode", "companionVoiceMiddleBrainMode",
+        "CompanionVoiceCerebrasModelID", "companionVoiceCerebrasModelID",
+        "CompanionVoiceSTTProfile", "companionVoiceSTTProfile",
+        "CompanionVoiceTTSVoice", "companionVoiceTTSVoice",
+        "CompanionVoiceQwenThinkingEnabled", "companionVoiceQwenThinkingEnabled",
+        "CompanionVoiceStreamingTransportEnabled", "companionVoiceStreamingTransportEnabled",
+        "CompanionVoiceVADSensitivity", "companionVoiceVADSensitivity",
+        "CompanionVoiceVADSilenceDuration", "companionVoiceVADSilenceDuration",
+        "SpeechRecognitionSource", "speechRecognitionSource",
+        "SpeechOutputSource", "speechOutputSource",
+        "TurnBasedGPTModel", "turnBasedGPTModel",
+        "STTGPTTTSGPTModel", "sttGPTTTSGPTModel",
+        "PowerhouseMode", "powerhouseMode", "CompanionPowerhouseMode", "companionPowerhouseMode",
+        "MicrophonePreference", "microphonePreference",
+        "UseSpeakerphoneForAudioOutput", "useSpeakerphoneForAudioOutput",
+        "ProtectLiveSessionAudio", "protectLiveSessionAudio",
+        "LiveCaptions", "liveCaptions", "AutoStartMic", "autoStartMic",
+        "ProactivityMode", "proactivityMode",
+        "KeepScreenAwakeDuringLiveSession", "keepScreenAwakeDuringLiveSession",
+        "HandoffAssistEnabled", "handoffAssistEnabled",
+        "AppAppearance", "appAppearance",
+    ]
 
     private static func dictionary(_ value: Any?) -> [String: Any] {
         value as? [String: Any] ?? [:]
@@ -76,6 +110,16 @@ enum VoiceClawSetupContract {
         ]
         result["productSurfaces"] = dictionary(payload["productSurfaces"]).merging(currentProductSurfaces) { _, current in current }
         return result
+    }
+
+    /// Pairing establishes what the phone can reach and authenticate to. These
+    /// device-owned experience choices remain absent even when the persisted
+    /// bridge config came from an older release that stored them alongside
+    /// connectivity. Unknown fields are retained for forward compatibility.
+    static func removingDeviceExperiencePreferences(
+        _ payload: [String: Any]
+    ) -> [String: Any] {
+        payload.filter { !deviceExperiencePreferenceFields.contains($0.key) }
     }
 
     static func applyingPairingSecretPolicy(

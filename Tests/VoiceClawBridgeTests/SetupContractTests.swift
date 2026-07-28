@@ -71,4 +71,34 @@ final class SetupContractTests: XCTestCase {
         }
         XCTAssertEqual(result["FutureNonSecret"] as? String, "kept")
     }
+
+    func testPairingRemovesDeviceExperiencePreferencesButKeepsProvisioningAndUnknownFields() {
+        let result = VoiceClawSetupContract.removingDeviceExperiencePreferences([
+            "RealtimeVoiceEngine": "gpt-live",
+            "routeMode": "hermes-bridge",
+            "RealtimeModel": "gpt-realtime-2.1-mini",
+            "realtimeAuthMode": "api-key",
+            "OpenClawReasoning": "high",
+            "PowerhouseMode": "maximum",
+            "TailscaleBaseURL": "https://mac.example.ts.net",
+            "OpenClawGatewayToken": "gateway",
+            "ChatGPTOAuthAccessToken": "oauth",
+            "OpenClawAgent": "julian",
+            "FutureConnectionMetadata": ["revision": 9],
+        ])
+
+        for key in [
+            "RealtimeVoiceEngine", "routeMode", "RealtimeModel",
+            "realtimeAuthMode", "OpenClawReasoning", "PowerhouseMode",
+        ] {
+            XCTAssertNil(result[key], "\(key) must remain device-owned")
+        }
+        XCTAssertEqual(result["TailscaleBaseURL"] as? String, "https://mac.example.ts.net")
+        XCTAssertEqual(result["OpenClawGatewayToken"] as? String, "gateway")
+        XCTAssertEqual(result["ChatGPTOAuthAccessToken"] as? String, "oauth")
+        XCTAssertEqual(result["OpenClawAgent"] as? String, "julian")
+        XCTAssertEqual(
+            (result["FutureConnectionMetadata"] as? [String: Any])?["revision"] as? Int,
+            9)
+    }
 }

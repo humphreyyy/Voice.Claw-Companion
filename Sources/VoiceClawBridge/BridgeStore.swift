@@ -1362,21 +1362,14 @@ final class BridgeStore: ObservableObject {
 
     private func renderPairingPayload(from payload: [String: Any]) {
         var updated = VoiceClawSetupContract.applyingPairingSecretPolicy(
-            payload,
+            VoiceClawSetupContract.removingDeviceExperiencePreferences(payload),
             includeOpenAIAPIKey: includeOpenAIAPIKeyInPairing,
             localOpenAIAPIKey: openAIAPIKey,
             includeCerebrasAPIKey: includeCerebrasAPIKeyInPairing,
             localCerebrasAPIKey: cerebrasAPIKey,
             includeBridgeCredentials: includeBridgeCredentialsInPairing,
             includeChatGPTOAuth: includeChatGPTOAuthInPairing)
-        updated["RealtimeAuthMode"] = realtimeAuthMode.rawValue
-        updated["RealtimeAuthFallbackToAPIKey"] = realtimeAuthFallbackToAPIKey
         updated["OpenClawAgent"] = normalizedOpenClawAgentName
-        if VoiceClawProductSurfacePolicy.powerhouseVisible {
-            updated["PowerhouseMode"] = powerhouseMode.rawValue
-        }
-        updated["InstantModel"] = updated["InstantModel"] as? String ?? "gpt-5-chat-latest"
-        updated["InstantWebSearch"] = updated["InstantWebSearch"] as? Bool ?? true
         updated["CompanionVersion"] = Self.currentCompanionVersion ?? ""
         updated["CompanionBuild"] = Self.currentCompanionBuild ?? ""
         updated["CompanionReleaseTag"] = Self.currentCompanionReleaseTag
@@ -2153,20 +2146,6 @@ final class BridgeStore: ObservableObject {
         payload["OpenClawGatewayPassword"] = config["gatewayPassword"] as? String
             ?? config["OpenClawGatewayPassword"] as? String
             ?? ""
-        payload["RouteMode"] = "openclaw-bridge"
-        payload["RealtimeModel"] = "gpt-realtime-2.1-mini"
-        payload["InstantModel"] = config["instantModel"] as? String
-            ?? config["InstantModel"] as? String
-            ?? "gpt-5-chat-latest"
-        payload["InstantWebSearch"] = config["instantWebSearch"] as? Bool
-            ?? config["InstantWebSearch"] as? Bool
-            ?? true
-        payload["RealtimeAuthMode"] = config["realtimeAuthMode"] as? String
-            ?? config["RealtimeAuthMode"] as? String
-            ?? CompanionRealtimeAuthMode.apiKey.rawValue
-        payload["RealtimeAuthFallbackToAPIKey"] = config["realtimeAuthFallbackToAPIKey"] as? Bool
-            ?? config["RealtimeAuthFallbackToAPIKey"] as? Bool
-            ?? false
         payload["OpenAIAPIKey"] = config["openAIAPIKey"] as? String
             ?? config["OpenAIAPIKey"] as? String
             ?? config["openAIApiKey"] as? String
@@ -2199,7 +2178,8 @@ final class BridgeStore: ObservableObject {
         payload["CompanionVersion"] = Self.currentCompanionVersion ?? ""
         payload["CompanionBuild"] = Self.currentCompanionBuild ?? ""
         payload["CompanionReleaseTag"] = Self.currentCompanionReleaseTag
-        return VoiceClawSetupContract.decorating(payload)
+        return VoiceClawSetupContract.decorating(
+            VoiceClawSetupContract.removingDeviceExperiencePreferences(payload))
     }
 
     private static func deepLink(for json: String) -> String {
