@@ -297,6 +297,7 @@ final class BridgeStore: ObservableObject {
     private var lastLocalBridgeRestartAttemptDate: Date?
     private var lastAutomaticPowerhousePrewarmDate: Date?
     private var powerhousePollingTask: Task<Void, Never>?
+    private var pairingBasePayload: [String: Any]?
 
     enum BridgeStatus: Equatable {
         case idle
@@ -1343,6 +1344,7 @@ final class BridgeStore: ObservableObject {
         guard let data = json.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
+            pairingBasePayload = nil
             pairingJSON = json
             pairingPreview = Self.redactedPairingJSON(json)
             pairingURL = Self.deepLink(for: json)
@@ -1354,6 +1356,11 @@ final class BridgeStore: ObservableObject {
     }
 
     private func updatePairingPayload(_ payload: [String: Any]) {
+        pairingBasePayload = payload
+        renderPairingPayload(from: payload)
+    }
+
+    private func renderPairingPayload(from payload: [String: Any]) {
         var updated = VoiceClawSetupContract.applyingPairingSecretPolicy(
             payload,
             includeOpenAIAPIKey: includeOpenAIAPIKeyInPairing,
@@ -1374,6 +1381,9 @@ final class BridgeStore: ObservableObject {
         updated["CompanionBuild"] = Self.currentCompanionBuild ?? ""
         updated["CompanionReleaseTag"] = Self.currentCompanionReleaseTag
         let trimmedWatchBridgeURL = watchPublicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.removeValue(forKey: "WatchPublicBridgeURL")
+        updated.removeValue(forKey: "watchPublicBridgeURL")
+        updated.removeValue(forKey: "openClawPublicTunnelURL")
         if !trimmedWatchBridgeURL.isEmpty {
             updated["WatchPublicBridgeURL"] = trimmedWatchBridgeURL
         }
@@ -1392,8 +1402,16 @@ final class BridgeStore: ObservableObject {
     }
 
     private func refreshPairingPayloadSecrets() {
-        guard !pairingJSON.isEmpty else { return }
-        updatePairingPayload(from: pairingJSON)
+        if let pairingBasePayload {
+            renderPairingPayload(from: pairingBasePayload)
+            return
+        }
+        guard !pairingJSON.isEmpty,
+              let data = pairingJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        pairingBasePayload = object
+        renderPairingPayload(from: object)
     }
 
     func refreshPairingPayloadForDisplay() {

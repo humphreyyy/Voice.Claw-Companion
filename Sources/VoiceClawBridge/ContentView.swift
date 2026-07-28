@@ -1372,6 +1372,7 @@ private struct PairingPanel: View {
                 } label: {
                     VStack(spacing: 8) {
                         QRCodeView(value: setupCodeValue)
+                            .id(setupCodeValue)
                             .frame(width: 180, height: 180)
                             .background(.white, in: RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
@@ -1434,6 +1435,9 @@ private struct PairingPanel: View {
             }
         }
         .task {
+            store.refreshPairingPayloadForDisplay()
+        }
+        .onReceive(store.$watchPublicBridgeURL.removeDuplicates()) { _ in
             store.refreshPairingPayloadForDisplay()
         }
     }
