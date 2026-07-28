@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.136</title>
+            <pubDate>Tue, 28 Jul 2026 04:55:16 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607280154</sparkle:version>
+            <sparkle:shortVersionString>0.1.136</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.136</h2><ul><li>Adds authenticated GPT Live V3 WebRTC signaling through the locally installed Codex app-server.</li><li>Uses the Codex-managed ChatGPT sign-in without exposing account credentials to the iPhone.</li><li>Adds idempotent GPT Live session stop and text-control endpoints while preserving existing GPT Realtime, OpenClaw, Hermes, and Codex routes.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.136/VoiceClawCompanion-0.1.136-202607280154.dmg" length="6877398" type="application/octet-stream" sparkle:edSignature="6DCpvhJnj6sZhCaKbWsSltejGnGKDVoWKa3yORp7Jd/x/MbcMrROKel65K/GMARQkb2JNjxwlf9jEa6vevWzBg=="/>
+        </item>
+        <item>
             <title>0.1.135</title>
             <pubDate>Sun, 26 Jul 2026 16:32:38 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.134</h2><ul><li>Reconciles durable Work tasks periodically and after Companion reconnects.</li><li>Recovers returned files and available OpenClaw or Hermes reply previews instead of replacing them with generic restart results.</li><li>Keeps outcome-unknown work visible for confirmation rather than falsely marking it failed.</li><li>Preserves newer or malformed task stores unchanged instead of silently resetting them.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.134/VoiceClawCompanion-0.1.134-202607261046.dmg" length="8562634" type="application/octet-stream" sparkle:edSignature="lL+bN0tu5SDtn565sNRkpb9DW4iu9lP9/DCICCKli9VqBLOxKjRuvTkjjQy2/oNsMHuXFDedP2U/PsAgcjobBw=="/>
-        </item>
-        <item>
-            <title>0.1.133</title>
-            <pubDate>Sun, 26 Jul 2026 09:57:24 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607260655</sparkle:version>
-            <sparkle:shortVersionString>0.1.133</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.133</h2><ul><li>Canonicalizes Hermes runtime identities across current and legacy persisted session schemas.</li><li>Uses the exact persisted session key, runtime, agent, and route when dispatching durable work.</li><li>Preserves distinct Hermes sessions while eliminating ambiguous inherited agent and route aliases.</li><li>Adds migration coverage for older VoiceClaw Companion session records without changing OpenClaw, Hermes, or Codex installations.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.133/VoiceClawCompanion-0.1.133-202607260655.dmg" length="8562252" type="application/octet-stream" sparkle:edSignature="fcKcJAxM5MHWngVlzvdB2hfj1WWpZDNa3DSp2nAV5bIdJyJ+ZyxCbpoDN+vjxh1rpjx3QLlfRrHRr32iIK5GDw=="/>
         </item>
     </channel>
 </rss>
