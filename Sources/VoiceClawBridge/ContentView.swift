@@ -1270,7 +1270,10 @@ private struct PairingPanel: View {
                                 Text(mode.label).tag(mode)
                             }
                         }
-                        .pickerStyle(.segmented)
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .frame(maxWidth: 320, alignment: .leading)
+                        .accessibilityLabel("Realtime Authentication")
 
                         Text(store.realtimeAuthMode.detail)
                             .font(.caption)
@@ -1435,9 +1438,6 @@ private struct PairingPanel: View {
             }
         }
         .task {
-            store.refreshPairingPayloadForDisplay()
-        }
-        .onReceive(store.$watchPublicBridgeURL.removeDuplicates()) { _ in
             store.refreshPairingPayloadForDisplay()
         }
     }
