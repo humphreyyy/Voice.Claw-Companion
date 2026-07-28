@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.139</title>
+            <pubDate>Tue, 28 Jul 2026 13:46:02 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607281043</sparkle:version>
+            <sparkle:shortVersionString>0.1.139</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.139</h2><ul><li>Fixes a Pair Phone panel freeze that could consume a full CPU core when opening the QR code screen.</li><li>Keeps the pairing QR code, setup JSON, and HTTPS tunnel value synchronized without a SwiftUI refresh loop.</li><li>Uses a stable Realtime authentication menu that remains responsive across repeated Pair Phone navigation.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.139/VoiceClawCompanion-0.1.139-202607281043.dmg" length="6863874" type="application/octet-stream" sparkle:edSignature="kXMadG4Szsi+foQmfjcqXinGEt7t3zo991/MOd+wqJkGc+ctkUy58zzey9BaJE0yctGPhN3qkKWn/37aLjnxBw=="/>
+        </item>
+        <item>
             <title>0.1.138</title>
             <pubDate>Tue, 28 Jul 2026 12:52:25 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.137</h2><ul><li>Corrects GPT Live V3 client-managed delegation so VoiceClaw routes app actions and OpenClaw, Hermes, Codex, and Direct work through the selected route.</li><li>Uses the current GPT Live V3 model and complete supported voice set from the installed Codex app-server.</li><li>Improves GPT Live signaling reliability, event correlation, idempotent delivery, and capability discovery.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.137/VoiceClawCompanion-0.1.137-202607280553.dmg" length="7298137" type="application/octet-stream" sparkle:edSignature="g8Qau/mDSH1qaIJT+j3V64aHca/tDcxvD9qgh6DosywUF9Jfb1c3WuTGeSilgA3MD50ZPH41k7VRioLqiMxAAw=="/>
-        </item>
-        <item>
-            <title>0.1.136</title>
-            <pubDate>Tue, 28 Jul 2026 04:55:16 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607280154</sparkle:version>
-            <sparkle:shortVersionString>0.1.136</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.136</h2><ul><li>Adds authenticated GPT Live V3 WebRTC signaling through the locally installed Codex app-server.</li><li>Uses the Codex-managed ChatGPT sign-in without exposing account credentials to the iPhone.</li><li>Adds idempotent GPT Live session stop and text-control endpoints while preserving existing GPT Realtime, OpenClaw, Hermes, and Codex routes.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.136/VoiceClawCompanion-0.1.136-202607280154.dmg" length="6877398" type="application/octet-stream" sparkle:edSignature="6DCpvhJnj6sZhCaKbWsSltejGnGKDVoWKa3yORp7Jd/x/MbcMrROKel65K/GMARQkb2JNjxwlf9jEa6vevWzBg=="/>
         </item>
     </channel>
 </rss>
