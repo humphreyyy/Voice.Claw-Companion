@@ -452,11 +452,17 @@ function trackerText(tracker) {
 
 export function codexAppServerSpawnArguments(environment = {}) {
   const argumentsList = [];
-  const computerUsePipe = String(environment?.SKY_CUA_NATIVE_PIPE_PATH || '').trim();
+  const computerUsePipe = String(
+    environment?.SKY_CUA_SERVICE_NATIVE_PIPE_PATH
+      || environment?.SKY_CUA_NATIVE_PIPE_PATH
+      || '',
+  ).trim();
   if (computerUsePipe) {
     argumentsList.push(
       '-c',
       `mcp_servers.node_repl.env.SKY_CUA_NATIVE_PIPE_PATH=${JSON.stringify(computerUsePipe)}`,
+      '-c',
+      `mcp_servers.node_repl.env.SKY_CUA_SERVICE_NATIVE_PIPE_PATH=${JSON.stringify(computerUsePipe)}`,
     );
   }
   argumentsList.push('app-server', '--stdio');
@@ -540,7 +546,11 @@ export class CodexAppServerClient {
     return createHash('sha256')
       .update(JSON.stringify({
         openAIAPIKey: String(environment?.OPENAI_API_KEY || ''),
-        computerUsePipe: String(environment?.SKY_CUA_NATIVE_PIPE_PATH || ''),
+        computerUsePipe: String(
+          environment?.SKY_CUA_SERVICE_NATIVE_PIPE_PATH
+            || environment?.SKY_CUA_NATIVE_PIPE_PATH
+            || '',
+        ),
       }))
       .digest('hex');
   }

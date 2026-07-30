@@ -301,6 +301,8 @@ test('injects current credentials and private Computer Use pipe and restarts on 
   assert.deepEqual(server.spawnArguments[0], [
     '-c',
     'mcp_servers.node_repl.env.SKY_CUA_NATIVE_PIPE_PATH="/tmp/voiceclaw-cua-first.sock"',
+    '-c',
+    'mcp_servers.node_repl.env.SKY_CUA_SERVICE_NATIVE_PIPE_PATH="/tmp/voiceclaw-cua-first.sock"',
     'app-server',
     '--stdio',
   ]);
@@ -324,7 +326,27 @@ test('injects current credentials and private Computer Use pipe and restarts on 
     server.spawnArguments[2][1],
     'mcp_servers.node_repl.env.SKY_CUA_NATIVE_PIPE_PATH="/tmp/voiceclaw-cua-second.sock"',
   );
+  assert.equal(
+    server.spawnArguments[2][3],
+    'mcp_servers.node_repl.env.SKY_CUA_SERVICE_NATIVE_PIPE_PATH="/tmp/voiceclaw-cua-second.sock"',
+  );
   client.stop();
+});
+
+test('normalizes the released Computer Use service pipe name into both node_repl aliases', () => {
+  assert.deepEqual(
+    codexAppServerSpawnArguments({
+      SKY_CUA_SERVICE_NATIVE_PIPE_PATH: '/tmp/voiceclaw-cua-service.sock',
+    }),
+    [
+      '-c',
+      'mcp_servers.node_repl.env.SKY_CUA_NATIVE_PIPE_PATH="/tmp/voiceclaw-cua-service.sock"',
+      '-c',
+      'mcp_servers.node_repl.env.SKY_CUA_SERVICE_NATIVE_PIPE_PATH="/tmp/voiceclaw-cua-service.sock"',
+      'app-server',
+      '--stdio',
+    ],
+  );
 });
 
 test('omits the private Computer Use override when no private pipe is configured', () => {

@@ -89,6 +89,16 @@ async function createSupervisor(t, {
   return { privateRoot, spawner, supervisor };
 }
 
+test('publishes both Computer Use client pipe aliases for the private socket', async (t) => {
+  const { supervisor } = await createSupervisor(t);
+  const environment = supervisor.environment();
+  assert.equal(environment.SKY_CUA_NATIVE_PIPE_PATH, supervisor.snapshot().privateSocketPath);
+  assert.equal(
+    environment.SKY_CUA_SERVICE_NATIVE_PIPE_PATH,
+    supervisor.snapshot().privateSocketPath,
+  );
+});
+
 test('a task lease starts the private socket, then the Codex thread performs the authenticated probe', async (t) => {
   let probes = 0;
   let probeSocketPath = '';

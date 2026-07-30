@@ -50,6 +50,11 @@ test('Companion source contains no configuration CLI mutation for external agent
     /mcp_servers\.node_repl\.env\.SKY_CUA_NATIVE_PIPE_PATH=/,
     'a per-process -c override may bind VoiceClaw node_repl without writing Codex config',
   );
+  assert.match(
+    codex,
+    /mcp_servers\.node_repl\.env\.SKY_CUA_SERVICE_NATIVE_PIPE_PATH=/,
+    'released Computer Use clients may read the service-name alias from node_repl',
+  );
   assert.doesNotMatch(
     codex,
     /spawnProcess\(this\.codexPath,\s*\[\s*['"](?:config|update|install|uninstall)['"]/i,
