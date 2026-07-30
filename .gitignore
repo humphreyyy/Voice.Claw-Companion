@@ -3,4 +3,7 @@
 dist/
 BridgeRuntime/node_modules/
 BridgeRuntime/ops-node/
+LinuxCompanion/node_modules/
+LinuxCompanion/out/
+LinuxCompanion/dist/
 *.xcdistributionlogs/

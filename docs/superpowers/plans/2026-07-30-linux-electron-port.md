@@ -352,13 +352,13 @@ Use this `package.json`:
     "@types/qrcode": "1.5.6",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.5",
+    "@vitejs/plugin-react": "5.2.0",
     "electron": "43.2.0",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "jsdom": "30.0.1",
     "typescript": "7.0.2",
-    "vite": "8.2.0",
+    "vite": "7.3.6",
     "vitest": "4.1.10"
   }
 }
