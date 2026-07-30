@@ -744,6 +744,8 @@ final class BridgeStore: ObservableObject {
     func installLatestUpdate() {
         updateSummary = "Opening the signed VoiceClaw Realtime Companion updater..."
         lastLog = "Opening Sparkle to download, verify, install, and relaunch VoiceClaw Realtime Companion."
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
         sparkleUpdaterController.checkForUpdates(nil)
     }
 

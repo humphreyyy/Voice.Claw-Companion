@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Sparkle
 
@@ -74,6 +75,11 @@ enum CompanionUpdateFeed {
 final class CompanionSparkleUpdaterDelegate: NSObject, SPUUpdaterDelegate {
     func feedURLString(for updater: SPUUpdater) -> String? {
         CompanionUpdateFeed.cacheBustedAppcastURL().absoluteString
+    }
+
+    func updaterWillShowModalAlert(_ updater: SPUUpdater) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 

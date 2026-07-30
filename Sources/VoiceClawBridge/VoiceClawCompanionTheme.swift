@@ -371,6 +371,7 @@ private struct CompanionPanelSurfaceModifier: ViewModifier {
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(VoiceClawCompanionTheme.line, lineWidth: 1)
+                    .allowsHitTesting(false)
             }
             .overlay(alignment: .topLeading) {
                 if let accent {
@@ -384,6 +385,7 @@ private struct CompanionPanelSurfaceModifier: ViewModifier {
                         )
                         .frame(height: 2)
                         .padding(.horizontal, 8)
+                        .allowsHitTesting(false)
                 }
             }
             .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
@@ -402,6 +404,7 @@ private struct CompanionHeroSurfaceModifier: ViewModifier {
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(VoiceClawCompanionTheme.lineStrong, lineWidth: 1)
+                    .allowsHitTesting(false)
             }
             .shadow(
                 color: VoiceClawCompanionTheme.cyan.opacity(0.08),
@@ -427,6 +430,7 @@ private struct CompanionInsetSurfaceModifier: ViewModifier {
                         accent?.opacity(0.24) ?? VoiceClawCompanionTheme.line,
                         lineWidth: 1
                     )
+                    .allowsHitTesting(false)
             }
     }
 }
@@ -444,10 +448,12 @@ private struct CompanionStatusSurfaceModifier: ViewModifier {
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(color.opacity(0.055))
+                    .allowsHitTesting(false)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(color.opacity(0.34), lineWidth: 1)
+                    .allowsHitTesting(false)
             }
     }
 }
