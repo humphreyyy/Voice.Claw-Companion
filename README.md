@@ -4,6 +4,11 @@ VoiceClaw Realtime Companion is the macOS bridge for VoiceClaw Realtime on iPhon
 It lets the mobile app reach agent tools that run on your own Mac, including
 OpenClaw and Hermes Agent, through a private Tailscale URL.
 
+An experimental Ubuntu 24.04 x86-64 desktop port is also available. See the
+[Linux install and operation guide](docs/LINUX.md). The Linux app reuses the
+same bridge but only reads existing Tailscale state; it never changes Serve
+mappings.
+
 The Companion app installs a local bridge, keeps it running with a user
 LaunchAgent, configures Tailscale Serve, checks the Mac permissions VoiceClaw
 Realtime needs, and gives VoiceClaw Realtime a QR code or setup link for pairing. It is meant for people

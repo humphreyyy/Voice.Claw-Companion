@@ -8,6 +8,10 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     clearMocks: true,
     restoreMocks: true,
-    exclude: [...configDefaults.exclude, 'service/**/*.test.mjs'],
+    exclude: [
+      ...configDefaults.exclude,
+      'service/**/*.test.mjs',
+      'scripts/**/*.test.mjs',
+    ],
   },
 });

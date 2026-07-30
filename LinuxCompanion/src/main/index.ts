@@ -158,7 +158,7 @@ function createMainWindow(controller: CompanionController): BrowserWindow {
 
 function createTray(controller: CompanionController, window: BrowserWindow): void {
   const iconPath = app.isPackaged
-    ? join(process.resourcesPath, 'icon.png')
+    ? join(process.resourcesPath, 'AppIcon-1024.png')
     : join(app.getAppPath(), '..', 'Assets', 'AppIcon-1024.png');
   const image = nativeImage.createFromPath(iconPath).resize({ width: 22, height: 22 });
   tray = new Tray(image);

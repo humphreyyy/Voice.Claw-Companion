@@ -1,6 +1,13 @@
 {
   "name": "voiceclaw-linux-companion",
   "version": "0.1.0",
+  "desktopName": "voiceclaw-companion.desktop",
+  "description": "Linux companion desktop for VoiceClaw Realtime",
+  "author": {
+    "name": "VoiceClaw contributors",
+    "email": "humphreyyy@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/humphreyyy/Voice.Claw-Companion",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
@@ -11,7 +18,7 @@
     "lint": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "build": "npm run lint && electron-vite build",
     "smoke:electron": "npm run build && xvfb-run -a electron . --smoke-test",
-    "package:deb": "npm run build && node scripts/prepare-runtime.mjs && electron-builder --linux deb --x64"
+    "package:deb": "umask 022 && npm run build && node scripts/prepare-runtime.mjs && electron-builder --linux deb --x64"
   },
   "dependencies": {
     "qrcode": "1.5.4",

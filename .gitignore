@@ -6,4 +6,5 @@ BridgeRuntime/ops-node/
 LinuxCompanion/node_modules/
 LinuxCompanion/out/
 LinuxCompanion/dist/
+LinuxCompanion/build-resources/
 *.xcdistributionlogs/
