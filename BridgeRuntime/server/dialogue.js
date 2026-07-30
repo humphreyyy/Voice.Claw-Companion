@@ -2177,6 +2177,7 @@ export function createVoiceRemoteSessionRuntimeAdapter({
       const liveSessionID = liveBinding.liveSessionID;
       let started = false;
       let settled = false;
+      let suppressUntilQueuedTurn = false;
       let eventTail = Promise.resolve();
       const buffered = [];
       let resolveCompletion;
@@ -2186,6 +2187,14 @@ export function createVoiceRemoteSessionRuntimeAdapter({
         rejectCompletion = reject;
       });
       const dispatchEvent = (params) => {
+        const terminal = params.type === 'message.complete' || params.type === 'error';
+        if (suppressUntilQueuedTurn) {
+          // A queued submission shares the session event stream with the turn
+          // already in flight. Ignore that turn through its terminal event so
+          // its output cannot be attributed to the newly queued VoiceClaw task.
+          if (terminal) suppressUntilQueuedTurn = false;
+          return;
+        }
         eventTail = eventTail.then(() => onEvent(hermesEvent(params)));
         if (params.type === 'message.complete' && !settled) {
           settled = true;
@@ -2230,10 +2239,14 @@ export function createVoiceRemoteSessionRuntimeAdapter({
           id: requestID,
           timeoutMs: 15000,
         });
-        if (accepted?.status !== 'streaming') {
-          throw new Error('Hermes did not acknowledge a streaming run.');
+        const acceptedStatus = String(accepted?.status || '').trim().toLowerCase();
+        if (!['streaming', 'queued', 'redirected', 'steered'].includes(acceptedStatus)) {
+          throw new Error(
+            `Hermes rejected the run${acceptedStatus ? ` (status: ${acceptedStatus})` : ''}.`,
+          );
         }
-        await onRunStarted({ runID: requestID, binding: liveBinding });
+        suppressUntilQueuedTurn = acceptedStatus === 'queued';
+        await onRunStarted({ runID: requestID, binding: liveBinding, acceptedStatus });
         started = true;
         for (const params of buffered.splice(0)) dispatchEvent(params);
         const payload = await completion;

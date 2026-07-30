@@ -855,6 +855,114 @@ test('Hermes adapter uses stored/live IDs from its gateway and streams the ackno
   assert.ok(gateway.calls.some((call) => call.method === 'session.close'));
 });
 
+test('Hermes queued acknowledgements wait for the queued turn and suppress the prior turn result', async () => {
+  class QueuedHermesGateway extends FakeHermesGateway {
+    async request(method, params, options = {}) {
+      if (method !== 'prompt.submit') return super.request(method, params, options);
+      this.calls.push({ method, params, options });
+      queueMicrotask(() => {
+        this.emit(params.session_id, 'message.delta', { text: 'Prior turn output' });
+        this.emit(params.session_id, 'message.complete', {
+          text: 'Prior turn result',
+          status: 'complete',
+        });
+        this.emit(params.session_id, 'message.start');
+        this.emit(params.session_id, 'message.delta', { text: 'Retried task output' });
+        this.emit(params.session_id, 'message.complete', {
+          text: 'Retried task result',
+          status: 'complete',
+        });
+      });
+      return { status: 'queued' };
+    }
+  }
+
+  const gateway = new QueuedHermesGateway();
+  const store = {
+    async create(sessionID) { return sessionID; },
+    async attach(sessionID) { return sessionID; },
+    async end(sessionID) { return sessionID; },
+    async discover() { return []; },
+  };
+  const route = { routeID: 'hermes-bridge', runtime: 'hermes', agentID: 'hermes' };
+  const adapter = createVoiceRemoteSessionRuntimeAdapter({
+    hermesGateway: gateway,
+    hermesSessionStore: store,
+  });
+  const descriptor = await adapter.startSession(route);
+  const events = [];
+  let acceptedIdentity;
+  const result = await adapter.runTurn({
+    session: sessionFromDescriptor(descriptor, route),
+    binding: descriptor.binding,
+    text: 'Retry this task.',
+    processing: { runtime: 'hermes' },
+    requestID: 'hermes-queued-retry',
+    signal: new AbortController().signal,
+    onRunStarted(identity) {
+      acceptedIdentity = identity;
+    },
+    onEvent(event) {
+      events.push(event);
+    },
+  });
+
+  assert.equal(acceptedIdentity.acceptedStatus, 'queued');
+  assert.equal(result.reply, 'Retried task result');
+  assert.deepEqual(events.map((event) => event.type), [
+    'message.start',
+    'message.delta',
+    'message.complete',
+  ]);
+  assert.equal(events.some((event) => event.data?.text === 'Prior turn output'), false);
+});
+
+test('Hermes redirected acknowledgements are accepted as the active replacement turn', async () => {
+  class RedirectedHermesGateway extends FakeHermesGateway {
+    async request(method, params, options = {}) {
+      if (method !== 'prompt.submit') return super.request(method, params, options);
+      this.calls.push({ method, params, options });
+      queueMicrotask(() => {
+        this.emit(params.session_id, 'message.complete', {
+          text: 'Redirected task result',
+          status: 'complete',
+        });
+      });
+      return { status: 'redirected' };
+    }
+  }
+
+  const gateway = new RedirectedHermesGateway();
+  const store = {
+    async create(sessionID) { return sessionID; },
+    async attach(sessionID) { return sessionID; },
+    async end(sessionID) { return sessionID; },
+    async discover() { return []; },
+  };
+  const route = { routeID: 'hermes-bridge', runtime: 'hermes', agentID: 'hermes' };
+  const adapter = createVoiceRemoteSessionRuntimeAdapter({
+    hermesGateway: gateway,
+    hermesSessionStore: store,
+  });
+  const descriptor = await adapter.startSession(route);
+  let acceptedIdentity;
+  const result = await adapter.runTurn({
+    session: sessionFromDescriptor(descriptor, route),
+    binding: descriptor.binding,
+    text: 'Use this retry instead.',
+    processing: { runtime: 'hermes' },
+    requestID: 'hermes-redirected-retry',
+    signal: new AbortController().signal,
+    onRunStarted(identity) {
+      acceptedIdentity = identity;
+    },
+    onEvent() {},
+  });
+
+  assert.equal(acceptedIdentity.acceptedStatus, 'redirected');
+  assert.equal(result.reply, 'Redirected task result');
+});
+
 test('Hermes discovery resumes the persisted runtime ID instead of creating a replacement', async () => {
   const gateway = new FakeHermesGateway();
   gateway.active = [];

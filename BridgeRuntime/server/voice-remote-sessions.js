@@ -878,9 +878,12 @@ export class VoiceRemoteSessionService {
         newRunID: nextRunID,
       });
       await this._persist(current, next);
-      if (result?.completion && typeof result.completion.then === 'function') {
+      const completion = result?.completion && typeof result.completion.then === 'function'
+        ? Promise.resolve(result.completion)
+        : null;
+      if (completion) {
         const key = storageKey(session.runtime, session.agent.id, session.sessionID);
-        Promise.resolve(result.completion).then(
+        completion.then(
           (completion) => this._finishSteeredRun(key, nextRunID, 'completed', completion),
           (error) => this._finishSteeredRun(
             key,
@@ -891,7 +894,16 @@ export class VoiceRemoteSessionService {
           ),
         ).catch(() => {});
       }
-      return { ok: true, steered: true, runID: nextRunID, session: publicSession(session) };
+      const response = { ok: true, steered: true, runID: nextRunID, session: publicSession(session) };
+      if (completion) {
+        // Internal durable-task callers follow the replacement run. Keeping this
+        // non-enumerable prevents the Promise from leaking into the HTTP schema.
+        Object.defineProperty(response, 'completion', {
+          value: completion,
+          enumerable: false,
+        });
+      }
+      return response;
     });
   }
 

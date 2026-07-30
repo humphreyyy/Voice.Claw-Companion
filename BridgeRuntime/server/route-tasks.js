@@ -34,6 +34,26 @@ function clone(value) {
   return value === undefined ? undefined : structuredClone(value);
 }
 
+function deferredValue() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function waitForSignal(promise, signal) {
+  if (!signal) return Promise.resolve(promise);
+  if (signal.aborted) return Promise.reject(signal.reason || new Error('cancelled'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason || new Error('cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
+}
+
 function trimmed(value, field, maximum = 64 * 1024, { required = true } = {}) {
   const result = String(value ?? '').trim();
   if (required && !result) throw new RouteTaskError('invalid_request', `${field} is required.`, 422);
@@ -166,6 +186,7 @@ export class RouteTaskService {
     this.state = null;
     this.tail = Promise.resolve();
     this.active = new Map();
+    this.steeringHandoffs = new Map();
     this.subscribers = new Map();
     this.inputAttachmentStore?.prune?.().catch((error) => {
       console.error('[route-tasks] input attachment prune failed:', error?.message || error);
@@ -330,21 +351,39 @@ export class RouteTaskService {
   async steer({ taskID, text, requestID = randomUUID() } = {}) {
     const message = trimmed(text, 'text', 16 * 1024);
     const task = await this.get(taskID);
+    if (TERMINAL_STATES.has(task.state)) {
+      throw new RouteTaskError('task_not_steerable', 'The task has already finished.', 409);
+    }
     if (task.target.runtime === 'codex') {
       throw new RouteTaskError('steer_unsupported', 'Codex tasks accept a follow-up after the current turn completes.', 409);
     }
     if (!this.remoteSessionService || !task.runtime.sessionID) {
       throw new RouteTaskError('task_not_steerable', 'The task has no steerable runtime session.', 409);
     }
-    const result = await this.remoteSessionService.steer({
-      sessionID: task.runtime.sessionID,
-      text: message,
-      requestID,
-    });
-    await this.#update(taskID, 'task.steered', { progress: `Added follow-up: ${message.slice(0, 160)}` }, (draft) => {
-      draft.runtime.runID = result.runID || draft.runtime.runID;
-    });
-    return { task: await this.get(taskID), steered: true };
+    const prior = this.steeringHandoffs.get(taskID);
+    const handoff = {
+      generation: Number(prior?.generation || 0) + 1,
+      ready: deferredValue(),
+    };
+    this.steeringHandoffs.set(taskID, handoff);
+    try {
+      const result = await this.remoteSessionService.steer({
+        sessionID: task.runtime.sessionID,
+        text: message,
+        requestID,
+      });
+      await this.#update(taskID, 'task.steered', { progress: `Added follow-up: ${message.slice(0, 160)}` }, (draft) => {
+        draft.runtime.runID = result.runID || draft.runtime.runID;
+      });
+      handoff.ready.resolve({ result });
+      return { task: await this.get(taskID), steered: true };
+    } catch (error) {
+      handoff.ready.resolve({ error });
+      if (this.steeringHandoffs.get(taskID) === handoff) {
+        this.steeringHandoffs.delete(taskID);
+      }
+      throw error;
+    }
   }
 
   async cancel({ taskID, requestID = randomUUID() } = {}) {
@@ -500,8 +539,50 @@ export class RouteTaskService {
     queueMicrotask(() => {
       this.#execute(taskID, controller.signal)
         .catch((error) => this.#fail(taskID, error?.code || 'task_failed', String(error?.message || error)))
-        .finally(() => this.active.delete(taskID));
+        .finally(() => {
+          this.active.delete(taskID);
+          this.steeringHandoffs.delete(taskID);
+        });
     });
+  }
+
+  async #followSteeredRun(taskID, supersededError, signal) {
+    let handoff = this.steeringHandoffs.get(taskID);
+    if (!handoff) throw supersededError;
+    await this.#update(taskID, 'runtime.superseded', {
+      progress: 'The follow-up replaced the original runtime run; waiting for its result.',
+    });
+    while (handoff) {
+      if (signal.aborted) throw signal.reason || new Error('cancelled');
+      const generation = handoff.generation;
+      const registered = await waitForSignal(handoff.ready.promise, signal);
+      if (registered.error) throw registered.error;
+      const completion = registered.result?.completion;
+      if (!completion || typeof completion.then !== 'function') {
+        throw supersededError;
+      }
+      let result;
+      try {
+        result = await waitForSignal(completion, signal);
+      } catch (error) {
+        const latest = this.steeringHandoffs.get(taskID);
+        if (latest && latest.generation > generation) {
+          handoff = latest;
+          continue;
+        }
+        throw error;
+      }
+      const latest = this.steeringHandoffs.get(taskID);
+      if (latest && latest.generation > generation) {
+        handoff = latest;
+        continue;
+      }
+      return {
+        ...result,
+        runID: result?.runID || registered.result.runID || null,
+      };
+    }
+    throw supersededError;
   }
 
   async #execute(taskID, signal) {
@@ -648,21 +729,26 @@ export class RouteTaskService {
         draft.target.remoteSessionID = session.sessionID;
         draft.target.sessionKey = session.agent?.sessionKey || null;
       });
-      result = await this.remoteSessionService.runTurn({
-        sessionID: session.sessionID,
-        sessionKey: session.agent?.sessionKey,
-        runtime: session.runtime,
-        agentID: session.agent?.id,
-        routeID: session.routeID,
-        text: dispatchText,
-        requestID: `${task.taskID}:turn`,
-        processing: {
-          runtime: task.target.runtime,
-          model: task.target.model || undefined,
-          thinking: task.target.reasoning || undefined,
-        },
-        signal,
-      });
+      try {
+        result = await this.remoteSessionService.runTurn({
+          sessionID: session.sessionID,
+          sessionKey: session.agent?.sessionKey,
+          runtime: session.runtime,
+          agentID: session.agent?.id,
+          routeID: session.routeID,
+          text: dispatchText,
+          requestID: `${task.taskID}:turn`,
+          processing: {
+            runtime: task.target.runtime,
+            model: task.target.model || undefined,
+            thinking: task.target.reasoning || undefined,
+          },
+          signal,
+        });
+      } catch (error) {
+        if (error?.code !== 'run_superseded') throw error;
+        result = await this.#followSteeredRun(taskID, error, signal);
+      }
       await this.#update(taskID, 'runtime.completed', { progress: `${task.target.runtime} returned a result.` }, (draft) => {
         draft.runtime.runID = result.runID || null;
       });

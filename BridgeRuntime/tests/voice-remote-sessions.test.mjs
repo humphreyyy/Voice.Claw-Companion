@@ -519,7 +519,10 @@ test('steer adopts the replacement runtime run and stop confirms cancellation', 
   });
   assert.equal(steered.runID, 'runtime-run-steered');
   assert.equal(steered.session.runState, 'running');
+  assert.equal(typeof steered.completion?.then, 'function');
+  assert.equal(Object.keys(steered).includes('completion'), false);
   steerFinish.resolve();
+  assert.equal((await steered.completion).reply, 'steered reply');
   const steeredComplete = await eventually(
     () => context.service.observe({ expected: expected(steered.session) }),
     (value) => value.session.runState === 'completed',

@@ -625,6 +625,143 @@ test('returnArtifact delivery is authoritative and missing output becomes a term
   assert.match(completed.result.artifactWarning, /without placing a requested file/i);
 });
 
+test('a steering replacement completes the original durable task instead of failing it as superseded', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-steer-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let releaseOriginal;
+  let resolveReplacement;
+  let markTurnStarted;
+  const originalGate = new Promise((resolve) => { releaseOriginal = resolve; });
+  const replacement = new Promise((resolve) => { resolveReplacement = resolve; });
+  const turnStarted = new Promise((resolve) => { markTurnStarted = resolve; });
+  const remote = {
+    async start({ runtime, routeID, agentID }) {
+      return {
+        session: {
+          sessionID: `${runtime}-session-${agentID}`,
+          runState: 'idle',
+          agent: { id: agentID, sessionKey: `${runtime}:${routeID}:${agentID}` },
+        },
+      };
+    },
+    async runTurn() {
+      markTurnStarted();
+      await originalGate;
+      const error = new Error('The original runtime run was superseded by a steering run.');
+      error.code = 'run_superseded';
+      error.name = 'AbortError';
+      error.cancelled = true;
+      throw error;
+    },
+    async steer() {
+      return {
+        runID: 'replacement-run',
+        completion: replacement,
+      };
+    },
+  };
+  const service = new RouteTaskService({
+    statePath: join(directory, 'tasks.json'),
+    remoteSessionService: remote,
+  });
+  const created = await service.create({
+    target: { runtime: 'openclaw', route: 'openclaw-bridge', agentID: 'julian' },
+    text: 'Prepare the first version.',
+  });
+  await turnStarted;
+  await service.steer({
+    taskID: created.task.taskID,
+    text: 'Use the corrected requirements.',
+    requestID: 'steer-replacement',
+  });
+  releaseOriginal();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const waiting = await service.get(created.task.taskID);
+  assert.match(waiting.progress.summary, /replaced the original runtime run/);
+  assert.equal(waiting.state, 'running');
+
+  resolveReplacement({
+    runID: 'replacement-run',
+    reply: 'Completed with the corrected requirements.',
+  });
+  const completed = await waitFor(async () => {
+    const task = await service.get(created.task.taskID);
+    return task.state === 'completed' ? task : null;
+  });
+  assert.equal(completed.runtime.runID, 'replacement-run');
+  assert.equal(completed.result.text, 'Completed with the corrected requirements.');
+  const events = (await service.events({ taskID: created.task.taskID })).events;
+  assert.ok(events.some((event) => event.type === 'task.steered'));
+  assert.ok(events.some((event) => event.type === 'runtime.superseded'));
+  assert.equal(events.some((event) => event.type === 'task.failed'), false);
+});
+
+test('cancelling a task while its steering replacement runs remains terminally cancelled', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-steer-cancel-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let releaseOriginal;
+  let resolveReplacement;
+  let markTurnStarted;
+  const originalGate = new Promise((resolve) => { releaseOriginal = resolve; });
+  const replacement = new Promise((resolve) => { resolveReplacement = resolve; });
+  const turnStarted = new Promise((resolve) => { markTurnStarted = resolve; });
+  const remote = {
+    async start({ runtime, routeID, agentID }) {
+      return {
+        session: {
+          sessionID: `${runtime}-session-${agentID}`,
+          runState: 'idle',
+          agent: { id: agentID, sessionKey: `${runtime}:${routeID}:${agentID}` },
+        },
+      };
+    },
+    async runTurn() {
+      markTurnStarted();
+      await originalGate;
+      const error = new Error('The original runtime run was superseded by a steering run.');
+      error.code = 'run_superseded';
+      error.name = 'AbortError';
+      error.cancelled = true;
+      throw error;
+    },
+    async steer() {
+      return { runID: 'replacement-run', completion: replacement };
+    },
+    async stop() {
+      return { stopped: true };
+    },
+  };
+  const service = new RouteTaskService({
+    statePath: join(directory, 'tasks.json'),
+    remoteSessionService: remote,
+  });
+  const created = await service.create({
+    target: { runtime: 'openclaw', route: 'openclaw-bridge', agentID: 'julian' },
+    text: 'Prepare a long-running report.',
+  });
+  await turnStarted;
+  await service.steer({
+    taskID: created.task.taskID,
+    text: 'Use the corrected scope.',
+    requestID: 'steer-before-cancel',
+  });
+  releaseOriginal();
+  await waitFor(async () => {
+    const events = (await service.events({ taskID: created.task.taskID })).events;
+    return events.some((event) => event.type === 'runtime.superseded');
+  });
+  const cancelled = await service.cancel({
+    taskID: created.task.taskID,
+    requestID: 'cancel-steered-task',
+  });
+  assert.equal(cancelled.task.state, 'cancelled');
+  resolveReplacement({ runID: 'replacement-run', reply: 'Too late.' });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const retained = await service.get(created.task.taskID);
+  assert.equal(retained.state, 'cancelled');
+  assert.equal(retained.result, null);
+});
+
 test('event feed buffers an event committed after snapshot but before listener attachment', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-feed-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
