@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -11,6 +11,7 @@ import {
   CodexAppServerBridge,
   CodexAppServerClient,
   CODEX_REALTIME_V3_DEFAULTS,
+  codexAppServerSpawnArguments,
   codexAppServerNegotiation,
   normalizeCodexRealtimeWebRTCOptions,
 } from '../server/codex-app-server.js';
@@ -80,6 +81,7 @@ function createFakeCodexServer({
   accountType = 'chatgpt',
 } = {}) {
   const calls = [];
+  const spawnArguments = [];
   const spawnOptions = [];
   let threadStarts = 0;
   let threadResumes = 0;
@@ -87,7 +89,8 @@ function createFakeCodexServer({
   let compactions = 0;
   let shouldOverflow = contextOverflowOnce;
   let process = null;
-  const spawnProcess = (_binary, _args, options) => {
+  const spawnProcess = (_binary, args, options) => {
+    spawnArguments.push(args);
     spawnOptions.push(options);
     process = new FakeCodexProcess((message, send) => {
       calls.push(message);
@@ -132,6 +135,16 @@ function createFakeCodexServer({
               announcement: null,
             }],
             nextCursor: null,
+          },
+        });
+        return;
+      }
+      if (message.method === 'mcpServer/tool/call') {
+        send({
+          id: message.id,
+          result: {
+            isError: false,
+            content: [{ type: 'text', text: '{"count":1}' }],
           },
         });
         return;
@@ -252,6 +265,7 @@ function createFakeCodexServer({
   };
   return {
     spawnProcess,
+    spawnArguments,
     spawnOptions,
     calls,
     get threadStarts() { return threadStarts; },
@@ -261,14 +275,18 @@ function createFakeCodexServer({
   };
 }
 
-test('injects the current Companion OpenAI key into Codex app-server and restarts after key rotation', async () => {
+test('injects current credentials and private Computer Use pipe and restarts on either rotation', async () => {
   const server = createFakeCodexServer();
   let currentKey = 'sk-test-first';
+  let currentPipe = '/tmp/voiceclaw-cua-first.sock';
   const client = new CodexAppServerClient({
     codexPath: '/test/bin/codex',
     spawnProcess: server.spawnProcess,
     environment: { PATH: '/test/bin' },
-    environmentProvider: () => ({ OPENAI_API_KEY: currentKey }),
+    environmentProvider: () => ({
+      OPENAI_API_KEY: currentKey,
+      SKY_CUA_NATIVE_PIPE_PATH: currentPipe,
+    }),
     clientVersion: '0.1.test',
     requestTimeoutMs: 1_000,
   });
@@ -276,6 +294,16 @@ test('injects the current Companion OpenAI key into Codex app-server and restart
   await client.start();
   assert.equal(server.spawnOptions.length, 1);
   assert.equal(server.spawnOptions[0].env.OPENAI_API_KEY, 'sk-test-first');
+  assert.equal(
+    server.spawnOptions[0].env.SKY_CUA_NATIVE_PIPE_PATH,
+    '/tmp/voiceclaw-cua-first.sock',
+  );
+  assert.deepEqual(server.spawnArguments[0], [
+    '-c',
+    'mcp_servers.node_repl.env.SKY_CUA_NATIVE_PIPE_PATH="/tmp/voiceclaw-cua-first.sock"',
+    'app-server',
+    '--stdio',
+  ]);
 
   await client.start();
   assert.equal(server.spawnOptions.length, 1, 'unchanged credentials must reuse the ready app-server');
@@ -284,6 +312,39 @@ test('injects the current Companion OpenAI key into Codex app-server and restart
   await client.start();
   assert.equal(server.spawnOptions.length, 2, 'rotated credentials must restart the app-server');
   assert.equal(server.spawnOptions[1].env.OPENAI_API_KEY, 'sk-test-second');
+
+  currentPipe = '/tmp/voiceclaw-cua-second.sock';
+  await client.start();
+  assert.equal(server.spawnOptions.length, 3, 'rotated private pipe must restart the app-server');
+  assert.equal(
+    server.spawnOptions[2].env.SKY_CUA_NATIVE_PIPE_PATH,
+    '/tmp/voiceclaw-cua-second.sock',
+  );
+  assert.equal(
+    server.spawnArguments[2][1],
+    'mcp_servers.node_repl.env.SKY_CUA_NATIVE_PIPE_PATH="/tmp/voiceclaw-cua-second.sock"',
+  );
+  client.stop();
+});
+
+test('omits the private Computer Use override when no private pipe is configured', () => {
+  assert.deepEqual(codexAppServerSpawnArguments({}), ['app-server', '--stdio']);
+});
+
+test('calls an MCP tool through the documented app-server thread method', async () => {
+  const server = createFakeCodexServer();
+  const client = createClient(server);
+  const result = await client.callMCPTool({
+    server: 'node_repl',
+    threadID: 'thread-computer-use',
+    tool: 'js',
+    arguments: { code: 'nodeRepl.write("ok")' },
+  });
+  assert.equal(result.isError, false);
+  const call = server.calls.find((entry) => entry.method === 'mcpServer/tool/call');
+  assert.equal(call.params.server, 'node_repl');
+  assert.equal(call.params.threadId, 'thread-computer-use');
+  assert.equal(call.params.tool, 'js');
   client.stop();
 });
 
@@ -451,6 +512,59 @@ test('runs serialized text turns on one durable Codex thread', async () => {
   bridge.stop();
 });
 
+test('runs the authenticated pre-turn gate after thread admission and before dispatch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-before-turn-'));
+  const server = createFakeCodexServer();
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+  const observed = [];
+  const result = await bridge.runTurn({
+    sessionKey: 'computer-use-session',
+    text: 'Open TextEdit.',
+    beforeTurn: async ({ threadID, sessionKey }) => {
+      observed.push({ threadID, sessionKey });
+      assert.equal(
+        server.calls.some((call) => call.method === 'turn/start'),
+        false,
+      );
+    },
+  });
+  assert.equal(result.text, 'reply-1');
+  assert.deepEqual(observed, [{
+    threadID: 'thread-voiceclaw-1',
+    sessionKey: 'computer-use-session',
+  }]);
+  bridge.stop();
+});
+
+test('aborting an admitted Codex task interrupts its exact app-server turn', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-cancel-'));
+  const server = createFakeCodexServer();
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+  const controller = new AbortController();
+
+  await assert.rejects(
+    bridge.runTurn({
+      sessionKey: 'cancel-session',
+      text: 'Open TextEdit.',
+      signal: controller.signal,
+      onTurnStarted: () => controller.abort(new Error('Task cancelled by user.')),
+    }),
+    /cancelled by user/i,
+  );
+  const interrupt = server.calls.find((call) => call.method === 'turn/interrupt');
+  assert.equal(interrupt.params.threadId, 'thread-voiceclaw-1');
+  assert.equal(interrupt.params.turnId, 'turn-1');
+  bridge.stop();
+});
+
 test('compacts and retries one Codex turn after a context overflow', async () => {
   const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-compact-'));
   const server = createFakeCodexServer({ contextOverflowOnce: true });
@@ -468,6 +582,28 @@ test('compacts and retries one Codex turn after a context overflow', async () =>
   assert.equal(server.threadStarts, 1);
   assert.equal(server.compactions, 1);
   assert.equal(server.calls.filter((call) => call.method === 'turn/start').length, 2);
+  bridge.stop();
+});
+
+test('computer-capable turns compact but never replay after dispatch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-no-replay-'));
+  const server = createFakeCodexServer({ contextOverflowOnce: true });
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+
+  await assert.rejects(
+    bridge.runTurn({
+      sessionKey: 'computer-overflow-session',
+      text: 'Open TextEdit.',
+      allowContextOverflowReplay: false,
+    }),
+    (error) => error.code === 'CODEX_CONTEXT_COMPACTED_RETRY_REQUIRED',
+  );
+  assert.equal(server.compactions, 1);
+  assert.equal(server.calls.filter((call) => call.method === 'turn/start').length, 1);
   bridge.stop();
 });
 
@@ -538,6 +674,103 @@ test('marks experimental realtime available only after receiving a real SDP answ
   assert.equal(after.realtime.backendAdmission, 'verified');
   assert.equal(after.realtime.available, true);
   assert.equal(after.realtimeLifecycle.active.lifecycleID, negotiation.lifecycleID);
+  bridge.stop();
+});
+
+test('GPT Live contract and route revisions preserve a thread when developer instructions do not change', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-contract-revision-'));
+  const server = createFakeCodexServer();
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath: join(root, 'sessions.json'),
+    workspacePath: join(root, 'workspace'),
+  });
+  const revision = 'a'.repeat(64);
+  const first = await bridge.startRealtimeWebRTC({
+    sessionKey: 'stable-live-session',
+    sdp: 'v=0\r\no=contract-offer-1\r\n',
+    developerInstructions: 'Stable developer instructions.',
+    promptContractHash: 'b'.repeat(64),
+    promptContractID: 'voiceclaw-gpt-live-stable',
+    promptRevisionHash: revision,
+  });
+  const reconfigured = await bridge.reconfigureRealtimeWebRTC({
+    sessionKey: first.sessionKey,
+    threadID: first.threadID,
+    promptContractHash: 'c'.repeat(64),
+    promptContractID: 'voiceclaw-gpt-live-stable',
+    promptRevisionHash: revision,
+    prompt: 'The selected route is now Hermes.',
+  });
+
+  assert.equal(reconfigured.threadID, first.threadID);
+  assert.equal(reconfigured.promptContractHash, 'c'.repeat(64));
+  assert.equal(reconfigured.promptApplied, true);
+  const promptUpdate = server.calls.find(
+    (call) => call.method === 'thread/realtime/appendText');
+  assert.equal(promptUpdate.params.role, 'developer');
+  assert.equal(promptUpdate.params.text, 'The selected route is now Hermes.');
+  assert.equal(server.threadStarts, 1);
+  await assert.rejects(
+    bridge.reconfigureRealtimeWebRTC({
+      sessionKey: first.sessionKey,
+      threadID: first.threadID,
+      promptContractHash: 'd'.repeat(64),
+      promptContractID: 'voiceclaw-gpt-live-stable',
+      promptRevisionHash: 'e'.repeat(64),
+    }),
+    (error) => error.code === 'CODEX_REALTIME_PROMPT_REVISION_REQUIRES_RESTART',
+  );
+
+  await bridge.stopRealtimeWebRTC({
+    threadID: first.threadID,
+    sessionKey: first.sessionKey,
+  });
+  const reconnected = await bridge.startRealtimeWebRTC({
+    sessionKey: first.sessionKey,
+    sdp: 'v=0\r\no=contract-offer-2\r\n',
+    developerInstructions: 'Stable developer instructions.',
+    promptContractHash: 'f'.repeat(64),
+    promptContractID: 'voiceclaw-gpt-live-stable',
+    promptRevisionHash: revision,
+  });
+  assert.equal(reconnected.threadID, first.threadID);
+  assert.equal(server.threadStarts, 1);
+  bridge.stop();
+});
+
+test('a canonical GPT Live contract never inherits a legacy thread with unknown instructions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voiceclaw-codex-legacy-contract-'));
+  const statePath = join(root, 'sessions.json');
+  await writeFile(statePath, JSON.stringify({
+    schemaVersion: 2,
+    sessions: [{
+      sessionKey: 'legacy-live-session',
+      threadID: 'thread-with-legacy-instructions',
+      model: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }],
+  }));
+  const server = createFakeCodexServer();
+  const bridge = new CodexAppServerBridge({
+    client: createClient(server),
+    statePath,
+    workspacePath: join(root, 'workspace'),
+  });
+
+  const started = await bridge.startRealtimeWebRTC({
+    sessionKey: 'legacy-live-session',
+    sdp: 'v=0\r\no=canonical-offer\r\n',
+    developerInstructions: 'Canonical developer instructions.',
+    promptContractHash: 'b'.repeat(64),
+    promptContractID: 'voiceclaw-gpt-live-canonical',
+    promptRevisionHash: 'a'.repeat(64),
+  });
+
+  assert.notEqual(started.threadID, 'thread-with-legacy-instructions');
+  assert.equal(server.threadStarts, 1);
+  assert.equal(server.threadResumes, 0);
   bridge.stop();
 });
 

@@ -146,6 +146,7 @@ export class RouteTaskService {
     directTurn = null,
     artifactInbox = null,
     inputAttachmentStore = null,
+    computerUseSupervisor = null,
     now = () => Date.now(),
     maxTasks = DEFAULT_MAX_TASKS,
     maxEventsPerTask = DEFAULT_MAX_EVENTS,
@@ -157,6 +158,7 @@ export class RouteTaskService {
     this.directTurn = directTurn;
     this.artifactInbox = artifactInbox;
     this.inputAttachmentStore = inputAttachmentStore;
+    this.computerUseSupervisor = computerUseSupervisor;
     this.now = now;
     this.maxTasks = Math.max(10, Number(maxTasks) || DEFAULT_MAX_TASKS);
     this.maxEventsPerTask = Math.max(20, Number(maxEventsPerTask) || DEFAULT_MAX_EVENTS);
@@ -187,6 +189,8 @@ export class RouteTaskService {
     const requestedDelivery = normalizeDelivery(input.request?.delivery);
     const artifactReturnRequested = input.request?.artifactReturnRequested === true
       || requestedDelivery === 'returnArtifact';
+    const computerUseRequested = input.request?.computerUseRequested === true
+      || input.request?.requiresComputerUse === true;
     const delivery = artifactReturnRequested ? 'returnArtifact' : requestedDelivery;
     const providedTaskID = String(input.taskID || input.taskId || '').trim();
     if (attachmentIDs.length && !providedTaskID) {
@@ -200,6 +204,7 @@ export class RouteTaskService {
       attachmentIDs,
       delivery,
       artifactReturnRequested,
+      computerUseRequested,
       taskID: providedTaskID ? taskID : null,
     });
     const result = await this.#exclusive(async () => {
@@ -232,6 +237,7 @@ export class RouteTaskService {
           fullText: requestText,
           attachmentIDs,
           artifactReturnRequested,
+          computerUseRequested,
           delivery,
         },
         state: 'queued',
@@ -525,14 +531,78 @@ export class RouteTaskService {
     }
     if (task.target.runtime === 'codex') {
       if (!this.codexBridge) throw new RouteTaskError('runtime_unavailable', 'Codex app-server is unavailable.', 503);
-      result = await this.codexBridge.runTurn({
-        sessionKey: task.target.sessionKey || task.target.remoteSessionID || `voiceclaw-task:${task.taskID}`,
-        sessionMode: task.target.sessionMode === 'new' ? 'new' : 'attach',
-        text: dispatchText,
-        model: task.target.model || '',
-        reasoningEffort: task.target.reasoning || '',
-      });
-      await this.#update(taskID, 'runtime.accepted', { progress: 'Codex accepted the task.' }, (draft) => {
+      let computerUseLease = null;
+      let beforeTurn = null;
+      if (task.request.computerUseRequested) {
+        if (!this.computerUseSupervisor) {
+          throw new RouteTaskError(
+            'computer_use_unavailable',
+            'This Companion runtime cannot prepare private computer control for the Codex task.',
+            503,
+          );
+        }
+        await this.#update(taskID, 'computer_use.preparing', {
+          progress: 'Preparing computer control.',
+        });
+        try {
+          computerUseLease = await this.computerUseSupervisor.acquire({
+            requestID: task.taskID,
+          });
+        } catch (error) {
+          throw new RouteTaskError(
+            error?.code || 'computer_use_unavailable',
+            error?.message || 'Computer control could not become ready.',
+            error?.statusCode || 503,
+            error?.details || null,
+          );
+        }
+        beforeTurn = async ({ client, threadID }) => {
+          try {
+            await this.computerUseSupervisor.verifyAuthenticated({
+              client,
+              threadID,
+              requestID: task.taskID,
+            });
+          } catch (error) {
+            throw new RouteTaskError(
+              error?.code || 'computer_use_unavailable',
+              error?.message || 'Computer control could not become ready.',
+              error?.statusCode || 503,
+              error?.details || null,
+            );
+          }
+          await this.#update(taskID, 'computer_use.ready', {
+            progress: 'Computer control ready.',
+          });
+          computerUseLease.markDispatched?.();
+        };
+      }
+      try {
+        result = await this.codexBridge.runTurn({
+          sessionKey: task.target.sessionKey || task.target.remoteSessionID || `voiceclaw-task:${task.taskID}`,
+          sessionMode: task.target.sessionMode === 'new' ? 'new' : 'attach',
+          text: dispatchText,
+          model: task.target.model || '',
+          reasoningEffort: task.target.reasoning || '',
+          beforeTurn,
+          signal,
+          allowContextOverflowReplay: !task.request.computerUseRequested,
+          onTurnStarted: async ({ threadID, turnID }) => {
+            await this.#update(taskID, 'runtime.accepted', {
+              progress: 'Codex accepted the task.',
+            }, (draft) => {
+              draft.runtime.sessionKey = task.target.sessionKey
+                || task.target.remoteSessionID
+                || `voiceclaw-task:${task.taskID}`;
+              draft.runtime.sessionID = threadID;
+              draft.runtime.runID = turnID;
+            });
+          },
+        });
+      } finally {
+        computerUseLease?.release();
+      }
+      await this.#update(taskID, 'runtime.completed', { progress: 'Codex returned a result.' }, (draft) => {
         draft.runtime.sessionKey = result.sessionKey || draft.runtime.sessionKey;
         draft.runtime.sessionID = result.threadID || draft.runtime.sessionID;
         draft.runtime.runID = result.turnID || draft.runtime.runID;

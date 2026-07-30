@@ -522,6 +522,7 @@ async function checkLocalBridge(port) {
               summary: `Running on localhost:${port}, ${authRequired ? 'auth on' : 'auth off'}.${runtimeSummary}`,
               authRequired,
               runtime,
+              computerUse: parsed.computerUse || null,
             });
             return;
           }
@@ -867,6 +868,19 @@ async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallP
   const hfCacheWritable = voiceSurfaceVisible
     ? await pathAccessible(hfCache, constants.W_OK).catch(() => false)
     : false;
+  const computerUse = local?.computerUse || null;
+  const computerUseState = computerUse?.state || 'unavailable';
+  const computerUseSummary = computerUseState === 'ready'
+    ? `Private Codex computer control is ready${computerUse.serverVersion ? ` (${computerUse.serverVersion})` : ''}.`
+    : computerUseState === 'socket_ready'
+      ? 'The private Codex computer-control helper is warm. VoiceClaw will perform the authenticated readiness check inside the selected Codex thread before dispatching a computer action.'
+      : computerUseState === 'probing'
+        ? 'Private Codex computer control is completing its authenticated pre-dispatch check.'
+        : computerUseState === 'idle'
+          ? 'Private Codex computer control is available on demand and will prepare before a computer-capable Codex task starts.'
+          : computerUseState === 'preparing'
+            ? 'Private Codex computer control is preparing.'
+            : computerUse?.error?.message || 'Private Codex computer control has not been reported by the running bridge.';
 
   const items = [
     statusItem({
@@ -939,6 +953,25 @@ async function buildAccessDiagnostics({ port, local, tailscale, openClawInstallP
       summary: hermes.summary,
       path: hermes.home,
       action: 'Open Hermes Home',
+    }),
+    statusItem({
+      id: 'computer-use-runtime',
+      label: 'Codex computer control',
+      state: computerUseState === 'ready'
+        ? 'ready'
+        : ['idle', 'preparing', 'socket_ready', 'probing'].includes(computerUseState)
+          ? 'manual'
+          : computerUseState === 'needs_permission'
+            ? 'needs_action'
+            : 'manual',
+      summary: computerUseSummary,
+      detail: [
+        computerUse?.privateSocketPath ? `Private socket: ${computerUse.privateSocketPath}` : '',
+        computerUse?.helperPath ? `Signed helper: ${computerUse.helperPath}` : '',
+      ].filter(Boolean).join('\n'),
+      action: computerUseState === 'needs_permission'
+        ? 'Open Accessibility Settings'
+        : 'Verify Everything',
     }),
     statusItem({
       id: 'hf-runtime',

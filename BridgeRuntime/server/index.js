@@ -12,8 +12,13 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import WebSocket, { WebSocketServer } from 'ws';
-import { executablePath, normalizeProcessPath } from './bin-paths.js';
+import {
+  executablePath,
+  normalizeProcessPath,
+  selectCodexAppServerExecutable,
+} from './bin-paths.js';
 import { attachCodexRealtimeRelaySocket, CodexAppServerBridge, CodexAppServerClient } from './codex-app-server.js';
+import { ComputerUseSupervisor } from './computer-use-supervisor.js';
 import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
 import { generateReply, clearHistory, getProcessingOptions, resolveProcessingConfig, prewarmProcessing, steerActiveReply, createVoiceRemoteSessionRuntimeAdapter } from './dialogue.js';
@@ -69,16 +74,30 @@ import { ArtifactInbox, createArtifactInboxHTTPHandler } from './artifact-inbox.
 import { InputAttachmentStore, createInputAttachmentHTTPHandler } from './input-attachments.js';
 import { RouteTaskService, createRouteTaskHTTPHandler } from './route-tasks.js';
 import { PRODUCT_SURFACE_POLICY } from './product-policy.js';
+import {
+  VOICECLAW_PROMPT_CONTRACT_MAX_BYTES,
+  VOICECLAW_PROMPT_CONTRACT_SCHEMA_VERSION,
+  VoiceClawPromptContractError,
+  assertPromptContractValueEquals,
+  parseVoiceClawPromptContractJSON,
+  validateVoiceClawPromptContract,
+} from './prompt-contract.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 normalizeProcessPath();
 const CLIENT_DIR = join(__dirname, '..', 'client');
 const RUNTIME_MANIFEST_PATH = join(__dirname, '..', 'runtime-manifest.json');
 const RUNTIME_MANIFEST = loadRuntimeManifest();
+const codexAppServerSelection = selectCodexAppServerExecutable();
+const computerUseSupervisor = new ComputerUseSupervisor({
+  codexPath: codexAppServerSelection.path,
+});
 const codexAppServerBridge = new CodexAppServerBridge({
   client: new CodexAppServerClient({
+    codexSelection: codexAppServerSelection,
     environmentProvider: () => ({
       OPENAI_API_KEY: getOpenAIApiKey(),
+      ...computerUseSupervisor.environment(),
     }),
   }),
   workspacePath: process.env.VOICECLAW_CODEX_CWD,
@@ -105,6 +124,7 @@ const routeTaskService = new RouteTaskService({
   codexBridge: codexAppServerBridge,
   artifactInbox,
   inputAttachmentStore,
+  computerUseSupervisor,
   directTurn: async (task, { signal } = {}) => ({
     reply: await generateReply(task.request.fullText, {
       signal,
@@ -2354,6 +2374,7 @@ function bridgeStatusSnapshot(sessionToken = '') {
     } : null,
     sessionConfig,
     lastResult: latestRealtimeResult(key),
+    computerUse: computerUseSupervisor.snapshot(),
     ...(PRODUCT_SURFACE_POLICY.companionRealtimeVoiceVisible ? { tts: getTtsStatus() } : {}),
   };
 }
@@ -2475,9 +2496,23 @@ function toolResultAnswerInstructions(result, fallback = '') {
 ${seed}`;
 }
 
-function isClientOwnedRealtimeTool(name = '') {
+function isLegacyClientOwnedRealtimeTool(name = '') {
   const value = String(name || '');
-  return value.startsWith('iphone_') || value.startsWith('android_') || value === 'gpt55_instant' || value === 'wait_for_user';
+  return value.startsWith('iphone_')
+    || value.startsWith('android_')
+    || value === 'gpt55_instant'
+    || value === 'gpt55_direct'
+    || value === 'wait_for_user';
+}
+
+function isClientOwnedRealtimeTool(name = '', sessionToken = '') {
+  const value = String(name || '');
+  const sessionConfig = realtimeSessionConfigs.get(
+    sanitizeRealtimeSessionToken(sessionToken)) || null;
+  const contractOwner = sessionConfig?.toolOwnership?.[value];
+  if (contractOwner === 'iphone') return true;
+  if (contractOwner === 'companion') return false;
+  return isLegacyClientOwnedRealtimeTool(value);
 }
 
 async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
@@ -2486,7 +2521,7 @@ async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
   const name = event.name || event.tool_name || event.function?.name;
   const callId = event.call_id || event.callId || event.item_id || event.id;
   if (!callId) return;
-  if (isClientOwnedRealtimeTool(name)) {
+  if (isClientOwnedRealtimeTool(name, key)) {
     await appendRealtimeLog({ kind: 'sideband_client_tool_ignored', sessionToken: key, name, callId });
     return;
   }
@@ -2752,6 +2787,145 @@ function realtimeRoutingMode(req) {
   if (['codex', 'codex-app-server', 'codex-route', 'codex-thread'].includes(value)) return 'codex';
   if (['hermes', 'hermes-bridge', 'hermes-tailscale', 'hermes-public-tunnel', 'hermes-tunnel', 'hermes-https-tunnel'].includes(value)) return 'hermes';
   return value === 'direct' || value === 'pure' || value === 'realtime-only' ? 'direct' : 'openclaw';
+}
+
+function realtimeRoutingModeForPromptContract(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'realtime-only') return 'direct';
+  if (normalized === 'gpt55-instant') return 'instant';
+  if (normalized === 'codex-app-server') return 'codex';
+  if (normalized === 'openclaw-bridge' || normalized === 'openclaw-public-tunnel') {
+    return 'openclaw';
+  }
+  if (normalized === 'hermes-bridge' || normalized === 'hermes-public-tunnel') {
+    return 'hermes';
+  }
+  if (isDirectCodexRoute(normalized)) return normalized;
+  return normalized;
+}
+
+function assertRealtimePromptContractAdmission({
+  promptContract,
+  sessionToken,
+  routeMode,
+  exactRouteMode = '',
+  authenticationMode,
+  apiKeyFallbackAllowed,
+}) {
+  if (sanitizeRealtimeSessionToken(promptContract.contract.route?.sessionToken || '')
+      !== sanitizeRealtimeSessionToken(sessionToken || '')) {
+    throw new VoiceClawPromptContractError(
+      'Realtime prompt contract session identity does not match the request.');
+  }
+  const contractRouteMode = realtimeRoutingModeForPromptContract(
+    promptContract.contract.route?.mode);
+  if (contractRouteMode !== routeMode) {
+    throw new VoiceClawPromptContractError(
+      'Realtime prompt contract route does not match the signaling request.');
+  }
+  const contractExactRouteMode = String(
+    promptContract.contract.route?.mode || '').trim().toLowerCase();
+  const requestedExactRouteMode = String(exactRouteMode || '').trim().toLowerCase();
+  if (requestedExactRouteMode
+      && requestedExactRouteMode !== contractExactRouteMode) {
+    throw new VoiceClawPromptContractError(
+      'Realtime prompt contract exact route mode does not match the signaling request.');
+  }
+  if (String(promptContract.contract.authentication?.mode || '').trim()
+      !== String(authenticationMode || '').trim()) {
+    throw new VoiceClawPromptContractError(
+      'Realtime prompt contract authentication mode does not match the request.');
+  }
+  if (promptContract.contract.authentication?.apiKeyFallbackAllowed
+      !== !!apiKeyFallbackAllowed) {
+    throw new VoiceClawPromptContractError(
+      'Realtime prompt contract API-key fallback policy does not match the request.');
+  }
+}
+
+function promptContractThreadRevisionHash(promptContract) {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      engine: promptContract.contract.engine,
+      kind: promptContract.payload.kind,
+      threadDeveloperInstructions: promptContract.payload.threadDeveloperInstructions,
+    }), 'utf8')
+    .digest('hex');
+}
+
+function resolveRealtimeSessionAdmission({
+  providedSession = null,
+  promptContract = null,
+  options,
+  routeMode,
+  exactRouteMode = '',
+  sessionToken,
+  authenticationMode,
+  apiKeyFallbackAllowed,
+}) {
+  if (promptContract) {
+    if (!providedSession) {
+      throw new VoiceClawPromptContractError(
+        'A canonical Realtime prompt contract requires its exact session payload.');
+    }
+    assertPromptContractValueEquals(
+      providedSession,
+      promptContract.payload.session,
+      'Realtime session');
+    assertRealtimePromptContractAdmission({
+      promptContract,
+      sessionToken,
+      routeMode,
+      exactRouteMode,
+      authenticationMode,
+      apiKeyFallbackAllowed,
+    });
+    return {
+      realtimeSession: providedSession,
+      toolOwnership: { ...promptContract.payload.toolOwnership },
+      compatibilityMode: 'canonical-contract',
+    };
+  }
+
+  const routeTools = realtimeToolsForRoute(routeMode);
+  const defaultRealtimeSession = {
+    type: 'realtime',
+    model: options.model,
+    reasoning: { effort: options.realtimeReasoning },
+    instructions: realtimeInstructionsForRoute(routeMode),
+    audio: buildRealtimeAudioConfig(options),
+    tools: routeTools,
+    tool_choice: routeTools.length ? 'auto' : 'none',
+  };
+  const realtimeSession = providedSession || defaultRealtimeSession;
+  if (!realtimeSession.type) realtimeSession.type = 'realtime';
+  if (!realtimeSession.model) realtimeSession.model = options.model;
+  if (!realtimeSession.reasoning) {
+    realtimeSession.reasoning = { effort: options.realtimeReasoning };
+  }
+  if (!realtimeSession.instructions) {
+    realtimeSession.instructions = realtimeInstructionsForRoute(routeMode);
+  }
+  if (!realtimeSession.audio) {
+    realtimeSession.audio = buildRealtimeAudioConfig(options);
+  }
+  if (!Array.isArray(realtimeSession.tools)) realtimeSession.tools = routeTools;
+  if (!realtimeSession.tool_choice) {
+    realtimeSession.tool_choice = realtimeSession.tools.length ? 'auto' : 'none';
+  }
+  const toolOwnership = Object.fromEntries(
+    realtimeSession.tools
+      .map((tool) => String(tool?.name || '').trim())
+      .filter(Boolean)
+      .map((name) => [
+        name,
+        isLegacyClientOwnedRealtimeTool(name) ? 'iphone' : 'companion',
+      ]));
+  return {
+    realtimeSession,
+    toolOwnership,
+    compatibilityMode: providedSession ? 'legacy-provided-session' : 'legacy-derived-session',
+  };
 }
 
 function isDirectCodexRoute(routeMode = '') {
@@ -3197,6 +3371,9 @@ function reconfigureRealtimeSessionRouting(payload = {}) {
     ...existing,
     routeMode,
     processing,
+    ...(payload.promptContractMetadata && typeof payload.promptContractMetadata === 'object'
+      ? payload.promptContractMetadata
+      : {}),
     reconfiguredAt: Date.now(),
   };
   realtimeSessionConfigs.set(key, updated);
@@ -4110,7 +4287,13 @@ async function readRealtimeSessionRequest(req) {
         throw new Error(`realtime session multipart request has invalid session JSON: ${error.message}`);
       }
     }
-    return { sdpOffer, providedSession, transport: 'multipart' };
+    const promptContract = fields.promptContract
+      ? parseVoiceClawPromptContractJSON(fields.promptContract, {
+          expectedKind: 'openai-realtime-session',
+          expectedSHA256: req.headers['x-voiceclaw-prompt-contract-sha256'] || '',
+        })
+      : null;
+    return { sdpOffer, providedSession, promptContract, transport: 'multipart' };
   }
   let providedSession = null;
   const debugSessionHeader = String(req.headers['x-voiceclaw-debug-realtime-session'] || '').trim();
@@ -4128,6 +4311,7 @@ async function readRealtimeSessionRequest(req) {
   return {
     sdpOffer: await readRequestBody(req),
     providedSession,
+    promptContract: null,
     transport: providedSession ? 'raw-sdp-debug-session' : 'raw-sdp',
   };
 }
@@ -5989,6 +6173,7 @@ const httpServer = createServer(async (req, res) => {
         realtimeBridge: true,
         runtime: RUNTIME_MANIFEST,
         auth: bridgeAuthSummary(),
+        computerUse: computerUseSupervisor.snapshot(),
         ...(PRODUCT_SURFACE_POLICY.companionRealtimeVoiceVisible ? { tts: getTtsStatus() } : {}),
         ...(powerhouse ? { powerhouse } : {}),
       }));
@@ -6155,6 +6340,7 @@ const httpServer = createServer(async (req, res) => {
           statusPath: `${BASE_PATH}/realtime/codex/status`,
           turnPath: `${BASE_PATH}/realtime/codex/turn`,
           webRTCPath: `${BASE_PATH}/realtime/codex/webrtc`,
+          webRTCReconfigurePath: `${BASE_PATH}/realtime/codex/webrtc/reconfigure`,
           webRTCStopPath: `${BASE_PATH}/realtime/codex/webrtc/stop`,
           webRTCTextPath: `${BASE_PATH}/realtime/codex/webrtc/text`,
           webRTCSpeechPath: `${BASE_PATH}/realtime/codex/webrtc/speech`,
@@ -6173,8 +6359,15 @@ const httpServer = createServer(async (req, res) => {
             },
           },
         },
-        openclawTools: REALTIME_TOOLS.map(({ name, description }) => ({ name, description })),
-        gpt55DirectTools: GPT55_DIRECT_REALTIME_TOOLS.map(({ name, description }) => ({ name, description })),
+        promptContract: {
+          canonicalOwner: 'ios',
+          canonicalContractPreferred: true,
+          legacyRealtimeSupported: true,
+          requiredForExactContractClients: true,
+          supportedSchemaVersions: [VOICECLAW_PROMPT_CONTRACT_SCHEMA_VERSION],
+          maximumBytes: VOICECLAW_PROMPT_CONTRACT_MAX_BYTES,
+          transports: ['multipart-realtime-session', 'codex-live-v3-json'],
+        },
       };
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -6535,6 +6728,36 @@ const httpServer = createServer(async (req, res) => {
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       const key = sanitizeRealtimeSessionToken(payload.sessionToken || '');
+      const existingSessionConfig = realtimeSessionConfigs.get(key) || null;
+      const promptContract = validateVoiceClawPromptContract(payload.promptContract, {
+        expectedKind: 'openai-realtime-session',
+        expectedSHA256: payload.promptContractSHA256 || '',
+      });
+      const requestedRoute = String(payload.routeMode || payload.route || '').trim();
+      const normalizedRequestedRoute = realtimeRoutingMode({
+        url: `${BASE_PATH}/realtime/reconfigure?route=${encodeURIComponent(requestedRoute)}`,
+        headers: {},
+      });
+      assertRealtimePromptContractAdmission({
+        promptContract,
+        sessionToken: key,
+        routeMode: normalizedRequestedRoute,
+        authenticationMode: existingSessionConfig?.promptAuthenticationMode
+          || existingSessionConfig?.realtimeAuthPreference
+          || promptContract.contract.authentication.mode,
+        apiKeyFallbackAllowed: existingSessionConfig?.promptAPIKeyFallbackAllowed
+          ?? existingSessionConfig?.fallbackToAPIKey
+          ?? promptContract.contract.authentication.apiKeyFallbackAllowed,
+      });
+      payload.promptContractMetadata = {
+        promptContractID: promptContract.contract.contractID,
+        promptContractSHA256: promptContract.sha256,
+        promptContractSchemaVersion: promptContract.contract.schemaVersion,
+        promptAuthenticationMode: promptContract.contract.authentication.mode,
+        promptAPIKeyFallbackAllowed:
+          promptContract.contract.authentication.apiKeyFallbackAllowed,
+        toolOwnership: { ...promptContract.payload.toolOwnership },
+      };
       const updated = reconfigureRealtimeSessionRouting(payload);
       if (!updated) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -6554,6 +6777,8 @@ const httpServer = createServer(async (req, res) => {
         runtime: updated.processing?.runtime || '',
         agent: updated.processing?.runtimeAgentID || updated.processing?.agent || '',
         remoteSessionKey: updated.processing?.sessionKey || '',
+        promptContractID: promptContract.contract.contractID,
+        promptContractSHA256: promptContract.sha256,
         bypassRemoteSession: !!updated.processing?.bypassRemoteSession,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -6561,7 +6786,9 @@ const httpServer = createServer(async (req, res) => {
         ok: true,
         sessionToken: key,
         routeMode: updated.routeMode,
+        requestedRouteMode: requestedRoute,
         processing: updated.processing,
+        promptContractSHA256: promptContract.sha256,
       }));
       return;
     }
@@ -6590,6 +6817,37 @@ const httpServer = createServer(async (req, res) => {
       const sessionToken = url.searchParams.get('sessionToken') || req.headers['x-voice-session-token'] || '';
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, ...bridgeStatusSnapshot(sessionToken) }));
+      return;
+    }
+
+    if (req.method === 'GET' && urlPath === `${BASE_PATH}/realtime/computer-use/status`) {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, computerUse: computerUseSupervisor.snapshot() }));
+      return;
+    }
+
+    if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/computer-use/prepare`) {
+      try {
+        const status = await computerUseSupervisor.ensureReady({
+          requestID: `manual-prepare:${Date.now()}`,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, computerUse: status }));
+      } catch (error) {
+        res.writeHead(error?.statusCode || 503, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify({
+          ok: false,
+          computerUse: computerUseSupervisor.snapshot(),
+          error: {
+            code: error?.code || 'computer_use_unavailable',
+            message: error?.message || String(error),
+            retryable: error?.retryable === true,
+          },
+        }));
+      }
       return;
     }
 
@@ -6652,8 +6910,61 @@ const httpServer = createServer(async (req, res) => {
       let payload;
       try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
       try {
+        const promptContract = validateVoiceClawPromptContract(payload.promptContract, {
+          expectedKind: 'codex-live-v3',
+          expectedSHA256: payload.promptContractSHA256
+            || req.headers['x-voiceclaw-prompt-contract-sha256']
+            || '',
+        });
+        assertPromptContractValueEquals(
+          payload.prompt,
+          promptContract.payload.prompt,
+          'GPT Live prompt');
+        assertPromptContractValueEquals(
+          payload.initialItems,
+          promptContract.payload.initialItems,
+          'GPT Live initial items');
+        const requestSessionKey = String(
+          payload.sessionKey
+            || payload.sessionToken
+            || req.headers['x-voice-session-token']
+            || '',
+        ).trim();
+        if (String(promptContract.contract.route?.sessionToken || '').trim() !== requestSessionKey) {
+          throw new VoiceClawPromptContractError(
+            'GPT Live prompt contract session identity does not match the request.');
+        }
+        const requestRouteMode = String(
+          payload.routeMode
+            || req.headers['x-voiceclaw-route-mode']
+            || '',
+        ).trim();
+        const requestAuthenticationMode = String(
+          req.headers['x-voiceclaw-realtime-auth-mode']
+            || '',
+        ).trim();
+        const requestAPIFallbackAllowed = parseRealtimeBoolean(
+          req.headers['x-voiceclaw-realtime-auth-fallback'],
+          false);
+        if (String(promptContract.contract.route?.mode || '').trim() !== requestRouteMode) {
+          throw new VoiceClawPromptContractError(
+            'GPT Live prompt contract route does not match the signaling request.');
+        }
+        if (String(promptContract.contract.authentication?.mode || '').trim()
+            !== requestAuthenticationMode
+            || promptContract.contract.authentication?.apiKeyFallbackAllowed
+              !== requestAPIFallbackAllowed) {
+          throw new VoiceClawPromptContractError(
+            'GPT Live prompt contract authentication policy does not match the signaling request.');
+        }
+        if (requestAuthenticationMode !== 'codex-chatgpt-login'
+            || requestAPIFallbackAllowed) {
+          throw new VoiceClawPromptContractError(
+            'GPT Live must use the Codex-managed ChatGPT login without API-key fallback.');
+        }
+        const promptRevisionHash = promptContractThreadRevisionHash(promptContract);
         const result = await codexAppServerBridge.startRealtimeWebRTC({
-          sessionKey: payload.sessionKey || payload.sessionToken || req.headers['x-voice-session-token'] || '',
+          sessionKey: requestSessionKey,
           sessionMode: payload.sessionMode || 'attach',
           sdp: payload.sdp || '',
           model: payload.model || '',
@@ -6669,15 +6980,101 @@ const httpServer = createServer(async (req, res) => {
           includeStartupContext: payload.includeStartupContext,
           initialItems: payload.initialItems,
           prompt: payload.prompt,
+          developerInstructions: promptContract.payload.threadDeveloperInstructions,
+          promptContractHash: promptContract.sha256,
+          promptContractID: promptContract.contract.contractID,
+          promptRevisionHash,
           realtimeSessionId: payload.realtimeSessionId ?? payload.realtimeSessionID,
           timeoutMs: payload.timeoutMs,
           lifecycleID: payload.lifecycleID || '',
         });
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify({ ok: true, experimental: true, ...result }));
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          'X-VoiceClaw-Prompt-Contract-SHA256': promptContract.sha256,
+        });
+        res.end(JSON.stringify({
+          ok: true,
+          experimental: true,
+          promptContractSHA256: promptContract.sha256,
+          routeMode: requestRouteMode,
+          authenticationMode: requestAuthenticationMode,
+          apiKeyFallbackAllowed: requestAPIFallbackAllowed,
+          ...result,
+        }));
       } catch (error) {
         res.writeHead(Number(error?.statusCode) || 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, experimental: true, error: error?.message || String(error), code: error?.code || null }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST'
+        && urlPath === `${BASE_PATH}/realtime/codex/webrtc/reconfigure`) {
+      const body = await readRequestBody(req, 2_100_000).catch(() => '{}');
+      let payload;
+      try { payload = JSON.parse(body || '{}'); } catch { payload = {}; }
+      try {
+        const promptContract = validateVoiceClawPromptContract(payload.promptContract, {
+          expectedKind: 'codex-live-v3',
+          expectedSHA256: payload.promptContractSHA256 || '',
+        });
+        const sessionKey = String(payload.sessionKey || '').trim();
+        const threadID = String(payload.threadID || '').trim();
+        const requestedRouteMode = String(payload.routeMode || '').trim();
+        if (String(promptContract.contract.route?.sessionToken || '').trim() !== sessionKey) {
+          throw new VoiceClawPromptContractError(
+            'GPT Live reconfiguration session identity does not match the prompt contract.');
+        }
+        if (String(promptContract.contract.route?.mode || '').trim()
+            !== requestedRouteMode) {
+          throw new VoiceClawPromptContractError(
+            'GPT Live reconfiguration route does not match the prompt contract.');
+        }
+        if (String(promptContract.contract.authentication?.mode || '').trim()
+              !== 'codex-chatgpt-login'
+            || promptContract.contract.authentication?.apiKeyFallbackAllowed !== false) {
+          throw new VoiceClawPromptContractError(
+            'GPT Live reconfiguration must retain Codex-managed ChatGPT authentication.');
+        }
+        const promptRevisionHash = promptContractThreadRevisionHash(promptContract);
+        const result = await codexAppServerBridge.reconfigureRealtimeWebRTC({
+          sessionKey,
+          threadID,
+          promptContractHash: promptContract.sha256,
+          promptContractID: promptContract.contract.contractID,
+          promptRevisionHash,
+          prompt: promptContract.payload.prompt,
+        });
+        await appendRealtimeLog({
+          kind: 'codex_realtime_prompt_contract_reconfigured',
+          sessionToken: sanitizeRealtimeSessionToken(sessionKey),
+          threadID,
+          requestedRouteMode,
+          promptContractID: promptContract.contract.contractID,
+          promptContractSHA256: promptContract.sha256,
+        });
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          'X-VoiceClaw-Prompt-Contract-SHA256': promptContract.sha256,
+        });
+        res.end(JSON.stringify({
+          ok: true,
+          requestedRouteMode,
+          promptContractSHA256: promptContract.sha256,
+          ...result,
+        }));
+      } catch (error) {
+        res.writeHead(Number(error?.statusCode) || 503, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify({
+          ok: false,
+          error: error?.message || String(error),
+          code: error?.code || null,
+        }));
       }
       return;
     }
@@ -6899,32 +7296,45 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === 'POST' && urlPath === `${BASE_PATH}/realtime/session`) {
       const routeMode = realtimeRoutingMode(req);
+      const exactRouteMode = String(
+        req.headers['x-voiceclaw-route-mode'] || '').trim().toLowerCase();
       const apiKey = openAIKeyForRealtimeRequest(req);
       const clientPlatform = String(req.headers['x-voiceclaw-client-platform'] || '').trim().toLowerCase();
 
       const sessionToken = req.headers['x-voice-session-token'] || `browser-${Date.now().toString(36)}`;
       const options = realtimeRequestOptions(req, routeMode, sessionToken);
-      realtimeSessionConfigs.set(options.sessionToken, { ...options, sessionStartedAt: new Date().toISOString() });
-      const { sdpOffer, providedSession, transport: sessionTransport } = await readRealtimeSessionRequest(req);
-      const defaultRealtimeSession = {
-        type: 'realtime',
-        model: options.model,
-        reasoning: { effort: options.realtimeReasoning },
-        instructions: realtimeInstructionsForRoute(routeMode),
-        audio: buildRealtimeAudioConfig(options),
-      };
-      const realtimeSession = providedSession || defaultRealtimeSession;
-      const tools = realtimeToolsForRoute(routeMode);
-      if (!providedSession) {
-        realtimeSession.tools = tools;
-        realtimeSession.tool_choice = tools.length ? 'auto' : 'none';
-      } else {
-        realtimeSession.type = realtimeSession.type || 'realtime';
-        realtimeSession.model = realtimeSession.model || options.model;
-        if (!realtimeSession.audio) realtimeSession.audio = buildRealtimeAudioConfig(options);
-        if (!Array.isArray(realtimeSession.tools)) realtimeSession.tools = tools;
-        if (!realtimeSession.tool_choice) realtimeSession.tool_choice = realtimeSession.tools.length ? 'auto' : 'none';
-      }
+      const {
+        sdpOffer,
+        providedSession,
+        promptContract,
+        transport: sessionTransport,
+      } = await readRealtimeSessionRequest(req);
+      const authPreferences = realtimeAuthPreferences(req);
+      const {
+        realtimeSession,
+        toolOwnership,
+        compatibilityMode,
+      } = resolveRealtimeSessionAdmission({
+        providedSession,
+        promptContract,
+        options,
+        routeMode,
+        exactRouteMode,
+        sessionToken,
+        authenticationMode: authPreferences.mode,
+        apiKeyFallbackAllowed: authPreferences.fallbackToAPIKey,
+      });
+      const companionOwnedToolNames = Object.entries(toolOwnership)
+        .filter(([, owner]) => owner === 'companion')
+        .map(([name]) => name);
+      const promptContractMetadata = promptContract ? {
+        promptContractID: promptContract.contract.contractID,
+        promptContractSHA256: promptContract.sha256,
+        promptContractSchemaVersion: promptContract.contract.schemaVersion,
+        promptAuthenticationMode: promptContract.contract.authentication.mode,
+        promptAPIKeyFallbackAllowed:
+          promptContract.contract.authentication.apiKeyFallbackAllowed,
+      } : {};
       const fd = new FormData();
       fd.set('sdp', sdpOffer);
       fd.set('session', JSON.stringify(realtimeSession));
@@ -6949,6 +7359,10 @@ const httpServer = createServer(async (req, res) => {
           clientPlatform,
           clientProvidedSession: !!providedSession,
           sessionTransport,
+          compatibilityMode,
+          toolOwnership,
+          companionOwnedToolCount: companionOwnedToolNames.length,
+          ...promptContractMetadata,
           upstreamOK: false,
           upstreamStatus: 503,
         });
@@ -6957,6 +7371,23 @@ const httpServer = createServer(async (req, res) => {
         return;
       }
 
+      realtimeSessionConfigs.set(options.sessionToken, {
+        ...options,
+        sessionStartedAt: new Date().toISOString(),
+        authSource: realtimeBearer.source,
+        authPreferenceSource: realtimeBearer.preferences.source,
+        realtimeAuthPreference: realtimeBearer.preferences.mode,
+        fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey,
+        clientPlatform,
+        clientProvidedSession: !!providedSession,
+        sessionTransport,
+        compatibilityMode,
+        toolOwnership,
+        ...promptContractMetadata,
+        companionOwnedToolCount: companionOwnedToolNames.length,
+        upstreamOK: false,
+        upstreamStatus: 0,
+      });
       const usesClientSecretSignaling = realtimeBearer.source === REALTIME_AUTH_MODE_OPENCLAW_OAUTH
         || realtimeBearer.source === 'paired-phone-delegation';
       const upstream = await fetch('https://api.openai.com/v1/realtime/calls', {
@@ -6970,7 +7401,12 @@ const httpServer = createServer(async (req, res) => {
       });
       const body = await upstream.text();
       const location = upstream.headers.get('location') || upstream.headers.get('Location') || '';
-      const sidebandStarted = hasServerOwnedRealtimeTools(routeMode) && upstream.ok && location ? await startRealtimeSideband(location, sessionToken, realtimeBearer.sidebandBearer || realtimeBearer.bearer) : false;
+      const sidebandStarted = companionOwnedToolNames.length && upstream.ok && location
+        ? await startRealtimeSideband(
+            location,
+            sessionToken,
+            realtimeBearer.sidebandBearer || realtimeBearer.bearer)
+        : false;
       await appendRealtimeLog({
         kind: upstream.ok ? 'realtime_signaling_upstream_ok' : 'realtime_signaling_upstream_error',
         sessionToken: sanitizeRealtimeSessionToken(sessionToken),
@@ -6978,6 +7414,11 @@ const httpServer = createServer(async (req, res) => {
         clientPlatform,
         clientProvidedSession: !!providedSession,
         sessionTransport,
+        compatibilityMode,
+        promptContractID: promptContract?.contract.contractID || null,
+        promptContractSHA256: promptContract?.sha256 || null,
+        promptContractSchemaVersion: promptContract?.contract.schemaVersion || null,
+        companionOwnedToolCount: companionOwnedToolNames.length,
         authSource: realtimeBearer.source,
         authPreferenceSource: realtimeBearer.preferences.source,
         fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey,
@@ -7020,6 +7461,10 @@ const httpServer = createServer(async (req, res) => {
         clientPlatform,
         clientProvidedSession: !!providedSession,
         sessionTransport,
+        compatibilityMode,
+        toolOwnership,
+        ...promptContractMetadata,
+        companionOwnedToolCount: companionOwnedToolNames.length,
         upstreamOK: upstream.ok,
         upstreamStatus: upstream.status,
         sidebandLocationHeader: !!location,
@@ -7031,6 +7476,15 @@ const httpServer = createServer(async (req, res) => {
       headers['X-OpenClaw-Route'] = routeMode;
       if (sidebandStarted) headers['X-OpenClaw-Sideband'] = 'started';
       if (providedSession) headers['X-VoiceClaw-Provided-Session'] = 'used';
+      if (promptContract) {
+        headers['X-VoiceClaw-Prompt-Contract-SHA256'] = promptContract.sha256;
+        headers['X-VoiceClaw-Route-Mode'] =
+          promptContract.contract.route.mode;
+        headers['X-VoiceClaw-Prompt-Auth-Mode'] =
+          promptContract.contract.authentication.mode;
+        headers['X-VoiceClaw-Prompt-Auth-Fallback'] =
+          promptContract.contract.authentication.apiKeyFallbackAllowed ? '1' : '0';
+      }
       headers['X-VoiceClaw-Realtime-Auth'] = realtimeBearer.source;
       headers['X-VoiceClaw-Realtime-Auth-Preference'] = realtimeBearer.preferences.mode;
       headers['X-VoiceClaw-Realtime-Auth-Fallback'] = realtimeBearer.oauthError ? 'used' : (realtimeBearer.preferences.fallbackToAPIKey ? 'enabled' : 'disabled');
@@ -7087,6 +7541,26 @@ const httpServer = createServer(async (req, res) => {
       console.warn(`[credential-boundary] HTTP control rejected code=${err.code} path=${err.path || '/'}`);
       if (!res.headersSent) writeVoiceCredentialBoundaryHTTPError(res, err);
       else res.destroy();
+      return;
+    }
+    if (err instanceof VoiceClawPromptContractError) {
+      console.warn(`[prompt-contract] HTTP control rejected code=${err.code} path=${req.url || '/'}`);
+      if (!res.headersSent) {
+        res.writeHead(err.statusCode || 400, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify({
+          ok: false,
+          error: {
+            code: err.code,
+            message: err.message,
+            supportedSchemaVersions: [VOICECLAW_PROMPT_CONTRACT_SCHEMA_VERSION],
+          },
+        }));
+      } else {
+        res.destroy();
+      }
       return;
     }
     console.error('[http]', err.message);
@@ -10474,6 +10948,18 @@ function startCompanionVoiceKeepHot() {
 }
 
 if (process.env.VOICECLAW_OUTER_HF_TEST !== '1') {
+  let shutdownStarted = false;
+  const shutdown = (signal) => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    computerUseSupervisor.stop(signal).finally(() => {
+      httpServer.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 1_500).unref?.();
+    });
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
+
   httpServer.listen(PORT, BIND_HOST, () => {
     console.log(`[voice-bridge] listening on http://${BIND_HOST}:${PORT}${BASE_PATH || '/'}`);
     console.log(`[voice-bridge] client dir: ${CLIENT_DIR}`);
@@ -10515,6 +11001,7 @@ export const outerHFIntegration = Object.freeze({
     };
   },
   reconfigureRealtimeSessionRouting,
+  resolveRealtimeSessionAdmission,
   realtimeRemoteSessionLookupKey,
   normalizeRealtimeProcessingPayload,
   resolveRealtimeRuntimeBinding,
@@ -10528,6 +11015,12 @@ export const outerHFIntegration = Object.freeze({
   setRealtimeSidebandForTest(sessionToken, socket) {
     realtimeSidebands.set(sanitizeRealtimeSessionToken(sessionToken), socket);
   },
+  setRealtimeSessionConfigForTest(sessionToken, config) {
+    realtimeSessionConfigs.set(
+      sanitizeRealtimeSessionToken(sessionToken),
+      { ...(config || {}) });
+  },
+  isClientOwnedRealtimeTool,
   startSessionRegistrySnapshot: () => voiceStartSessionRegistry.snapshot(),
   wsPath: WS_PATH,
 });

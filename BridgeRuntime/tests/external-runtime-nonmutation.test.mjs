@@ -43,7 +43,13 @@ test('Companion source contains no configuration CLI mutation for external agent
     dialogue,
     /execFileRunner\(HERMES_BIN,\s*\[\s*['"](?:config|update|install|uninstall)['"]/i,
   );
-  assert.match(codex, /spawnProcess\(this\.codexPath, \['app-server', '--stdio'\]/);
+  assert.match(codex, /codexAppServerSpawnArguments\(environment\)/);
+  assert.match(codex, /argumentsList\.push\('app-server', '--stdio'\)/);
+  assert.match(
+    codex,
+    /mcp_servers\.node_repl\.env\.SKY_CUA_NATIVE_PIPE_PATH=/,
+    'a per-process -c override may bind VoiceClaw node_repl without writing Codex config',
+  );
   assert.doesNotMatch(
     codex,
     /spawnProcess\(this\.codexPath,\s*\[\s*['"](?:config|update|install|uninstall)['"]/i,

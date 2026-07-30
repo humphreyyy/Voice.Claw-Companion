@@ -15,7 +15,7 @@ const DEFAULT_WORKSPACE_PATH = join(homedir(), '.voiceclaw', 'codex-workspace');
 const DEFAULT_CODEX_SANDBOX = process.env.VOICECLAW_CODEX_SANDBOX || 'workspace-write';
 const DEFAULT_CODEX_APPROVAL_POLICY = process.env.VOICECLAW_CODEX_APPROVAL_POLICY || 'never';
 const REALTIME_FEATURE_NAME = 'realtime_conversation';
-const SESSION_SCHEMA_VERSION = 1;
+const SESSION_SCHEMA_VERSION = 3;
 const MAX_STDERR_CHARS = 16_384;
 const CODEX_REALTIME_RELAY_MAX_INPUT_BYTES = 1_000_000;
 const CODEX_REALTIME_RELAY_MAX_BUFFERED_OUTPUT_BYTES = 8_000_000;
@@ -254,6 +254,37 @@ function safeSessionKey(value = '') {
   return (key || 'voiceclaw-codex-default').slice(0, 160);
 }
 
+function safeDeveloperInstructions(value = '') {
+  const instructions = String(value || '').trim();
+  if (!instructions) return VOICECLAW_CODEX_DEVELOPER_INSTRUCTIONS;
+  if (instructions.length > CODEX_REALTIME_STRING_LIMIT) {
+    throw codexRealtimeRequestError('Codex developer instructions are too large.');
+  }
+  return instructions;
+}
+
+function safePromptContractHash(value = '') {
+  const hash = String(value || '').trim().toLowerCase();
+  if (!hash) return '';
+  if (!/^[a-f0-9]{64}$/.test(hash)) {
+    throw codexRealtimeRequestError('Codex prompt contract hash is invalid.');
+  }
+  return hash;
+}
+
+function safePromptContractID(value = '') {
+  const contractID = String(value || '').trim();
+  if (!contractID) return '';
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(contractID)) {
+    throw codexRealtimeRequestError('Codex prompt contract id is invalid.');
+  }
+  return contractID;
+}
+
+function safePromptRevisionHash(value = '') {
+  return safePromptContractHash(value);
+}
+
 function safeLifecycleID(value = '') {
   const lifecycleID = String(value || '').trim();
   if (!lifecycleID) return randomUUID();
@@ -419,6 +450,19 @@ function trackerText(tracker) {
     .trim();
 }
 
+export function codexAppServerSpawnArguments(environment = {}) {
+  const argumentsList = [];
+  const computerUsePipe = String(environment?.SKY_CUA_NATIVE_PIPE_PATH || '').trim();
+  if (computerUsePipe) {
+    argumentsList.push(
+      '-c',
+      `mcp_servers.node_repl.env.SKY_CUA_NATIVE_PIPE_PATH=${JSON.stringify(computerUsePipe)}`,
+    );
+  }
+  argumentsList.push('app-server', '--stdio');
+  return argumentsList;
+}
+
 export class CodexAppServerClient {
   constructor({
     codexPath = '',
@@ -494,7 +538,10 @@ export class CodexAppServerClient {
 
   #environmentRevision(environment) {
     return createHash('sha256')
-      .update(String(environment?.OPENAI_API_KEY || ''))
+      .update(JSON.stringify({
+        openAIAPIKey: String(environment?.OPENAI_API_KEY || ''),
+        computerUsePipe: String(environment?.SKY_CUA_NATIVE_PIPE_PATH || ''),
+      }))
       .digest('hex');
   }
 
@@ -502,10 +549,14 @@ export class CodexAppServerClient {
     this.stop('restart');
     this.stderrTail = '';
     this.lastExit = null;
-    const child = this.spawnProcess(this.codexPath, ['app-server', '--stdio'], {
+    const child = this.spawnProcess(
+      this.codexPath,
+      codexAppServerSpawnArguments(environment),
+      {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...environment },
-    });
+      },
+    );
     this.child = child;
     this.spawnEnvironmentRevision = environmentRevision;
     this.generation += 1;
@@ -594,6 +645,29 @@ export class CodexAppServerClient {
     const child = this.child;
     if (!child?.stdin?.writable) throw new Error('Codex app-server stdin is unavailable.');
     child.stdin.write(`${JSON.stringify({ method, params })}\n`);
+  }
+
+  async callMCPTool({
+    server,
+    threadID,
+    tool,
+    arguments: toolArguments = {},
+    timeoutMs = this.requestTimeoutMs,
+  } = {}) {
+    const serverName = String(server || '').trim();
+    const thread = String(threadID || '').trim();
+    const toolName = String(tool || '').trim();
+    if (!serverName || !thread || !toolName) {
+      throw new Error('Codex MCP tool calls require server, threadID, and tool.');
+    }
+    return await this.request('mcpServer/tool/call', {
+      server: serverName,
+      threadId: thread,
+      tool: toolName,
+      arguments: toolArguments && typeof toolArguments === 'object'
+        ? toolArguments
+        : {},
+    }, { timeoutMs });
   }
 
   onNotification(listener) {
@@ -776,6 +850,8 @@ export class CodexAppServerClient {
     model = '',
     reasoningEffort = '',
     timeoutMs = this.turnTimeoutMs,
+    signal = null,
+    onTurnStarted = null,
   } = {}) {
     const message = String(text || '').trim();
     if (!message) throw new Error('Codex turn text is required.');
@@ -788,7 +864,26 @@ export class CodexAppServerClient {
     }, { timeoutMs });
     const turnID = String(response?.turn?.id || '').trim();
     if (!turnID) throw new Error('Codex app-server did not return a turn id.');
-    return await this.#waitForTurn(String(threadID || '').trim(), turnID, timeoutMs);
+    const targetThreadID = String(threadID || '').trim();
+    if (typeof onTurnStarted === 'function') {
+      await onTurnStarted({ threadID: targetThreadID, turnID });
+    }
+    const interrupt = () => {
+      void this.interruptTurn({
+        threadID: targetThreadID,
+        turnID,
+      }).catch(() => {});
+    };
+    if (signal?.aborted) {
+      interrupt();
+      throw signal.reason || new Error('Codex turn cancelled.');
+    }
+    signal?.addEventListener?.('abort', interrupt, { once: true });
+    try {
+      return await this.#waitForTurn(targetThreadID, turnID, timeoutMs);
+    } finally {
+      signal?.removeEventListener?.('abort', interrupt);
+    }
   }
 
   async prepareRealtimeWebRTC(options = {}) {
@@ -1305,6 +1400,10 @@ export class CodexAppServerBridge {
     model = '',
     reasoningEffort = '',
     timeoutMs,
+    beforeTurn = null,
+    signal = null,
+    onTurnStarted = null,
+    allowContextOverflowReplay = true,
   } = {}) {
     const key = safeSessionKey(sessionKey);
     return await this.#withSessionLock(key, async () => {
@@ -1313,6 +1412,13 @@ export class CodexAppServerBridge {
         sessionMode,
         model,
       });
+      if (typeof beforeTurn === 'function') {
+        await beforeTurn({
+          client: this.client,
+          threadID: session.threadID,
+          sessionKey: key,
+        });
+      }
       let result;
       let recoveredByCompaction = false;
       try {
@@ -1322,17 +1428,28 @@ export class CodexAppServerBridge {
           model,
           reasoningEffort,
           timeoutMs,
+          signal,
+          onTurnStarted,
         });
       } catch (error) {
         if (!isCodexContextOverflow(error)) throw error;
         await this.client.compactThread(session.threadID, { timeoutMs });
         recoveredByCompaction = true;
+        if (!allowContextOverflowReplay) {
+          const retryRequired = new Error(
+            'Codex compacted the session after a context overflow, but VoiceClaw did not replay the computer-capable turn because dispatch had already begun. Confirm any visible side effects, then retry the request if needed.');
+          retryRequired.code = 'CODEX_CONTEXT_COMPACTED_RETRY_REQUIRED';
+          retryRequired.statusCode = 409;
+          throw retryRequired;
+        }
         result = await this.client.runTextTurn({
           threadID: session.threadID,
           text,
           model,
           reasoningEffort,
           timeoutMs,
+          signal,
+          onTurnStarted,
         });
       }
       session.updatedAt = new Date().toISOString();
@@ -1363,6 +1480,10 @@ export class CodexAppServerBridge {
     includeStartupContext,
     initialItems,
     prompt,
+    developerInstructions = '',
+    promptContractHash = '',
+    promptContractID = '',
+    promptRevisionHash = '',
     realtimeSessionId,
     timeoutMs,
     lifecycleID = '',
@@ -1387,7 +1508,15 @@ export class CodexAppServerBridge {
     return await this.#withRealtimeLock(async () => {
       const prepared = await this.client.prepareRealtimeWebRTC(normalized);
       return await this.#withSessionLock(key, async () => {
-        const session = await this.#ensureSession({ sessionKey: key, sessionMode, model: threadModel });
+        const session = await this.#ensureSession({
+          sessionKey: key,
+          sessionMode,
+          model: threadModel,
+          developerInstructions,
+          promptContractHash,
+          promptContractID,
+          promptRevisionHash,
+        });
         const lease = await this.#acquireRealtimeLease({
           sessionKey: key,
           threadID: session.threadID,
@@ -1413,6 +1542,9 @@ export class CodexAppServerBridge {
           return {
             ...result,
             sessionKey: key,
+            promptContractHash: session.promptContractHash || null,
+            promptContractID: session.promptContractID || null,
+            promptRevisionHash: session.promptRevisionHash || null,
             lifecycleID: lease.ownerID,
             lifecycle: realtimeLifecycleSnapshot(lease),
           };
@@ -1424,6 +1556,90 @@ export class CodexAppServerBridge {
           });
           throw error;
         }
+      });
+    });
+  }
+
+  async reconfigureRealtimeWebRTC({
+    sessionKey = '',
+    threadID = '',
+    promptContractHash = '',
+    promptContractID = '',
+    promptRevisionHash = '',
+    prompt = '',
+  } = {}) {
+    const key = safeSessionKey(sessionKey);
+    const targetThreadID = String(threadID || '').trim();
+    if (!targetThreadID) {
+      throw codexRealtimeRequestError('Codex realtime reconfiguration requires threadID.');
+    }
+    const normalizedPromptContractHash = safePromptContractHash(promptContractHash);
+    const normalizedPromptContractID = safePromptContractID(promptContractID);
+    const normalizedPromptRevisionHash = safePromptRevisionHash(promptRevisionHash);
+    const normalizedPrompt = String(prompt || '').trim();
+    return await this.#withRealtimeLock(async () => {
+      return await this.#withSessionLock(key, async () => {
+        await this.loadPromise;
+        const session = this.sessions.get(key) || null;
+        if (!session || session.threadID !== targetThreadID) {
+          const error = new Error('The requested GPT Live prompt-contract session was not found.');
+          error.code = 'CODEX_REALTIME_SESSION_NOT_FOUND';
+          error.statusCode = 404;
+          throw error;
+        }
+        const lease = this.realtimeLease;
+        if (!lease
+            || lease.transport !== 'webrtc'
+            || lease.threadID !== targetThreadID
+            || lease.sessionKey !== key) {
+          const error = new Error('The requested GPT Live WebRTC session is not active.');
+          error.code = 'CODEX_REALTIME_SESSION_NOT_ACTIVE';
+          error.statusCode = 409;
+          throw error;
+        }
+        if (normalizedPromptRevisionHash
+            && session.promptRevisionHash !== normalizedPromptRevisionHash) {
+          const error = new Error(
+            'The GPT Live thread instructions changed and require a new voice session.');
+          error.code = 'CODEX_REALTIME_PROMPT_REVISION_REQUIRES_RESTART';
+          error.statusCode = 409;
+          throw error;
+        }
+        const contractChanged = normalizedPromptContractHash
+          && session.promptContractHash !== normalizedPromptContractHash;
+        if (contractChanged && !normalizedPrompt) {
+          const error = new Error(
+            'GPT Live prompt-contract reconfiguration requires the exact updated prompt.');
+          error.code = 'CODEX_REALTIME_PROMPT_PAYLOAD_REQUIRED';
+          error.statusCode = 400;
+          throw error;
+        }
+        let promptApplied = false;
+        if (normalizedPrompt) {
+          await this.appendRealtimeTextIdempotent({
+            threadID: targetThreadID,
+            text: normalizedPrompt,
+            role: 'developer',
+            requestID: `prompt-contract-${normalizedPromptContractHash}`,
+          });
+          promptApplied = true;
+        }
+        session.promptContractHash = normalizedPromptContractHash || null;
+        session.promptContractID = normalizedPromptContractID || null;
+        session.promptRevisionHash = normalizedPromptRevisionHash
+          || session.promptRevisionHash
+          || null;
+        session.updatedAt = new Date().toISOString();
+        await this.#saveState();
+        return {
+          reconfigured: true,
+          sessionKey: key,
+          threadID: targetThreadID,
+          promptContractHash: session.promptContractHash,
+          promptContractID: session.promptContractID,
+          promptRevisionHash: session.promptRevisionHash,
+          promptApplied,
+        };
       });
     });
   }
@@ -1844,7 +2060,15 @@ export class CodexAppServerBridge {
     }
   }
 
-  async #ensureSession({ sessionKey, sessionMode, model }) {
+  async #ensureSession({
+    sessionKey,
+    sessionMode,
+    model,
+    developerInstructions = '',
+    promptContractHash = '',
+    promptContractID = '',
+    promptRevisionHash = '',
+  }) {
     await this.loadPromise;
     await mkdir(this.workspacePath, { recursive: true });
     await this.client.start();
@@ -1853,19 +2077,53 @@ export class CodexAppServerBridge {
       for (const session of this.sessions.values()) session.loadedGeneration = 0;
     }
     const mode = String(sessionMode || 'attach').trim().toLowerCase();
+    const normalizedDeveloperInstructions = safeDeveloperInstructions(developerInstructions);
+    const normalizedPromptContractHash = safePromptContractHash(promptContractHash);
+    const normalizedPromptContractID = safePromptContractID(promptContractID);
+    const normalizedPromptRevisionHash = safePromptRevisionHash(promptRevisionHash);
     let session = this.sessions.get(sessionKey) || null;
     if (mode === 'new') session = null;
+    if (session
+        && normalizedPromptRevisionHash
+        && session.promptRevisionHash !== normalizedPromptRevisionHash) {
+      // Developer instructions are fixed at thread creation. A contract
+      // revision that changes them receives a fresh Codex thread. A legacy
+      // record with no revision is also replaced because its instructions
+      // cannot be proven equivalent. Route/auth metadata changes alone retain
+      // a thread only after the revision identity is established.
+      session = null;
+    }
     if (session && session.loadedGeneration !== this.client.generation) {
       try {
         await this.client.resumeThread(session.threadID);
         session.loadedGeneration = this.client.generation;
+        session.promptContractHash = normalizedPromptContractHash || session.promptContractHash;
+        session.promptContractID = normalizedPromptContractID || session.promptContractID;
+        session.promptRevisionHash = normalizedPromptRevisionHash
+          || session.promptRevisionHash
+          || null;
+        session.updatedAt = new Date().toISOString();
+        await this.#saveState();
         return session;
       } catch {
         session = null;
       }
     }
-    if (session) return session;
-    const started = await this.client.startThread({ model, cwd: this.workspacePath });
+    if (session) {
+      session.promptContractHash = normalizedPromptContractHash || session.promptContractHash;
+      session.promptContractID = normalizedPromptContractID || session.promptContractID;
+      session.promptRevisionHash = normalizedPromptRevisionHash
+        || session.promptRevisionHash
+        || null;
+      session.updatedAt = new Date().toISOString();
+      await this.#saveState();
+      return session;
+    }
+    const started = await this.client.startThread({
+      model,
+      cwd: this.workspacePath,
+      developerInstructions: normalizedDeveloperInstructions,
+    });
     const threadID = String(started?.thread?.id || '').trim();
     if (!threadID) throw new Error('Codex app-server did not return a thread id.');
     session = {
@@ -1874,6 +2132,9 @@ export class CodexAppServerBridge {
       model: safeModel(model) || null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      promptContractHash: normalizedPromptContractHash || null,
+      promptContractID: normalizedPromptContractID || null,
+      promptRevisionHash: normalizedPromptRevisionHash || null,
       loadedGeneration: this.client.generation,
     };
     this.sessions.set(sessionKey, session);
@@ -1906,7 +2167,8 @@ export class CodexAppServerBridge {
   async #loadState() {
     try {
       const parsed = JSON.parse(await readFile(this.statePath, 'utf8'));
-      if (parsed?.schemaVersion !== SESSION_SCHEMA_VERSION || !Array.isArray(parsed.sessions)) return;
+      if (![1, 2, SESSION_SCHEMA_VERSION].includes(parsed?.schemaVersion)
+          || !Array.isArray(parsed.sessions)) return;
       for (const session of parsed.sessions) {
         const sessionKey = safeSessionKey(session?.sessionKey);
         const threadID = String(session?.threadID || '').trim();
@@ -1917,6 +2179,15 @@ export class CodexAppServerBridge {
           model: session?.model ? safeModel(session.model) : null,
           createdAt: session?.createdAt || null,
           updatedAt: session?.updatedAt || null,
+          promptContractHash: session?.promptContractHash
+            ? safePromptContractHash(session.promptContractHash)
+            : null,
+          promptContractID: session?.promptContractID
+            ? safePromptContractID(session.promptContractID)
+            : null,
+          promptRevisionHash: session?.promptRevisionHash
+            ? safePromptRevisionHash(session.promptRevisionHash)
+            : null,
           loadedGeneration: 0,
         });
       }

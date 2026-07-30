@@ -244,6 +244,163 @@ test('Codex tasks use durable session keys without pretending to be remote sessi
   assert.equal(completed.result.text, 'Codex result');
 });
 
+test('Codex computer-capable tasks gate dispatch on one supervised lease', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-computer-use-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const calls = [];
+  let releases = 0;
+  const computerUseSupervisor = {
+    async acquire(input) {
+      calls.push(input);
+      return {
+        markDispatched() {
+          calls.push({ leaseDispatched: true });
+        },
+        release() {
+          releases += 1;
+        },
+      };
+    },
+    async verifyAuthenticated(input) {
+      calls.push({
+        probeThreadID: input.threadID,
+        probeRequestID: input.requestID,
+      });
+      return { ready: true };
+    },
+  };
+  const codexBridge = {
+    async runTurn(input) {
+      await input.beforeTurn?.({
+        client: { kind: 'fake-codex-client' },
+        threadID: 'thread-computer-use',
+        sessionKey: input.sessionKey,
+      });
+      await input.onTurnStarted?.({
+        threadID: 'thread-computer-use',
+        turnID: 'turn-computer-use',
+      });
+      calls.push({
+        turn: input.text,
+        allowContextOverflowReplay: input.allowContextOverflowReplay,
+      });
+      return {
+        reply: 'Computer action completed.',
+        sessionKey: input.sessionKey,
+        threadID: 'thread-computer-use',
+        turnID: 'turn-computer-use',
+      };
+    },
+  };
+  const service = new RouteTaskService({
+    statePath: join(directory, 'route-tasks.json'),
+    codexBridge,
+    computerUseSupervisor,
+  });
+  const created = await service.create({
+    target: { runtime: 'codex', route: 'codex' },
+    request: {
+      summary: 'Open TextEdit',
+      fullText: 'Open TextEdit on the Mac.',
+      computerUseRequested: true,
+    },
+  });
+  const completed = await waitFor(async () => {
+    const task = await service.get(created.task.taskID);
+    return task.state === 'completed' ? task : null;
+  });
+
+  assert.equal(calls[0].requestID, created.task.taskID);
+  assert.equal(calls[1].probeThreadID, 'thread-computer-use');
+  assert.equal(calls[1].probeRequestID, created.task.taskID);
+  assert.equal(calls[2].leaseDispatched, true);
+  assert.match(calls[3].turn, /Open TextEdit/);
+  assert.equal(calls[3].allowContextOverflowReplay, false);
+  assert.equal(releases, 1);
+  assert.equal(completed.request.computerUseRequested, true);
+  const events = (await service.events({ taskID: created.task.taskID })).events;
+  assert.ok(events.some((event) => event.type === 'computer_use.preparing'));
+  assert.ok(events.some((event) => event.type === 'computer_use.ready'));
+  assert.ok(events.some((event) => event.type === 'runtime.accepted'));
+});
+
+test('cancelling a Codex task aborts the in-flight turn signal', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-codex-cancel-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let observedSignal = null;
+  let releaseTurn;
+  const turnGate = new Promise((resolvePromise) => { releaseTurn = resolvePromise; });
+  const codexBridge = {
+    async runTurn(input) {
+      observedSignal = input.signal;
+      await input.onTurnStarted?.({
+        threadID: 'thread-cancel',
+        turnID: 'turn-cancel',
+      });
+      await turnGate;
+      if (input.signal.aborted) throw input.signal.reason;
+      return {
+        reply: 'Unexpected completion.',
+        sessionKey: input.sessionKey,
+        threadID: 'thread-cancel',
+        turnID: 'turn-cancel',
+      };
+    },
+  };
+  const service = new RouteTaskService({
+    statePath: join(directory, 'route-tasks.json'),
+    codexBridge,
+  });
+  const created = await service.create({
+    target: { runtime: 'codex', route: 'codex' },
+    text: 'Keep working.',
+  });
+  await waitFor(async () => (await service.get(created.task.taskID)).runtime.runID);
+
+  const cancelled = await service.cancel({
+    taskID: created.task.taskID,
+    requestID: 'cancel-codex',
+  });
+  assert.equal(cancelled.task.state, 'cancelled');
+  assert.equal(observedSignal.aborted, true);
+  releaseTurn();
+});
+
+test('ordinary Codex work bypasses the Computer Use supervisor', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-no-computer-use-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let acquisitions = 0;
+  const service = new RouteTaskService({
+    statePath: join(directory, 'route-tasks.json'),
+    computerUseSupervisor: {
+      async acquire() {
+        acquisitions += 1;
+        throw new Error('Ordinary Codex work must not prepare Computer Use.');
+      },
+    },
+    codexBridge: {
+      async runTurn(input) {
+        return {
+          reply: 'Build fixed.',
+          sessionKey: input.sessionKey,
+          threadID: 'thread-code',
+          turnID: 'turn-code',
+        };
+      },
+    },
+  });
+  const created = await service.create({
+    target: { runtime: 'codex', route: 'codex' },
+    request: {
+      summary: 'Fix the build',
+      fullText: 'Inspect the repository and fix the Swift build.',
+      computerUseRequested: false,
+    },
+  });
+  await waitFor(async () => (await service.get(created.task.taskID)).state === 'completed');
+  assert.equal(acquisitions, 0);
+});
+
 test('event cursors and state versions increase monotonically', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-tasks-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

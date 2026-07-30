@@ -84,3 +84,40 @@ This endpoint is intentionally named and reported as Codex Realtime Voice V2, no
 ## Diagnostics contract
 
 Companion diagnostics retain admission evidence by both transport and protocol version. A verified V2 path must not be reported as V3 admission, and a later failed V3 probe must not erase a previously verified V1/V2 path.
+
+## Companion-owned Computer Use transport
+
+VoiceClaw computer-capable Codex tasks use an isolated helper transport. The
+Companion discovers the signed Computer Use helper beside the selected Codex
+installation, validates its OpenAI signature, and launches only that helper as
+its own supervised child with `SKY_CUA_SERVICE_NATIVE_PIPE_PATH` pointing to a
+process-private socket. The Codex app-server and its configured `node_repl`
+inherit the matching `SKY_CUA_NATIVE_PIPE_PATH`.
+
+Readiness has two distinct stages:
+
+1. `socket_ready` means the Companion-owned helper is running and its private
+   socket exists. This is warm-up only and does not admit a user turn.
+2. `ready` means the Companion invoked the plugin-owned Computer Use wrapper
+   through Codex app-server's documented `mcpServer/tool/call` method inside
+   the exact Codex thread that will receive the task. A read-only `list_apps`
+   call must complete through the native pipe before the user turn is sent.
+
+The thread-scoped probe is required because the helper rejects standalone
+clients that lack Codex turn authentication metadata. A retryable failure may
+restart the Companion-owned helper and repeat this pre-dispatch probe once.
+The user turn has not started at that point. After `turn/start`, VoiceClaw does
+not replay the turn or repeat successful UI actions; a failure is surfaced as
+the task result.
+
+Ordinary Codex work does not acquire this transport. iOS sets the explicit
+`computer_use` request flag only for visible Mac UI work such as opening or
+operating an app, clicking, typing, scrolling, or switching windows. Coding,
+shell work, repository work, research, and normal file operations remain on
+the ordinary Codex route.
+
+Acceptance on 2026-07-30 used Codex app-server `0.146.0-alpha.3.1`: twenty
+consecutive read-only TextEdit state requests succeeded through the private
+socket, terminating the Companion-owned helper recovered on the same Codex
+thread with a new helper PID, and the existing ChatGPT-owned default helper
+remained running and untouched.

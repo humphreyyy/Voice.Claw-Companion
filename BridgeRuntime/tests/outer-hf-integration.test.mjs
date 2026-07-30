@@ -85,6 +85,114 @@ test('an attached agent runtime remains usable when no explicit runtime override
   assert.equal(resolved.boundRemoteSession, hermesSession);
 });
 
+test('Realtime admission preserves both legacy and canonical iOS clients', () => {
+  const options = {
+    model: 'gpt-realtime-2.1',
+    realtimeReasoning: 'low',
+    voice: 'marin',
+    noiseReduction: 'near_field',
+    captions: true,
+    turnDetection: 'semantic_vad',
+    transcriptionDelay: 'low',
+  };
+  const legacy = outerHFIntegration.resolveRealtimeSessionAdmission({
+    options,
+    routeMode: 'openclaw',
+    sessionToken: 'legacy-session',
+    authenticationMode: 'openclaw-oauth',
+    apiKeyFallbackAllowed: false,
+  });
+  assert.equal(legacy.compatibilityMode, 'legacy-derived-session');
+  assert.equal(legacy.realtimeSession.model, options.model);
+  assert.ok(legacy.realtimeSession.tools.length > 0);
+
+  const session = {
+    type: 'realtime',
+    model: options.model,
+    instructions: 'Canonical iOS prompt.',
+    tools: [
+      { type: 'function', name: 'openclaw_turn', parameters: {} },
+      { type: 'function', name: 'voiceclaw_send_route_task', parameters: {} },
+    ],
+  };
+  const canonical = outerHFIntegration.resolveRealtimeSessionAdmission({
+    providedSession: session,
+    promptContract: {
+      contract: {
+        route: { mode: 'openclaw-bridge', sessionToken: 'canonical-session' },
+        authentication: {
+          mode: 'openclaw-oauth',
+          apiKeyFallbackAllowed: false,
+        },
+      },
+      payload: {
+        session,
+        toolOwnership: {
+          openclaw_turn: 'companion',
+          voiceclaw_send_route_task: 'iphone',
+        },
+      },
+    },
+    options,
+    routeMode: 'openclaw',
+    exactRouteMode: 'openclaw-bridge',
+    sessionToken: 'canonical-session',
+    authenticationMode: 'openclaw-oauth',
+    apiKeyFallbackAllowed: false,
+  });
+  assert.equal(canonical.compatibilityMode, 'canonical-contract');
+  assert.equal(canonical.realtimeSession, session);
+  assert.equal(canonical.toolOwnership.voiceclaw_send_route_task, 'iphone');
+
+  assert.throws(
+    () => outerHFIntegration.resolveRealtimeSessionAdmission({
+      providedSession: session,
+      promptContract: {
+        contract: {
+          route: { mode: 'openclaw-bridge', sessionToken: 'canonical-session' },
+          authentication: {
+            mode: 'openclaw-oauth',
+            apiKeyFallbackAllowed: false,
+          },
+        },
+        payload: {
+          session,
+          toolOwnership: {
+            openclaw_turn: 'companion',
+            voiceclaw_send_route_task: 'iphone',
+          },
+        },
+      },
+      options,
+      routeMode: 'openclaw',
+      exactRouteMode: 'openclaw-public-tunnel',
+      sessionToken: 'canonical-session',
+      authenticationMode: 'openclaw-oauth',
+      apiKeyFallbackAllowed: false,
+    }),
+    /exact route mode does not match/i);
+});
+
+test('sideband ownership follows the exact session contract and legacy direct tools stay on iPhone', () => {
+  outerHFIntegration.setRealtimeSessionConfigForTest('ownership-session', {
+    toolOwnership: {
+      voiceclaw_send_route_task: 'iphone',
+      openclaw_turn: 'companion',
+    },
+  });
+  assert.equal(
+    outerHFIntegration.isClientOwnedRealtimeTool(
+      'voiceclaw_send_route_task',
+      'ownership-session'),
+    true);
+  assert.equal(
+    outerHFIntegration.isClientOwnedRealtimeTool('openclaw_turn', 'ownership-session'),
+    false);
+  assert.equal(
+    outerHFIntegration.isClientOwnedRealtimeTool('gpt55_direct', 'legacy-session'),
+    true);
+});
+
 test('processing normalization preserves separate model route and runtime agent identities', () => {
   const current = outerHFIntegration.normalizeRealtimeProcessingPayload({
     agent: 'julian',
