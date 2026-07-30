@@ -3,6 +3,18 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.152</title>
+            <pubDate>Thu, 30 Jul 2026 15:38:13 +0300</pubDate>
+            <link>https://github.com/bdjben/Voice.Claw-Companion/releases/latest/download/appcast.xml</link>
+            <sparkle:version>202607301236</sparkle:version>
+            <sparkle:shortVersionString>0.1.152</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.152</h2><ul><li>Fixes pointer interaction for Companion controls.</li><li>Ensures the signed updater appears in front when an update is ready.</li></ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.152/VoiceClawCompanion-0.1.152-202607301236.dmg" length="6960684" type="application/octet-stream" sparkle:edSignature="7AFRS8Iog5I1LmTujLy0C3/z27OKhS2wIIrpPH7JXlX6lGfA/3sIgnu+taN9rShLy0NBv+KoWEgcCrLVl21kBA=="/>
+        </item>
+        <item>
             <title>0.1.151</title>
             <pubDate>Thu, 30 Jul 2026 15:25:05 +0300</pubDate>
             <link>https://github.com/bdjben/Voice.Claw-Companion/releases/latest/download/appcast.xml</link>
@@ -25,18 +37,6 @@
             <description><![CDATA[<h2>VoiceClaw Companion 0.1.150</h2><ul><li>Improves steered OpenClaw task completion and reporting.</li><li>Adds a general reminder to check the App Store for the latest VoiceClaw Realtime app.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.150/VoiceClawCompanion-0.1.150-202607301145.dmg" length="7725086" type="application/octet-stream" sparkle:edSignature="j5Fg05LpEDpvijtdfXC75V8TPiB69FHoVT9g5CpCZQTnW2ZBXUDkvTGfgfAeQzRLD/ezDATg1AKa6M5KhlRUDQ=="/>
-        </item>
-        <item>
-            <title>0.1.149</title>
-            <pubDate>Thu, 30 Jul 2026 12:47:33 +0300</pubDate>
-            <link>https://github.com/bdjben/Voice.Claw-Companion/releases/latest/download/appcast.xml</link>
-            <sparkle:version>202607300945</sparkle:version>
-            <sparkle:shortVersionString>0.1.149</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Companion 0.1.149</h2><ul><li>Fixes inconsistent update availability between the Companion banner and the signed Sparkle installer.</li><li>Publishes the signed updater feed and matching release assets atomically to prevent stale update checks.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.149/VoiceClawCompanion-0.1.149-202607300945.dmg" length="7723594" type="application/octet-stream" sparkle:edSignature="vPOJqRRyzIvVEt460NEZuhaiG+CrJ2CQOJVpX0BHqEjxZQuzRPFye5S2lSSh+8vrpZBciPmLL8+JXHD05j/LCA=="/>
         </item>
     </channel>
 </rss>
