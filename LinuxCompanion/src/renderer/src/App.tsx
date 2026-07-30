@@ -15,7 +15,13 @@ export function App({ api = window.voiceclaw }: { api?: VoiceClawDesktopAPI }) {
       case 'access':
         return <AccessScreen snapshot={companion.snapshot} />;
       case 'tasks':
-        return <TasksFilesScreen snapshot={companion.snapshot} />;
+        return (
+          <TasksFilesScreen
+            snapshot={companion.snapshot}
+            api={api}
+            onRefresh={companion.refresh}
+          />
+        );
       case 'pairing':
         return (
           <PairingScreen

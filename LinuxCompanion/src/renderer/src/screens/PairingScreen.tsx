@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 
 import type {
   PairingOptions,
   VoiceClawDesktopAPI,
 } from '../../../shared/contracts';
+import { redactedPairingPreview, setupDeepLink } from '../pairing';
 
 const DEFAULT_OPTIONS: PairingOptions = {
   includeOpenAIAPIKey: false,
@@ -11,21 +13,6 @@ const DEFAULT_OPTIONS: PairingOptions = {
   includeBridgeCredentials: true,
   includeChatGPTOAuth: true,
 };
-
-function redacted(value: unknown, key = ''): unknown {
-  if (/key|token|secret|oauth|credential/iu.test(key)) {
-    return '••••••••';
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => redacted(entry));
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([childKey, child]) => [childKey, redacted(child, childKey)]),
-    );
-  }
-  return value;
-}
 
 export function PairingScreen({
   api,
@@ -35,16 +22,25 @@ export function PairingScreen({
   pairingAvailable: boolean;
 }) {
   const [options, setOptions] = useState(DEFAULT_OPTIONS);
-  const [preview, setPreview] = useState<Record<string, unknown>>({});
+  const [payload, setPayload] = useState<Record<string, unknown>>({});
+  const [qrCode, setQRCode] = useState('');
   const [error, setError] = useState('');
+  const [copied, setCopied] = useState('');
 
   useEffect(() => {
     let active = true;
     api.getPairingPayload(options).then((payload) => {
-      if (active) {
-        setPreview(redacted(payload) as Record<string, unknown>);
-        setError('');
-      }
+      if (!active) return;
+      setPayload(payload);
+      setError('');
+      return QRCode.toDataURL(setupDeepLink(payload), {
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        width: 280,
+        color: { dark: '#07111fff', light: '#e7f1fbff' },
+      });
+    }).then((dataURL) => {
+      if (active && dataURL) setQRCode(dataURL);
     }).catch((caught: unknown) => {
       if (active) {
         setError(caught instanceof Error ? caught.message : String(caught));
@@ -58,6 +54,15 @@ export function PairingScreen({
   const toggle = (key: keyof PairingOptions) => {
     setOptions((current) => ({ ...current, [key]: !current[key] }));
   };
+  const copy = async (kind: 'json' | 'link') => {
+    const value = kind === 'json'
+      ? JSON.stringify(payload, null, 2)
+      : setupDeepLink(payload);
+    await api.copyText(value);
+    setCopied(kind);
+    window.setTimeout(() => setCopied(''), 1_500);
+  };
+  const preview = redactedPairingPreview(payload);
   return (
     <section className="screen">
       <div className="screen-heading">
@@ -86,12 +91,40 @@ export function PairingScreen({
               <span><strong>{label}</strong><small>Include only when your phone needs it.</small></span>
             </label>
           ))}
+          <div className="pairing-actions">
+            <button
+              className="button button-primary"
+              type="button"
+              disabled={!Object.keys(payload).length}
+              onClick={() => void copy('json')}
+            >
+              {copied === 'json' ? 'Setup JSON Copied' : 'Copy Setup JSON'}
+            </button>
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled={!Object.keys(payload).length}
+              onClick={() => void copy('link')}
+            >
+              {copied === 'link' ? 'Setup Link Copied' : 'Copy Setup Link'}
+            </button>
+          </div>
         </section>
         <section className="panel">
           <div className="panel-title"><span>Redacted preview</span><small>Secrets never render here</small></div>
           {error
             ? <p className="error-copy">{error}</p>
-            : <pre className="json-preview">{JSON.stringify(preview, null, 2)}</pre>}
+            : (
+              <>
+                {qrCode && (
+                  <div className="qr-wrap">
+                    <img src={qrCode} alt="VoiceClaw phone setup QR code" />
+                    <span>Scan manually with your iPhone</span>
+                  </div>
+                )}
+                <pre className="json-preview">{JSON.stringify(preview, null, 2)}</pre>
+              </>
+            )}
         </section>
       </div>
     </section>
