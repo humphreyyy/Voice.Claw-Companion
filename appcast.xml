@@ -3,6 +3,21 @@
     <channel>
         <title>VoiceClaw Companion</title>
         <item>
+            <title>0.1.147</title>
+            <pubDate>Thu, 30 Jul 2026 12:03:01 +0300</pubDate>
+            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
+            <sparkle:version>202607300736</sparkle:version>
+            <sparkle:shortVersionString>0.1.147</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>VoiceClaw Companion 0.1.147</h2>
+<ul>
+  <li>Includes the latest VoiceClaw Companion improvements.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.147/VoiceClawCompanion-0.1.147-202607300736.dmg" length="8324607" type="application/octet-stream" sparkle:edSignature="t8nBdZQkH2lCBmokScQBnN6mlUdvBX0DObE9OMkQ7jR8FdrlBypFnlMQXFUb9dqXp3K1d2qHqmFPKESOf23pDQ=="/>
+        </item>
+        <item>
             <title>0.1.140</title>
             <pubDate>Tue, 28 Jul 2026 21:03:52 +0300</pubDate>
             <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
@@ -25,18 +40,6 @@
             <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.139</h2><ul><li>Fixes a Pair Phone panel freeze that could consume a full CPU core when opening the QR code screen.</li><li>Keeps the pairing QR code, setup JSON, and HTTPS tunnel value synchronized without a SwiftUI refresh loop.</li><li>Uses a stable Realtime authentication menu that remains responsive across repeated Pair Phone navigation.</li></ul>
 ]]></description>
             <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.139/VoiceClawCompanion-0.1.139-202607281043.dmg" length="6863874" type="application/octet-stream" sparkle:edSignature="kXMadG4Szsi+foQmfjcqXinGEt7t3zo991/MOd+wqJkGc+ctkUy58zzey9BaJE0yctGPhN3qkKWn/37aLjnxBw=="/>
-        </item>
-        <item>
-            <title>0.1.138</title>
-            <pubDate>Tue, 28 Jul 2026 12:52:25 +0300</pubDate>
-            <link>https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml</link>
-            <sparkle:version>202607280950</sparkle:version>
-            <sparkle:shortVersionString>0.1.138</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>VoiceClaw Realtime Companion 0.1.138</h2><ul><li>Keeps the pairing QR code and setup JSON synchronized with the current Companion fields and bridge configuration.</li><li>Includes the configured HTTPS tunnel URL immediately after launch without requiring the user to focus or edit its field.</li><li>Prevents navigation and background diagnostics from replacing the current pairing payload with stale rendered state.</li></ul>
-]]></description>
-            <enclosure url="https://github.com/bdjben/Voice.Claw-Companion/releases/download/v0.1.138/VoiceClawCompanion-0.1.138-202607280950.dmg" length="6865123" type="application/octet-stream" sparkle:edSignature="hoBPrnF+UmF81BNStXpuTeqQLN/SAjNUZnUCowFeUJwubI2zLk82rLlKs82S7qJ3+jZ9daPQdlpVg82oftjlBw=="/>
         </item>
     </channel>
 </rss>
