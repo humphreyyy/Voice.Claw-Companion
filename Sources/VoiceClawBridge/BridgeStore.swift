@@ -288,6 +288,7 @@ final class BridgeStore: ObservableObject {
     @Published var isUpdatingLaunchAtStartup: Bool = false
 
     private let runner = ProcessRunner()
+    private let sparkleUpdaterDelegate: CompanionSparkleUpdaterDelegate
     private let sparkleUpdaterController: SPUStandardUpdaterController
     private lazy var projectRoot: URL = Self.resolveProjectRoot()
     private var automaticUpdateTask: Task<Void, Never>?
@@ -328,7 +329,13 @@ final class BridgeStore: ObservableObject {
     }
 
     init() {
-        sparkleUpdaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        let updaterDelegate = CompanionSparkleUpdaterDelegate()
+        sparkleUpdaterDelegate = updaterDelegate
+        sparkleUpdaterController = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: updaterDelegate,
+            userDriverDelegate: nil
+        )
         openAIAPIKey = CompanionKeychainStore.load(account: "openai.apiKey") ?? ""
         cerebrasAPIKey = CompanionKeychainStore.load(account: "cerebras.apiKey") ?? ""
         if UserDefaults.standard.object(forKey: DefaultsKeys.includeOpenAIAPIKeyInPairing) != nil {
@@ -821,15 +828,28 @@ final class BridgeStore: ObservableObject {
         defer { isCheckingForUpdates = false }
 
         do {
-            var request = URLRequest(url: URL(string: "https://api.github.com/repos/bdjben/Voice.Claw-Companion/releases/latest")!)
-            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            request.setValue("VoiceClawCompanion", forHTTPHeaderField: "User-Agent")
+            var mutableReleaseRequest = URLRequest(url: URL(string: "https://api.github.com/repos/bdjben/Voice.Claw-Companion/releases/latest")!)
+            mutableReleaseRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            mutableReleaseRequest.timeoutInterval = 20
+            mutableReleaseRequest.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            mutableReleaseRequest.setValue("no-cache, no-store, max-age=0", forHTTPHeaderField: "Cache-Control")
+            mutableReleaseRequest.setValue("no-cache", forHTTPHeaderField: "Pragma")
+            mutableReleaseRequest.setValue("VoiceClawCompanion", forHTTPHeaderField: "User-Agent")
+            let releaseRequest = mutableReleaseRequest
 
-            let (data, response) = try await URLSession.shared.data(for: request)
+            async let releaseResult = URLSession.shared.data(for: releaseRequest)
+            async let appcastResult = URLSession.shared.data(for: CompanionUpdateFeed.request())
+            let ((data, response), (appcastData, appcastResponse)) = try await (releaseResult, appcastResult)
+
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode)
             else {
                 throw BridgeProcessError(message: "GitHub returned an unexpected response.")
+            }
+            guard let appcastHTTP = appcastResponse as? HTTPURLResponse,
+                  (200..<300).contains(appcastHTTP.statusCode)
+            else {
+                throw BridgeProcessError(message: "The signed updater feed returned an unexpected response.")
             }
 
             let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
@@ -853,6 +873,11 @@ final class BridgeStore: ObservableObject {
                 updateSummary = "Latest release is \(release.tagName), but no DMG download is attached yet. Wait for a notarized DMG before updating."
                 return
             }
+            guard let releaseDMGURL = release.preferredDMGAsset?.browserDownloadURL else {
+                updateAvailable = false
+                updateSummary = "Latest release is \(release.tagName), but its notarized DMG download URL is unavailable."
+                return
+            }
 
             guard let currentVersion = Self.currentCompanionVersion,
                   !currentVersion.isEmpty
@@ -862,7 +887,25 @@ final class BridgeStore: ObservableObject {
                 return
             }
 
+            let appcastItem = try CompanionUpdateFeed.latestItem(from: appcastData)
+            guard CompanionUpdateFeed.confirms(
+                releaseVersion: latestVersion,
+                releaseDMGURL: releaseDMGURL,
+                appcastItem: appcastItem
+            ) else {
+                updateAvailable = false
+                updateSummary = "Release \(release.tagName) is finishing publication. The signed updater feed does not yet match the GitHub release, so VoiceClaw Realtime Companion will not offer an inconsistent update. Check again shortly."
+                return
+            }
+
             if Self.compareVersions(latestVersion, currentVersion) == .orderedDescending {
+                if let currentBuild = Self.currentCompanionBuild.flatMap(Int.init),
+                   let appcastBuild = Int(appcastItem.build),
+                   appcastBuild <= currentBuild {
+                    updateAvailable = false
+                    updateSummary = "Release \(release.tagName) is visible, but its signed updater build \(appcastItem.build) is not newer than this build. Check again after publication completes."
+                    return
+                }
                 updateAvailable = true
                 updateSummary = "Update \(release.tagName) is available. Use Install Update to open the signed updater. If the updater cannot complete, open the GitHub release and install the notarized DMG manually: \(latestDMGName)."
             } else {

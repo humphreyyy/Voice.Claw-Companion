@@ -400,7 +400,6 @@ private struct UpdateAvailableBanner: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .companionStatusSurface(color: VoiceClawCompanionTheme.cyan)
-            .accessibilityElement(children: .combine)
         }
     }
 

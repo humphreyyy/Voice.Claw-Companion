@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DMG_PATH="${1:-}"
 VERSION="${VOICECLAW_BRIDGE_VERSION:-}"
-FEED_URL="${VOICECLAW_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/bdjben/Voice.Claw-Companion/main/appcast.xml}"
+FEED_URL="${VOICECLAW_SPARKLE_FEED_URL:-https://github.com/bdjben/Voice.Claw-Companion/releases/latest/download/appcast.xml}"
 SPARKLE_ACCOUNT="${VOICECLAW_SPARKLE_ACCOUNT:-VoiceClaw Companion}"
 APP_NAME="VoiceClaw Companion"
 
