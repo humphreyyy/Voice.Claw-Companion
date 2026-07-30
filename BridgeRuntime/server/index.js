@@ -82,6 +82,7 @@ import {
   parseVoiceClawPromptContractJSON,
   validateVoiceClawPromptContract,
 } from './prompt-contract.js';
+import { PLATFORM_PATHS } from './platform-paths.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 normalizeProcessPath();
@@ -195,7 +196,7 @@ const REALTIME_TURN_DETECTION_MODE = process.env.REALTIME_TURN_DETECTION_MODE ||
 const REALTIME_SEMANTIC_VAD_EAGERNESS = process.env.REALTIME_SEMANTIC_VAD_EAGERNESS || 'auto';
 const REALTIME_VOICE = process.env.REALTIME_VOICE || 'marin';
 const OPENCLAW_AGENT_NAME = process.env.INTERCOM_AGENT || process.env.OPENCLAW_AGENT || 'main';
-const DEFAULT_APP_SUPPORT_DIR = join(homedir(), 'Library', 'Application Support', 'VoiceClaw Companion');
+const DEFAULT_APP_SUPPORT_DIR = PLATFORM_PATHS.appSupportDir;
 const REALTIME_LOG_DIR = process.env.REALTIME_LOG_DIR || join(DEFAULT_APP_SUPPORT_DIR, 'logs');
 const REALTIME_TRANSCRIPT_LOG = join(REALTIME_LOG_DIR, 'realtime-transcripts.jsonl');
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(homedir(), '.openclaw', 'openclaw.json');

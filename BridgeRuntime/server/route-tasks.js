@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
 import { INPUT_ATTACHMENTS_PER_TASK_LIMIT, InputAttachmentError } from './input-attachments.js';
+import { PLATFORM_PATHS } from './platform-paths.js';
 
 export const ROUTE_TASK_SCHEMA_VERSION = 1;
 export const ROUTE_TASK_STATES = Object.freeze([
@@ -19,13 +19,7 @@ export const ROUTE_TASK_STATES = Object.freeze([
 ]);
 
 const TERMINAL_STATES = new Set(['completed', 'completedWithArtifactWarning', 'failed', 'cancelled']);
-const DEFAULT_STATE_PATH = join(
-  homedir(),
-  'Library',
-  'Application Support',
-  'VoiceClaw Realtime Companion',
-  'route-tasks.json',
-);
+const DEFAULT_STATE_PATH = PLATFORM_PATHS.routeTasksStatePath;
 const DEFAULT_MAX_TASKS = 1_000;
 const DEFAULT_MAX_EVENTS = 500;
 const DEFAULT_TASK_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;

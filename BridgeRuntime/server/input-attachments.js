@@ -15,8 +15,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { extname, join, resolve, sep } from 'node:path';
-import { homedir } from 'node:os';
 import { TextDecoder } from 'node:util';
+import { PLATFORM_PATHS } from './platform-paths.js';
 
 export const INPUT_ATTACHMENT_SCHEMA_VERSION = 1;
 export const INPUT_ATTACHMENT_FILE_LIMIT_BYTES = 50 * 1024 * 1024;
@@ -24,13 +24,7 @@ export const INPUT_ATTACHMENT_STORE_LIMIT_BYTES = 500 * 1024 * 1024;
 export const INPUT_ATTACHMENTS_PER_TASK_LIMIT = 20;
 export const INPUT_ATTACHMENT_ORPHAN_RETENTION_MS = 24 * 60 * 60 * 1000;
 
-const DEFAULT_ROOT = join(
-  homedir(),
-  'Library',
-  'Application Support',
-  'VoiceClaw Realtime Companion',
-  'Input Attachments',
-);
+const DEFAULT_ROOT = PLATFORM_PATHS.inputAttachmentsDir;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CONTENT_TYPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
 const SHA256_PATTERN = /^[A-Fa-f0-9]{64}$/;

@@ -6,14 +6,14 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import { executablePath, normalizeProcessPath } from './bin-paths.js';
+import { PLATFORM_PATHS } from './platform-paths.js';
 import { parseRealtimeBoolean, readBridgeConfig, resolveOpenAIChatGPTOAuthBearer } from './realtime-auth.js';
 
 normalizeProcessPath();
 
 const WHISPER_CLI = executablePath(process.env.WHISPER_CLI || 'whisper-cli');
 const FFMPEG_BIN = executablePath(process.env.FFMPEG_BIN || 'ffmpeg');
-const VOICECLAW_MODEL_DIR = process.env.VOICECLAW_MODEL_DIR
-  || join(os.homedir(), 'Library', 'Application Support', 'VoiceClaw Realtime Companion', 'Models');
+const VOICECLAW_MODEL_DIR = PLATFORM_PATHS.modelsDir;
 const LEGACY_OPENCLAW_MODEL_DIR = join(os.homedir(), '.openclaw', 'models');
 const WHISPER_MODEL = process.env.WHISPER_MODEL || [
   join(VOICECLAW_MODEL_DIR, 'ggml-small.bin'),

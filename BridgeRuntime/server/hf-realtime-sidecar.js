@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import WebSocket from 'ws';
 import { executablePath, normalizeProcessPath } from './bin-paths.js';
 import { parseRealtimeBoolean, readBridgeConfig, resolveOpenAIChatGPTOAuthBearer } from './realtime-auth.js';
+import { PLATFORM_PATHS } from './platform-paths.js';
 
 const execFile = promisify(execFileCb);
 normalizeProcessPath();
@@ -18,7 +19,7 @@ const HF_HOME = process.env.HF_HOME || process.env.HUGGINGFACE_HUB_CACHE?.replac
 const HF_VENV = process.env.VOICECLAW_HF_VENV || HF_ROOT;
 const HF_PYTHON = process.env.VOICECLAW_HF_PYTHON || join(HF_VENV, 'bin', 'python');
 const HF_CLI = process.env.VOICECLAW_HF_CLI || join(HF_VENV, 'bin', 'speech-to-speech');
-const HF_LOG_DIR = process.env.VOICECLAW_HF_LOG_DIR || join(os.homedir(), 'Library', 'Application Support', 'VoiceClaw Companion', 'logs');
+const HF_LOG_DIR = process.env.VOICECLAW_HF_LOG_DIR || PLATFORM_PATHS.logsDir;
 const HF_STDOUT_LOG = join(HF_LOG_DIR, 'hf-speech-to-speech.out.log');
 const HF_STDERR_LOG = join(HF_LOG_DIR, 'hf-speech-to-speech.err.log');
 const PRIORITY_HELPER_PLIST = '/Library/LaunchDaemons/ai.voiceclaw.priority-helper.plist';

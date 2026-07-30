@@ -18,20 +18,14 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
-import { homedir } from 'node:os';
+import { PLATFORM_PATHS } from './platform-paths.js';
 
 export const ARTIFACT_FILE_LIMIT_BYTES = 50 * 1024 * 1024;
 export const ARTIFACT_INBOX_LIMIT_BYTES = 500 * 1024 * 1024;
 export const ARTIFACT_FILES_PER_TASK_LIMIT = 10;
 export const ARTIFACT_INBOX_SCHEMA_VERSION = 1;
 
-const DEFAULT_ROOT = join(
-  homedir(),
-  'Library',
-  'Application Support',
-  'VoiceClaw Realtime Companion',
-  'Artifact Inbox',
-);
+const DEFAULT_ROOT = PLATFORM_PATHS.artifactInboxDir;
 const MIME_BY_EXTENSION = Object.freeze({
   '.txt': 'text/plain',
   '.md': 'text/markdown',

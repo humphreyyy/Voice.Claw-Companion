@@ -9,18 +9,12 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import { promisify } from 'node:util';
 import { executablePath, normalizeProcessPath } from './bin-paths.js';
+import { PLATFORM_PATHS } from './platform-paths.js';
 
 const execFile = promisify(execFileCb);
 normalizeProcessPath();
 
-const VOICECLAW_PIPER_MODEL_DIR = join(
-  os.homedir(),
-  'Library',
-  'Application Support',
-  'VoiceClaw Realtime Companion',
-  'Models',
-  'piper',
-);
+const VOICECLAW_PIPER_MODEL_DIR = PLATFORM_PATHS.piperModelsDir;
 const LEGACY_OPENCLAW_PIPER_MODEL_DIR = join(os.homedir(), '.openclaw', 'models', 'piper');
 const PIPER_MODEL_DIR = process.env.PIPER_MODEL_DIR
   || (existsSync(VOICECLAW_PIPER_MODEL_DIR) ? VOICECLAW_PIPER_MODEL_DIR : LEGACY_OPENCLAW_PIPER_MODEL_DIR);

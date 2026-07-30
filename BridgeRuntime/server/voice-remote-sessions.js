@@ -1,18 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { open, mkdir, readFile, rename, unlink } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { PLATFORM_PATHS } from './platform-paths.js';
 
 export const VOICE_REMOTE_SESSION_SCHEMA_VERSION = 4;
 export const VOICE_REMOTE_SESSION_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-const DEFAULT_STATE_PATH = join(
-  homedir(),
-  'Library',
-  'Application Support',
-  'VoiceClaw Companion',
-  'voice-remote-sessions.json',
-);
+const DEFAULT_STATE_PATH = PLATFORM_PATHS.voiceRemoteSessionsStatePath;
 const DEFAULT_SESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_SESSIONS = 256;
