@@ -83,6 +83,19 @@ function normalizeDelivery(value) {
   return delivery;
 }
 
+function normalizeComputerInteraction(value, computerUseRequested = false) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return computerUseRequested ? 'require' : 'auto';
+  if (!['auto', 'prefer', 'require', 'avoid'].includes(normalized)) {
+    throw new RouteTaskError(
+      'invalid_computer_interaction',
+      `Unsupported computer interaction preference: ${normalized}`,
+      422,
+    );
+  }
+  return normalized;
+}
+
 function normalizeTarget(input = {}) {
   const runtime = normalizeRuntime(input.runtime);
   const route = trimmed(input.route || runtime, 'target.route', 128);
@@ -141,6 +154,7 @@ function publicTask(task) {
     runtime: task.runtime,
     error: task.error,
     timestamps: task.timestamps,
+    lastEvent: task.events?.at(-1) || null,
   });
 }
 
@@ -212,6 +226,16 @@ export class RouteTaskService {
       || requestedDelivery === 'returnArtifact';
     const computerUseRequested = input.request?.computerUseRequested === true
       || input.request?.requiresComputerUse === true;
+    const computerInteraction = normalizeComputerInteraction(
+      input.request?.computerInteraction,
+      computerUseRequested,
+    );
+    const executionGuidance = trimmed(
+      input.request?.executionGuidance,
+      'request.executionGuidance',
+      8 * 1024,
+      { required: false },
+    );
     const delivery = artifactReturnRequested ? 'returnArtifact' : requestedDelivery;
     const providedTaskID = String(input.taskID || input.taskId || '').trim();
     if (attachmentIDs.length && !providedTaskID) {
@@ -226,6 +250,8 @@ export class RouteTaskService {
       delivery,
       artifactReturnRequested,
       computerUseRequested,
+      computerInteraction,
+      executionGuidance,
       taskID: providedTaskID ? taskID : null,
     });
     const result = await this.#exclusive(async () => {
@@ -259,6 +285,8 @@ export class RouteTaskService {
           attachmentIDs,
           artifactReturnRequested,
           computerUseRequested,
+          computerInteraction,
+          executionGuidance,
           delivery,
         },
         state: 'queued',
@@ -577,6 +605,15 @@ export class RouteTaskService {
         handoff = latest;
         continue;
       }
+      const expectedRunID = String(registered.result?.runID || '').trim();
+      const completedRunID = String(result?.runID || '').trim();
+      if (expectedRunID && completedRunID && completedRunID !== expectedRunID) {
+        throw new RouteTaskError(
+          'stale_run_completion',
+          'A superseded steering generation attempted to complete the route task.',
+          409,
+        );
+      }
       return {
         ...result,
         runID: result?.runID || registered.result.runID || null,
@@ -602,6 +639,9 @@ export class RouteTaskService {
       await this.#update(taskID, 'input_attachments.resolved', {
         progress: `${inputAttachments.length} verified input attachment${inputAttachments.length === 1 ? '' : 's'} ready.`,
       });
+    }
+    if (task.target.runtime === 'openclaw' && task.request.executionGuidance) {
+      dispatchText = `${dispatchText}\n\n${task.request.executionGuidance}`;
     }
     if (task.request.artifactReturnRequested && this.artifactInbox) {
       const prepared = await this.artifactInbox.prepareTask(taskID);
@@ -755,7 +795,15 @@ export class RouteTaskService {
     }
 
     if (signal.aborted) throw signal.reason || new Error('cancelled');
-    const reply = trimmed(result?.reply || result?.text || result?.outputText || 'The task completed.', 'result.text', 512 * 1024);
+    const rawReply = String(result?.reply || result?.text || result?.outputText || '').trim();
+    if (!rawReply) {
+      throw new RouteTaskError(
+        'runtime_result_unavailable',
+        `${task.target.runtime} reported that the run ended but did not return a final result.`,
+        502,
+      );
+    }
+    const reply = trimmed(rawReply, 'result.text', 512 * 1024);
     await this.#update(taskID, 'task.completing', { state: 'completing', progress: 'Saving the task result.' });
     let artifacts = [];
     let artifactWarning = null;

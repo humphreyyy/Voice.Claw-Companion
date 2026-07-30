@@ -401,6 +401,88 @@ test('ordinary Codex work bypasses the Computer Use supervisor', async (t) => {
   assert.equal(acquisitions, 0);
 });
 
+test('OpenClaw receives iOS-owned computer-interaction guidance while Hermes does not', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-guidance-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const remote = mockRemoteSessionService();
+  const service = new RouteTaskService({
+    statePath: join(directory, 'route-tasks.json'),
+    remoteSessionService: remote,
+  });
+  const guidance = 'VoiceClaw computer-interaction preference: prefer verified Computer Use.';
+  const openClaw = await service.create({
+    target: { runtime: 'openclaw', route: 'openclaw-bridge', agentID: 'julian' },
+    request: {
+      summary: 'Open the desktop app',
+      fullText: 'Open the desktop app.',
+      computerInteraction: 'prefer',
+      executionGuidance: guidance,
+    },
+  });
+  const hermes = await service.create({
+    target: { runtime: 'hermes', route: 'hermes-bridge', agentID: 'hermes' },
+    request: {
+      summary: 'Open the desktop app',
+      fullText: 'Open the desktop app.',
+      computerInteraction: 'prefer',
+      executionGuidance: guidance,
+    },
+  });
+  await waitFor(async () => (await service.get(openClaw.task.taskID)).state === 'completed');
+  await waitFor(async () => (await service.get(hermes.task.taskID)).state === 'completed');
+
+  const openClawTurn = remote.turns.find((turn) => turn.processing.runtime === 'openclaw');
+  const hermesTurn = remote.turns.find((turn) => turn.processing.runtime === 'hermes');
+  assert.match(openClawTurn.text, /prefer verified Computer Use/);
+  assert.doesNotMatch(hermesTurn.text, /prefer verified Computer Use/);
+  const persisted = await service.get(openClaw.task.taskID);
+  assert.equal(persisted.request.computerInteraction, 'prefer');
+  assert.equal(persisted.request.executionGuidance, guidance);
+});
+
+test('invalid computer-interaction preferences are rejected before task admission', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-guidance-invalid-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const service = new RouteTaskService({
+    statePath: join(directory, 'route-tasks.json'),
+    remoteSessionService: mockRemoteSessionService(),
+  });
+  await assert.rejects(
+    service.create({
+      target: { runtime: 'openclaw', route: 'openclaw-bridge', agentID: 'julian' },
+      request: {
+        fullText: 'Open the desktop app.',
+        computerInteraction: 'sometimes',
+      },
+    }),
+    (error) => error instanceof RouteTaskError && error.code === 'invalid_computer_interaction',
+  );
+});
+
+test('a runtime acknowledgement without a final result fails instead of inventing completion text', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-empty-result-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const remote = mockRemoteSessionService();
+  remote.runTurn = async (input) => {
+    remote.turns.push(input);
+    return { runID: 'empty-result-run', reply: '' };
+  };
+  const service = new RouteTaskService({
+    statePath: join(directory, 'route-tasks.json'),
+    remoteSessionService: remote,
+  });
+  const created = await service.create({
+    target: { runtime: 'openclaw', route: 'openclaw-bridge', agentID: 'julian' },
+    text: 'Return a real result.',
+  });
+  const failed = await waitFor(async () => {
+    const task = await service.get(created.task.taskID);
+    return task.state === 'failed' ? task : null;
+  });
+  assert.equal(failed.error.code, 'runtime_result_unavailable');
+  assert.doesNotMatch(failed.error.message, /The task completed/);
+});
+
 test('event cursors and state versions increase monotonically', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-tasks-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -674,6 +756,9 @@ test('a steering replacement completes the original durable task instead of fail
     text: 'Use the corrected requirements.',
     requestID: 'steer-replacement',
   });
+  const steered = await service.get(created.task.taskID);
+  assert.equal(steered.lastEvent.type, 'task.steered');
+  assert.match(steered.lastEvent.data.summary, /Added follow-up/);
   releaseOriginal();
   await new Promise((resolve) => setTimeout(resolve, 50));
   const waiting = await service.get(created.task.taskID);

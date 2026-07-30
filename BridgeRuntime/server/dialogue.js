@@ -1939,6 +1939,168 @@ export function createVoiceRemoteSessionRuntimeAdapter({
     const payloads = value?.result?.payloads || value?.payloads || [];
     return String(payloads[0]?.text || value?.text || '').trim();
   };
+  const openClawHistoryMessages = (value) => {
+    for (const candidate of [value?.messages, value?.data?.messages, value?.result?.messages]) {
+      if (Array.isArray(candidate)) return candidate;
+    }
+    return [];
+  };
+  const openClawHistorySequence = (message) => {
+    for (const value of [
+      message?.__openclaw?.seq,
+      message?.messageSeq,
+      message?.message_seq,
+      message?.seq,
+    ]) {
+      const numeric = Number(value);
+      if (Number.isSafeInteger(numeric) && numeric >= 0) return numeric;
+    }
+    return null;
+  };
+  const openClawHistoryTimestamp = (message) => {
+    for (const value of [
+      message?.timestamp,
+      message?.createdAt,
+      message?.created_at,
+      message?.__openclaw?.recordTimestampMs,
+    ]) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) {
+        return numeric < 100_000_000_000 ? numeric * 1000 : numeric;
+      }
+    }
+    return null;
+  };
+  const openClawHistoryText = (message) => {
+    if (!message || typeof message !== 'object') return '';
+    if (typeof message.text === 'string' && message.text.trim()) return message.text.trim();
+    if (typeof message.content === 'string' && message.content.trim()) return message.content.trim();
+    if (!Array.isArray(message.content)) return '';
+    return message.content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (!part || typeof part !== 'object') return '';
+        return typeof part.text === 'string' ? part.text : '';
+      })
+      .filter((part) => part.trim())
+      .join('\n')
+      .trim();
+  };
+  const openClawReplyAfterBaseline = (history, baseline) => {
+    const candidates = openClawHistoryMessages(history)
+      .filter((message) => String(message?.role || '').toLowerCase() === 'assistant')
+      .map((message) => ({
+        text: openClawHistoryText(message),
+        sequence: openClawHistorySequence(message),
+        timestamp: openClawHistoryTimestamp(message),
+      }))
+      .filter(({ text, sequence, timestamp }) => text && (
+        (baseline.sequence >= 0 && sequence !== null && sequence > baseline.sequence)
+        || (timestamp !== null && timestamp >= baseline.capturedAt)
+      ));
+    return candidates.at(-1)?.text || '';
+  };
+  const waitForOpenClawHistoryReply = async (binding, baseline, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    let lastError = null;
+    while (Date.now() < deadline) {
+      try {
+        const history = await callOpenClaw('chat.history', {
+          sessionKey: binding.canonicalSessionKey,
+          limit: 200,
+        }, {
+          timeoutMs: Math.min(30_000, Math.max(1_000, deadline - Date.now())),
+        });
+        const reply = openClawReplyAfterBaseline(history, baseline);
+        if (reply && !history?.inFlightRun) return reply;
+      } catch (error) {
+        lastError = error;
+      }
+      await wait(500);
+    }
+    if (lastError) throw lastError;
+    const error = new Error('OpenClaw finished without returning an observable final reply.');
+    error.code = 'runtime_result_unavailable';
+    throw error;
+  };
+  const observeOpenClawSteeredRun = async ({
+    runID,
+    binding,
+    baseline,
+    completionCall,
+    timeoutMs,
+  }) => {
+    const responseAttempt = Promise.resolve(completionCall).then(
+      (value) => ({ value, reply: openClawReply(value), error: null }),
+      (error) => ({ value: null, reply: '', error }),
+    );
+    const waitAttempt = callOpenClaw('agent.wait', {
+      runId: runID,
+      timeoutMs,
+    }, {
+      timeoutMs: timeoutMs + 5_000,
+    }).then(
+      (value) => ({ value, error: null }),
+      (error) => ({ value: null, error }),
+    );
+
+    const first = await Promise.race([
+      responseAttempt.then((result) => ({ source: 'response', result })),
+      waitAttempt.then((result) => ({ source: 'wait', result })),
+    ]);
+    if (first.source === 'response' && first.result.reply) {
+      return { runID, reply: first.result.reply, binding, completionConfirmed: true };
+    }
+
+    const waited = first.source === 'wait' ? first.result : await waitAttempt;
+    const status = String(waited.value?.status || '').trim().toLowerCase();
+    if (waited.error || (status && status !== 'ok')) {
+      const response = await responseAttempt;
+      if (response.reply) {
+        return { runID, reply: response.reply, binding, completionConfirmed: true };
+      }
+      if (waited.error) {
+        return {
+          runID,
+          reply: await waitForOpenClawHistoryReply(binding, baseline, timeoutMs),
+          binding,
+          completionConfirmed: true,
+        };
+      }
+      const error = new Error(
+        status === 'timeout'
+          ? 'OpenClaw did not finish the steered run before its completion deadline.'
+          : `OpenClaw ended the steered run with status ${status || 'unknown'}.`,
+      );
+      error.code = status === 'timeout' ? 'runtime_timeout' : 'runtime_run_failed';
+      throw error;
+    }
+
+    const promptlySettledResponse = await Promise.race([
+      responseAttempt,
+      wait(250).then(() => null),
+    ]);
+    if (promptlySettledResponse?.reply) {
+      return { runID, reply: promptlySettledResponse.reply, binding, completionConfirmed: true };
+    }
+    try {
+      const reply = await waitForOpenClawHistoryReply(
+        binding,
+        baseline,
+        Math.min(timeoutMs, 30_000),
+      );
+      return { runID, reply, binding, completionConfirmed: true };
+    } catch (historyError) {
+      const boundedResponse = await Promise.race([
+        responseAttempt,
+        wait(5_000).then(() => null),
+      ]);
+      if (boundedResponse?.reply) {
+        return { runID, reply: boundedResponse.reply, binding, completionConfirmed: true };
+      }
+      throw historyError;
+    }
+  };
 
   const adapter = {
     async discoverSessions({ routeID, runtime, agentID, activeSince, recentWindowMs }) {
@@ -2295,6 +2457,7 @@ export function createVoiceRemoteSessionRuntimeAdapter({
         if (!acceptedSettled) rejectAccepted(new Error('OpenClaw did not acknowledge the steering run.'));
       }, 10000);
       acceptedTimeout.unref?.();
+      const baseline = { capturedAt: Date.now(), sequence: -1 };
       const completionCall = callOpenClaw('sessions.steer', {
         key: binding.canonicalSessionKey,
         agentId: session.agent.id,
@@ -2325,11 +2488,13 @@ export function createVoiceRemoteSessionRuntimeAdapter({
       return {
         accepted: true,
         runID: acceptedIdentity.runID,
-        completion: completionCall.then((result) => ({
+        completion: observeOpenClawSteeredRun({
           runID: acceptedIdentity.runID,
-          reply: openClawReply(result),
           binding,
-        })),
+          baseline,
+          completionCall,
+          timeoutMs: MIN_OPENCLAW_REPLY_TIMEOUT_MS,
+        }),
       };
     },
 

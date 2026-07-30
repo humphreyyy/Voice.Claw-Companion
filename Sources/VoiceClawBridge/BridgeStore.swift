@@ -907,7 +907,7 @@ final class BridgeStore: ObservableObject {
                     return
                 }
                 updateAvailable = true
-                updateSummary = "Update \(release.tagName) is available. Use Install Update to open the signed updater. If the updater cannot complete, open the GitHub release and install the notarized DMG manually: \(latestDMGName)."
+                updateSummary = "Update \(release.tagName) is available. Use Install Update to open the signed updater. If the updater cannot complete, open the GitHub release and install the notarized DMG manually: \(latestDMGName). Also check the App Store to make sure your iPhone or iPad has the latest VoiceClaw Realtime app."
             } else {
                 updateAvailable = false
                 updateSummary = "VoiceClaw Realtime Companion is up to date at \(currentVersion). Latest DMG: \(latestDMGName). When enabled, automatic checks run at launch, when the main window is reopened or restored, and \(automaticUpdateCheckInterval.label.lowercased())."

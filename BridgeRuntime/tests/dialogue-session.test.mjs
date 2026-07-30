@@ -666,9 +666,89 @@ test('OpenClaw adapter discovers, attaches, steers, observes, stops, and archive
 
   assert.deepEqual(
     calls.map((call) => call.method),
-    ['sessions.list', 'sessions.list', 'sessions.resolve', 'sessions.steer', 'sessions.list', 'sessions.abort', 'sessions.patch'],
+    ['sessions.list', 'sessions.list', 'sessions.resolve', 'sessions.steer', 'agent.wait', 'sessions.list', 'sessions.abort', 'sessions.patch'],
   );
   assert.equal(calls.at(-1).params.archived, true);
+});
+
+test('OpenClaw steering treats the sessions.steer acknowledgement as acceptance and waits for the replacement run result', async () => {
+  const route = { routeID: 'openclaw-bridge', runtime: 'openclaw', agentID: 'julian' };
+  const calls = [];
+  let resolveWait;
+  const authoritativeWait = new Promise((resolve) => { resolveWait = resolve; });
+  __dialogueTestHooks.setCallGatewayForTest((options) => {
+    calls.push(options.method);
+    switch (options.method) {
+      case 'sessions.list':
+        return Promise.resolve({
+          sessions: [{
+            key: 'agent:julian:dashboard:steer-key',
+            sessionId: 'gateway-steer-session',
+            label: 'voiceclaw:openclaw-bridge',
+            sessionStartedAt: Date.now() - 60_000,
+            updatedAt: Date.now(),
+            hasActiveRun: true,
+            activeRunIds: ['gateway-run-original'],
+          }],
+        });
+      case 'sessions.steer':
+        queueMicrotask(() => options.onAccepted?.({
+          status: 'accepted',
+          runId: 'gateway-run-replacement',
+          sessionKey: options.params.key,
+        }));
+        return Promise.resolve({
+          status: 'accepted',
+          runId: 'gateway-run-replacement',
+          sessionKey: options.params.key,
+        });
+      case 'agent.wait':
+        assert.equal(options.params.runId, 'gateway-run-replacement');
+        return authoritativeWait;
+      case 'chat.history':
+        return Promise.resolve({
+          inFlightRun: false,
+          messages: [
+            {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Old reply that must not satisfy the steer.' }],
+              timestamp: Date.now() - 120_000,
+              __openclaw: { seq: 40 },
+            },
+            {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Authoritative replacement-run reply.' }],
+              timestamp: Date.now() + 1_000,
+              __openclaw: { seq: 41 },
+            },
+          ],
+        });
+      default:
+        throw new Error(`unexpected OpenClaw method: ${options.method}`);
+    }
+  });
+
+  const adapter = createVoiceRemoteSessionRuntimeAdapter();
+  const [descriptor] = await adapter.discoverSessions({
+    ...route,
+    activeSince: Date.now() - 3_600_000,
+    recentWindowMs: 24 * 60 * 60 * 1000,
+  });
+  const steering = await adapter.steerRun({
+    session: sessionFromDescriptor(descriptor, route),
+    binding: descriptor.binding,
+    runID: 'gateway-run-original',
+    text: 'Use the corrected requirements.',
+    requestID: 'gateway-steer-ack-only',
+  });
+  let completionSettled = false;
+  const completion = steering.completion.finally(() => { completionSettled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(completionSettled, false);
+
+  resolveWait({ status: 'ok', runId: 'gateway-run-replacement' });
+  assert.equal((await completion).reply, 'Authoritative replacement-run reply.');
+  assert.deepEqual(calls, ['sessions.list', 'sessions.list', 'sessions.steer', 'agent.wait', 'chat.history']);
 });
 
 class FakeHermesGateway {
