@@ -1,4 +1,4 @@
-import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 
 import type { ServiceStatus } from '../../shared/contracts';
 import type { CommandRunner } from './command-runner';
@@ -103,6 +103,16 @@ export class SystemdService {
   public async restart(): Promise<ServiceStatus> {
     await this.runner.run('systemctl', ['--user', 'restart', UNIT_NAME]);
     return this.status();
+  }
+
+  public async remove(): Promise<void> {
+    await this.runner.run('systemctl', ['--user', 'disable', '--now', UNIT_NAME]);
+    await unlink(this.paths.unitFile).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') {
+        throw error;
+      }
+    });
+    await this.runner.run('systemctl', ['--user', 'daemon-reload']);
   }
 
   public async status(): Promise<ServiceStatus> {
