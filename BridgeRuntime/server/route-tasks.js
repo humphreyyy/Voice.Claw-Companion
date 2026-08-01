@@ -19,6 +19,7 @@ export const ROUTE_TASK_STATES = Object.freeze([
 ]);
 
 const TERMINAL_STATES = new Set(['completed', 'completedWithArtifactWarning', 'failed', 'cancelled']);
+const REMOTE_RUNTIMES = new Set(['openclaw', 'hermes']);
 const DEFAULT_STATE_PATH = join(
   homedir(),
   'Library',
@@ -138,7 +139,29 @@ function isSafeSessionAdmissionRetry(error) {
     || message.includes('label already in use');
 }
 
+function runtimeIdentity(value) {
+  return String(value ?? '').trim().toLowerCase() || null;
+}
+
+function taskRuntimeProvenance(task) {
+  return {
+    requestedRuntime: runtimeIdentity(task?.runtime?.requestedRuntime)
+      || runtimeIdentity(task?.target?.runtime),
+    actualRuntime: runtimeIdentity(task?.runtime?.actualRuntime),
+  };
+}
+
+function decodePersistedTask(task) {
+  if (!task || typeof task !== 'object' || Array.isArray(task)) return task;
+  const runtime = task.runtime && typeof task.runtime === 'object' && !Array.isArray(task.runtime)
+    ? task.runtime
+    : {};
+  task.runtime = { ...runtime, ...taskRuntimeProvenance({ ...task, runtime }) };
+  return task;
+}
+
 function publicTask(task) {
+  const runtime = { ...(task.runtime || {}), ...taskRuntimeProvenance(task) };
   return clone({
     schemaVersion: ROUTE_TASK_SCHEMA_VERSION,
     taskID: task.taskID,
@@ -151,7 +174,7 @@ function publicTask(task) {
     progress: task.progress,
     result: task.result,
     artifactIDs: task.artifactIDs,
-    runtime: task.runtime,
+    runtime,
     error: task.error,
     timestamps: task.timestamps,
     lastEvent: task.events?.at(-1) || null,
@@ -294,7 +317,13 @@ export class RouteTaskService {
         progress: { summary: 'Waiting for the selected runtime.', updatedAt: timestamp },
         result: null,
         artifactIDs: [],
-        runtime: { sessionID: null, sessionKey: null, runID: null },
+        runtime: {
+          requestedRuntime: target.runtime,
+          actualRuntime: null,
+          sessionID: null,
+          sessionKey: null,
+          runID: null,
+        },
         error: null,
         timestamps: { createdAt: timestamp, updatedAt: timestamp, startedAt: null, completedAt: null },
         events: [],
@@ -382,8 +411,12 @@ export class RouteTaskService {
     if (TERMINAL_STATES.has(task.state)) {
       throw new RouteTaskError('task_not_steerable', 'The task has already finished.', 409);
     }
-    if (task.target.runtime === 'codex') {
-      throw new RouteTaskError('steer_unsupported', 'Codex tasks accept a follow-up after the current turn completes.', 409);
+    if (!REMOTE_RUNTIMES.has(task.target.runtime)) {
+      throw new RouteTaskError(
+        'steer_unsupported',
+        `${task.target.runtime} tasks do not use a steerable remote runtime session.`,
+        409,
+      );
     }
     if (!this.remoteSessionService || !task.runtime.sessionID) {
       throw new RouteTaskError('task_not_steerable', 'The task has no steerable runtime session.', 409);
@@ -419,7 +452,7 @@ export class RouteTaskService {
     if (TERMINAL_STATES.has(task.state)) return { task, cancelled: false };
     const controller = this.active.get(taskID);
     if (controller && !controller.signal.aborted) controller.abort(new Error('Task cancelled by user.'));
-    if (task.target.runtime !== 'codex' && task.runtime.sessionID && this.remoteSessionService) {
+    if (REMOTE_RUNTIMES.has(task.target.runtime) && task.runtime.sessionID && this.remoteSessionService) {
       await this.remoteSessionService.stop({ sessionID: task.runtime.sessionID, requestID }).catch(() => null);
     }
     await this.#update(taskID, 'task.cancelled', { state: 'cancelled', progress: 'Cancelled.' }, (draft) => {
@@ -450,7 +483,7 @@ export class RouteTaskService {
         outcomes.push({ taskID: task.taskID, state: recoveredArtifacts.warning ? 'completedWithArtifactWarning' : 'completed', recoveredArtifacts: recoveredArtifacts.artifacts.length });
         continue;
       }
-      if (task.target.runtime === 'codex' || !task.runtime.sessionID || !this.remoteSessionService) {
+      if (!REMOTE_RUNTIMES.has(task.target.runtime) || !task.runtime.sessionID || !this.remoteSessionService) {
         await this.#markRecoveryNeedsAttention(
           task.taskID,
           'The Companion restarted before it received a durable terminal result. The runtime identity is preserved, but the outcome could not be confirmed automatically.',
@@ -514,7 +547,9 @@ export class RouteTaskService {
   }
 
   async #recoverRemoteReply(task) {
-    if (!this.remoteSessionService?.events || !task.runtime.sessionID) return '';
+    if (!REMOTE_RUNTIMES.has(task.target.runtime)
+        || !this.remoteSessionService?.events
+        || !task.runtime.sessionID) return '';
     try {
       const result = await this.remoteSessionService.events({
         sessionID: task.runtime.sessionID,
@@ -537,9 +572,12 @@ export class RouteTaskService {
         ? 'Recovered after reconnect with an Artifact Inbox warning.'
         : 'Recovered after Companion reconnect.',
     }, (draft) => {
+      const provenance = taskRuntimeProvenance(draft);
       draft.result = {
         text: String(reply || 'The task completed after Companion reconnect.'),
-        source: draft.target.runtime,
+        source: provenance.actualRuntime,
+        requestedRuntime: provenance.requestedRuntime,
+        actualRuntime: provenance.actualRuntime,
         artifactWarning: warning,
       };
       draft.artifactIDs = artifacts.map((artifact) => artifact.artifactID);
@@ -566,12 +604,55 @@ export class RouteTaskService {
     this.active.set(taskID, controller);
     queueMicrotask(() => {
       this.#execute(taskID, controller.signal)
-        .catch((error) => this.#fail(taskID, error?.code || 'task_failed', String(error?.message || error)))
+        .catch((error) => this.#fail(
+          taskID,
+          error?.code || 'task_failed',
+          String(error?.message || error),
+          error?.details || null,
+        ))
         .finally(() => {
           this.active.delete(taskID);
           this.steeringHandoffs.delete(taskID);
         });
     });
+  }
+
+  async #recordActualRuntime(taskID, actualRuntime, {
+    acceptedEvent = 'runtime.selected',
+    progress = 'Runtime identity verified.',
+    unavailableMessage = 'The selected runtime did not report its runtime identity.',
+    mutate = null,
+  } = {}) {
+    const task = await this.get(taskID);
+    const requestedRuntime = taskRuntimeProvenance(task).requestedRuntime;
+    const actual = runtimeIdentity(actualRuntime);
+    if (!actual) {
+      throw new RouteTaskError(
+        'runtime_unavailable',
+        unavailableMessage,
+        503,
+        { requestedRuntime, actualRuntime: null },
+      );
+    }
+    const mismatch = actual !== requestedRuntime;
+    await this.#update(taskID, mismatch ? 'runtime.mismatch' : acceptedEvent, {
+      progress: mismatch
+        ? `Runtime mismatch: requested ${requestedRuntime}, but ${actual} answered.`
+        : progress,
+    }, (draft) => {
+      draft.runtime.requestedRuntime = requestedRuntime;
+      draft.runtime.actualRuntime = actual;
+      mutate?.(draft);
+    });
+    if (mismatch) {
+      throw new RouteTaskError(
+        'runtime_mismatch',
+        `Requested runtime ${requestedRuntime}, but the task was handled by ${actual}.`,
+        502,
+        { requestedRuntime, actualRuntime: actual },
+      );
+    }
+    return actual;
   }
 
   async #followSteeredRun(taskID, supersededError, signal) {
@@ -652,6 +733,9 @@ export class RouteTaskService {
     }
     if (task.target.runtime === 'codex') {
       if (!this.codexBridge) throw new RouteTaskError('runtime_unavailable', 'Codex app-server is unavailable.', 503);
+      await this.#recordActualRuntime(taskID, 'codex', {
+        progress: 'Codex runtime selected.',
+      });
       let computerUseLease = null;
       let beforeTurn = null;
       if (task.request.computerUseRequested) {
@@ -723,14 +807,30 @@ export class RouteTaskService {
       } finally {
         computerUseLease?.release();
       }
+      const reportedRuntime = runtimeIdentity(result?.runtime);
+      if (reportedRuntime && reportedRuntime !== 'codex') {
+        await this.#recordActualRuntime(taskID, reportedRuntime);
+      }
       await this.#update(taskID, 'runtime.completed', { progress: 'Codex returned a result.' }, (draft) => {
         draft.runtime.sessionKey = result.sessionKey || draft.runtime.sessionKey;
         draft.runtime.sessionID = result.threadID || draft.runtime.sessionID;
         draft.runtime.runID = result.turnID || draft.runtime.runID;
       });
     } else if (task.target.runtime === 'direct') {
-      if (typeof this.directTurn !== 'function') throw new RouteTaskError('runtime_unavailable', 'The selected direct model is unavailable.', 503);
+      if (typeof this.directTurn !== 'function') {
+        throw new RouteTaskError(
+          'runtime_unavailable',
+          'The selected direct runtime is unavailable; no direct runtime callback is configured.',
+          503,
+          { requestedRuntime: 'direct', actualRuntime: null },
+        );
+      }
       result = await this.directTurn({ ...task, request: { ...task.request, fullText: dispatchText } }, { signal });
+      await this.#recordActualRuntime(taskID, result?.runtime, {
+        acceptedEvent: 'runtime.completed',
+        progress: 'The direct runtime returned a result.',
+        unavailableMessage: 'The direct runtime callback did not explicitly report runtime=direct; refusing an unverified result.',
+      });
     } else {
       if (!this.remoteSessionService) throw new RouteTaskError('runtime_unavailable', 'The remote session service is unavailable.', 503);
       let session;
@@ -738,6 +838,7 @@ export class RouteTaskService {
         session = (await this.remoteSessionService.attach({
           ...(task.target.remoteSessionID ? { sessionID: task.target.remoteSessionID } : {}),
           ...(task.target.sessionKey ? { sessionKey: task.target.sessionKey } : {}),
+          runtime: task.target.runtime,
         })).session;
       } else {
         const operation = task.target.sessionMode === 'new'
@@ -763,17 +864,22 @@ export class RouteTaskService {
           })).session;
         }
       }
-      await this.#update(taskID, 'runtime.session', { progress: `${task.target.runtime} session ready.` }, (draft) => {
-        draft.runtime.sessionID = session.sessionID;
-        draft.runtime.sessionKey = session.agent?.sessionKey || null;
-        draft.target.remoteSessionID = session.sessionID;
-        draft.target.sessionKey = session.agent?.sessionKey || null;
+      const remoteRuntime = await this.#recordActualRuntime(taskID, session?.runtime, {
+        acceptedEvent: 'runtime.session',
+        progress: `${task.target.runtime} session ready.`,
+        unavailableMessage: 'The remote session did not report its runtime identity; refusing to dispatch the task.',
+        mutate: (draft) => {
+          draft.runtime.sessionID = session.sessionID;
+          draft.runtime.sessionKey = session.agent?.sessionKey || null;
+          draft.target.remoteSessionID = session.sessionID;
+          draft.target.sessionKey = session.agent?.sessionKey || null;
+        },
       });
       try {
         result = await this.remoteSessionService.runTurn({
           sessionID: session.sessionID,
           sessionKey: session.agent?.sessionKey,
-          runtime: session.runtime,
+          runtime: remoteRuntime,
           agentID: session.agent?.id,
           routeID: session.routeID,
           text: dispatchText,
@@ -789,12 +895,33 @@ export class RouteTaskService {
         if (error?.code !== 'run_superseded') throw error;
         result = await this.#followSteeredRun(taskID, error, signal);
       }
+      const reportedRuntime = runtimeIdentity(result?.runtime);
+      if (reportedRuntime && reportedRuntime !== remoteRuntime) {
+        await this.#recordActualRuntime(taskID, reportedRuntime);
+      }
       await this.#update(taskID, 'runtime.completed', { progress: `${task.target.runtime} returned a result.` }, (draft) => {
         draft.runtime.runID = result.runID || null;
       });
     }
 
     if (signal.aborted) throw signal.reason || new Error('cancelled');
+    const completedRuntime = taskRuntimeProvenance(await this.get(taskID));
+    if (!completedRuntime.actualRuntime) {
+      throw new RouteTaskError(
+        'runtime_unavailable',
+        `The requested ${completedRuntime.requestedRuntime} runtime did not establish an actual runtime identity.`,
+        503,
+        completedRuntime,
+      );
+    }
+    if (completedRuntime.actualRuntime !== completedRuntime.requestedRuntime) {
+      throw new RouteTaskError(
+        'runtime_mismatch',
+        `Requested runtime ${completedRuntime.requestedRuntime}, but the task was handled by ${completedRuntime.actualRuntime}.`,
+        502,
+        completedRuntime,
+      );
+    }
     const rawReply = String(result?.reply || result?.text || result?.outputText || '').trim();
     if (!rawReply) {
       throw new RouteTaskError(
@@ -822,13 +949,20 @@ export class RouteTaskService {
       state: artifactWarning ? 'completedWithArtifactWarning' : 'completed',
       progress: artifactWarning ? 'Task completed, but a requested file could not be admitted.' : 'Completed.',
     }, (draft) => {
-      draft.result = { text: reply, source: draft.target.runtime, artifactWarning };
+      const provenance = taskRuntimeProvenance(draft);
+      draft.result = {
+        text: reply,
+        source: provenance.actualRuntime,
+        requestedRuntime: provenance.requestedRuntime,
+        actualRuntime: provenance.actualRuntime,
+        artifactWarning,
+      };
       draft.artifactIDs = artifacts.map((artifact) => artifact.artifactID);
       draft.timestamps.completedAt = this.now();
     });
   }
 
-  async #fail(taskID, code, message) {
+  async #fail(taskID, code, message, details = null) {
     try {
       const current = await this.get(taskID);
       if (TERMINAL_STATES.has(current.state)) return current;
@@ -837,7 +971,11 @@ export class RouteTaskService {
         state: cancelled ? 'cancelled' : 'failed',
         progress: cancelled ? 'Cancelled.' : 'Failed.',
       }, (task) => {
-        task.error = { code, message: String(message || 'Task failed.').slice(0, 2_048) };
+        task.error = {
+          code,
+          message: String(message || 'Task failed.').slice(0, 2_048),
+          ...(details ? { details: clone(details) } : {}),
+        };
         task.timestamps.completedAt = this.now();
       });
       return await this.get(taskID);
@@ -886,6 +1024,7 @@ export class RouteTaskService {
   }
 
   #appendEvent(task, type, data = {}) {
+    const provenance = taskRuntimeProvenance(task);
     task.stateVersion += 1;
     const event = {
       cursor: task.nextEventCursor++,
@@ -893,7 +1032,11 @@ export class RouteTaskService {
       taskID: task.taskID,
       stateVersion: task.stateVersion,
       at: this.now(),
-      data: clone(data),
+      data: clone({
+        ...data,
+        requestedRuntime: provenance.requestedRuntime,
+        actualRuntime: provenance.actualRuntime,
+      }),
     };
     task.events.push(event);
     if (task.events.length > this.maxEventsPerTask) {
@@ -961,6 +1104,7 @@ export class RouteTaskService {
           { statePath: this.statePath },
         );
       }
+      for (const task of Object.values(parsed.tasks)) decodePersistedTask(task);
       this.state = parsed;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;

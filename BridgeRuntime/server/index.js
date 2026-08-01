@@ -125,17 +125,6 @@ const routeTaskService = new RouteTaskService({
   artifactInbox,
   inputAttachmentStore,
   computerUseSupervisor,
-  directTurn: async (task, { signal } = {}) => ({
-    reply: await generateReply(task.request.fullText, {
-      signal,
-      processing: {
-        runtime: 'direct',
-        route: task.target.route,
-        model: task.target.model || undefined,
-        thinking: task.target.reasoning || undefined,
-      },
-    }),
-  }),
 });
 const routeTaskHTTP = createRouteTaskHTTPHandler({
   service: routeTaskService,

@@ -36,14 +36,23 @@ function mockRemoteSessionService({
       return {
         session: {
           sessionID: `${runtime}-session-${agentID}`,
+          runtime,
+          routeID,
           runState: 'idle',
           agent: { id: agentID, sessionKey: `${runtime}:${routeID}:${agentID}` },
         },
       };
     },
     async startNewAgentSession(input) { return this.start(input); },
-    async attach({ sessionID }) {
-      return { session: { sessionID, runState: 'idle', agent: { id: 'main', sessionKey: `key:${sessionID}` } } };
+    async attach({ sessionID, sessionKey, runtime }) {
+      return {
+        session: {
+          sessionID: sessionID || `${runtime}-attached-session`,
+          runtime,
+          runState: 'idle',
+          agent: { id: 'main', sessionKey: sessionKey || `key:${sessionID}` },
+        },
+      };
     },
     async runTurn(input) {
       turns.push(input);
@@ -205,6 +214,171 @@ test('unknown route-task schemas fail closed without overwriting retained state'
     (error) => error instanceof RouteTaskError && error.code === 'unsupported_state_schema',
   );
   assert.equal(await readFile(statePath, 'utf8'), `${retained}\n`);
+});
+
+test('schema 1 tasks without runtime provenance still decode without claiming an actual runtime', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-legacy-runtime-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const statePath = join(directory, 'state.json');
+  await writeFile(statePath, `${JSON.stringify({
+    schemaVersion: 1,
+    tasks: {
+      legacy: {
+        schemaVersion: 1,
+        taskID: 'legacy',
+        target: { runtime: 'hermes' },
+        request: { fullText: 'Legacy task.' },
+        state: 'completed',
+        stateVersion: 1,
+        progress: { summary: 'Completed.', updatedAt: 1 },
+        result: { text: 'Legacy result.', source: 'hermes' },
+        artifactIDs: [],
+        runtime: { sessionID: 'legacy-session', sessionKey: 'legacy-key', runID: 'legacy-run' },
+        error: null,
+        timestamps: { createdAt: 1, updatedAt: 1, startedAt: 1, completedAt: 1 },
+        events: [],
+        nextEventCursor: 1,
+      },
+    },
+    receipts: {},
+  }, null, 2)}\n`);
+
+  const task = await new RouteTaskService({ statePath }).get('legacy');
+  assert.equal(task.runtime.requestedRuntime, 'hermes');
+  assert.equal(task.runtime.actualRuntime, null);
+  assert.equal(task.runtime.sessionID, 'legacy-session');
+  assert.equal(task.result.text, 'Legacy result.');
+});
+
+test('direct tasks fail unavailable without invoking the remote session service', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-direct-unavailable-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let remoteCalls = 0;
+  const remoteSessionService = new Proxy({}, {
+    get() {
+      return async () => { remoteCalls += 1; throw new Error('Direct must not reach a remote runtime.'); };
+    },
+  });
+  const service = new RouteTaskService({
+    statePath: join(directory, 'state.json'),
+    remoteSessionService,
+  });
+  const created = await service.create({
+    target: { runtime: 'direct', route: 'gpt55-direct', agentID: 'direct' },
+    text: 'Use only the direct runtime.',
+  });
+  const failed = await waitFor(async () => {
+    const task = await service.get(created.task.taskID);
+    return task.state === 'failed' ? task : null;
+  });
+
+  assert.equal(remoteCalls, 0);
+  assert.equal(failed.error.code, 'runtime_unavailable');
+  assert.match(failed.error.message, /no direct runtime callback is configured/i);
+  assert.equal(failed.runtime.requestedRuntime, 'direct');
+  assert.equal(failed.runtime.actualRuntime, null);
+});
+
+test('a direct callback without an explicit direct runtime report fails unavailable', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-direct-unverified-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const service = new RouteTaskService({
+    statePath: join(directory, 'state.json'),
+    directTurn: async () => ({ reply: 'Unverified direct result.' }),
+  });
+  const created = await service.create({
+    target: { runtime: 'direct', route: 'gpt55-direct', agentID: 'direct' },
+    text: 'Require explicit runtime identity.',
+  });
+  const failed = await waitFor(async () => {
+    const task = await service.get(created.task.taskID);
+    return task.state === 'failed' ? task : null;
+  });
+
+  assert.equal(failed.error.code, 'runtime_unavailable');
+  assert.match(failed.error.message, /did not explicitly report runtime=direct/i);
+  assert.deepEqual(failed.error.details, {
+    requestedRuntime: 'direct',
+    actualRuntime: null,
+  });
+  assert.equal(failed.runtime.actualRuntime, null);
+});
+
+test('direct tasks require an explicit matching runtime report and reject substitution', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-direct-mismatch-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let remoteCalls = 0;
+  const service = new RouteTaskService({
+    statePath: join(directory, 'state.json'),
+    remoteSessionService: {
+      async start() { remoteCalls += 1; throw new Error('Direct must not start a remote session.'); },
+      async runTurn() { remoteCalls += 1; throw new Error('Direct must not run a remote turn.'); },
+    },
+    directTurn: async () => ({ reply: 'OpenClaw result mislabeled as direct.', runtime: 'openclaw' }),
+  });
+  const created = await service.create({
+    target: { runtime: 'direct', route: 'gpt55-direct', agentID: 'direct' },
+    text: 'Do not substitute runtimes.',
+  });
+  const failed = await waitFor(async () => {
+    const task = await service.get(created.task.taskID);
+    return task.state === 'failed' ? task : null;
+  });
+
+  assert.equal(remoteCalls, 0);
+  assert.equal(failed.error.code, 'runtime_mismatch');
+  assert.deepEqual(failed.error.details, {
+    requestedRuntime: 'direct',
+    actualRuntime: 'openclaw',
+  });
+  assert.equal(failed.runtime.requestedRuntime, 'direct');
+  assert.equal(failed.runtime.actualRuntime, 'openclaw');
+  const events = (await service.events({ taskID: created.task.taskID })).events;
+  assert.ok(events.some((event) => event.type === 'runtime.mismatch'
+    && event.data.requestedRuntime === 'direct'
+    && event.data.actualRuntime === 'openclaw'));
+});
+
+test('OpenClaw, Hermes, Codex, and genuine direct callbacks preserve exact runtime provenance', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'voiceclaw-route-runtime-provenance-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const service = new RouteTaskService({
+    statePath: join(directory, 'state.json'),
+    remoteSessionService: mockRemoteSessionService(),
+    codexBridge: {
+      async runTurn(input) {
+        return { reply: 'Codex result.', threadID: 'codex-thread', turnID: 'codex-turn', sessionKey: input.sessionKey };
+      },
+    },
+    directTurn: async () => ({ reply: 'Direct result.', runtime: 'direct' }),
+  });
+  const targets = [
+    { runtime: 'openclaw', route: 'openclaw-bridge', agentID: 'main' },
+    { runtime: 'hermes', route: 'hermes-bridge', agentID: 'hermes' },
+    { runtime: 'codex', route: 'codex', agentID: 'codex' },
+    { runtime: 'direct', route: 'gpt55-direct', agentID: 'direct' },
+  ];
+  const created = await Promise.all(targets.map((target) => service.create({
+    target,
+    text: `Run with ${target.runtime}.`,
+  })));
+
+  for (let index = 0; index < targets.length; index += 1) {
+    const expected = targets[index].runtime;
+    const task = await waitFor(async () => {
+      const current = await service.get(created[index].task.taskID);
+      return current.state === 'completed' ? current : null;
+    });
+    assert.equal(task.target.runtime, expected);
+    assert.equal(task.runtime.requestedRuntime, expected);
+    assert.equal(task.runtime.actualRuntime, expected);
+    assert.equal(task.result.source, expected);
+    assert.equal(task.result.requestedRuntime, expected);
+    assert.equal(task.result.actualRuntime, expected);
+    const events = (await service.events({ taskID: task.taskID })).events;
+    assert.ok(events.some((event) => event.data.actualRuntime === expected));
+    assert.equal(events.every((event) => event.data.requestedRuntime === expected), true);
+  }
 });
 
 test('cancelling one task stops only its bound runtime session', async (t) => {
@@ -516,7 +690,7 @@ test('verified input paths and task purpose reach OpenClaw, Hermes, Codex, and d
     },
     directTurn: async (task) => {
       directTurns.push(task.request.fullText);
-      return { reply: 'Direct result' };
+      return { reply: 'Direct result', runtime: 'direct' };
     },
   });
 
@@ -640,6 +814,7 @@ test('a stale fixed-label admission is retried once with a fresh remote session 
       return {
         session: {
           sessionID: 'fresh-session',
+          runtime: 'openclaw',
           runState: 'idle',
           agent: { id: input.agentID, sessionKey: 'agent:julian:fresh-session' },
         },
@@ -721,6 +896,7 @@ test('a steering replacement completes the original durable task instead of fail
       return {
         session: {
           sessionID: `${runtime}-session-${agentID}`,
+          runtime,
           runState: 'idle',
           agent: { id: agentID, sessionKey: `${runtime}:${routeID}:${agentID}` },
         },
@@ -795,6 +971,7 @@ test('cancelling a task while its steering replacement runs remains terminally c
       return {
         session: {
           sessionID: `${runtime}-session-${agentID}`,
+          runtime,
           runState: 'idle',
           agent: { id: agentID, sessionKey: `${runtime}:${routeID}:${agentID}` },
         },

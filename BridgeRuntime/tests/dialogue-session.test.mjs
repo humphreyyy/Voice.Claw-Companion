@@ -119,6 +119,30 @@ test('explicit direct route identifiers preserve raw no-OpenClaw execution', () 
   }
 });
 
+test('an explicit direct runtime fails closed before any OpenClaw gateway call', async () => {
+  let gatewayCalls = 0;
+  __dialogueTestHooks.setCallGatewayForTest(async () => {
+    gatewayCalls += 1;
+    throw new Error('Direct runtime must not reach OpenClaw.');
+  });
+
+  await assert.rejects(
+    generateReply('Handle this directly.', {
+      processing: { runtime: 'direct', agent: 'gpt55-direct' },
+    }),
+    (error) => {
+      assert.equal(error.code, 'runtime_unavailable');
+      assert.match(error.message, /refusing to substitute OpenClaw/i);
+      assert.deepEqual(error.details, {
+        requestedRuntime: 'direct',
+        actualRuntime: null,
+      });
+      return true;
+    },
+  );
+  assert.equal(gatewayCalls, 0);
+});
+
 test('OpenClaw dialogue no longer exposes private runtime module lookup', () => {
   assert.equal(__dialogueTestHooks.openClawGatewayModuleCandidates, undefined);
 });
