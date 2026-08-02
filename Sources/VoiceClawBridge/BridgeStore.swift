@@ -1426,9 +1426,7 @@ final class BridgeStore: ObservableObject {
             updated["WatchPublicBridgeURL"] = trimmedWatchBridgeURL
         }
 
-        guard let data = try? JSONSerialization.data(withJSONObject: updated, options: [.prettyPrinted]),
-              let json = String(data: data, encoding: .utf8)
-        else { return }
+        guard let json = try? VoiceClawSetupJSONFormatter.string(from: updated) else { return }
 
         pairingJSON = json
         pairingPreview = Self.redactedPairingJSON(json)
@@ -2309,7 +2307,7 @@ final class BridgeStore: ObservableObject {
         return components.url
     }
 
-    private static func redactedPairingJSON(_ json: String) -> String {
+    nonisolated static func redactedPairingJSON(_ json: String) -> String {
         guard let data = json.data(using: .utf8),
               var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return json }
@@ -2330,11 +2328,7 @@ final class BridgeStore: ObservableObject {
             object["CerebrasAPIKey"] = "••••••••••••\(key.suffix(4))"
         }
 
-        guard let redacted = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]),
-              let string = String(data: redacted, encoding: .utf8)
-        else { return json }
-
-        return string
+        return (try? VoiceClawSetupJSONFormatter.string(from: object)) ?? json
     }
 }
 

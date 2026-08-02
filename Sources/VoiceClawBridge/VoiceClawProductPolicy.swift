@@ -18,6 +18,15 @@ enum VoiceClawProductSurfacePolicy {
     }
 }
 
+enum VoiceClawSetupJSONFormatter {
+    static func string(from object: Any) throws -> String {
+        let data = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
 enum VoiceClawSetupContract {
     static let schemaVersion = 3
     static let minimumReaderVersion = 2
