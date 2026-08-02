@@ -18,6 +18,7 @@ import {
   selectCodexAppServerExecutable,
 } from './bin-paths.js';
 import { attachCodexRealtimeRelaySocket, CodexAppServerBridge, CodexAppServerClient } from './codex-app-server.js';
+import { attachGPTLiveWatchRelaySocket } from './gpt-live-watch-relay.js';
 import { ComputerUseSupervisor } from './computer-use-supervisor.js';
 import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
@@ -7566,12 +7567,18 @@ httpServer.timeout = 0;
 
 const WS_PATH = `${BASE_PATH}/ws` || '/ws';
 const CODEX_REALTIME_WS_PATH = `${BASE_PATH}/realtime/codex/ws`;
+const GPT_LIVE_WATCH_RELAY_WS_PATH = `${BASE_PATH}/realtime/gpt-live/watch-relay`;
 const wss = new WebSocketServer({
   noServer: true,
   maxPayload: COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES,
   perMessageDeflate: false,
 });
 const codexRealtimeWss = new WebSocketServer({
+  noServer: true,
+  maxPayload: COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES,
+  perMessageDeflate: false,
+});
+const gptLiveWatchRelayWss = new WebSocketServer({
   noServer: true,
   maxPayload: COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES,
   perMessageDeflate: false,
@@ -7623,7 +7630,8 @@ httpServer.on('upgrade', (req, socket, head) => {
   const requestPath = webSocketRequestPath(req);
   const isCompanionVoiceSocket = requestPath === WS_PATH;
   const isCodexRealtimeSocket = requestPath === CODEX_REALTIME_WS_PATH;
-  if (!isCompanionVoiceSocket && !isCodexRealtimeSocket) {
+  const isGPTLiveWatchRelaySocket = requestPath === GPT_LIVE_WATCH_RELAY_WS_PATH;
+  if (!isCompanionVoiceSocket && !isCodexRealtimeSocket && !isGPTLiveWatchRelaySocket) {
     rejectWebSocketUpgrade(socket, 404, 'Not Found');
     return;
   }
@@ -7637,12 +7645,16 @@ httpServer.on('upgrade', (req, socket, head) => {
   // The general Companion socket supports authenticated first-message setup for
   // legacy clients. The Codex media relay requires authentication at upgrade so
   // no app-server process or durable thread is allocated before authorization.
-  if (isCodexRealtimeSocket && !authenticated) {
+  if ((isCodexRealtimeSocket || isGPTLiveWatchRelaySocket) && !authenticated) {
     rejectWebSocketUpgrade(socket, 401, 'Unauthorized');
     return;
   }
 
-  const targetServer = isCodexRealtimeSocket ? codexRealtimeWss : wss;
+  const targetServer = isCodexRealtimeSocket
+    ? codexRealtimeWss
+    : isGPTLiveWatchRelaySocket
+      ? gptLiveWatchRelayWss
+      : wss;
   targetServer.handleUpgrade(req, socket, head, (ws) => {
     ws.voiceClawUpgradeAuthenticated = authenticated;
     ws.voiceClawAuthenticatedClientIdentity = authenticated
@@ -9812,8 +9824,19 @@ codexRealtimeWss.on('connection', (ws) => {
   attachCodexRealtimeRelaySocket({ ws, bridge: codexAppServerBridge });
 });
 
+gptLiveWatchRelayWss.on('connection', (ws, req) => {
+  ws.isAlive = true;
+  ws.on('pong', markWebSocketAlive);
+  attachGPTLiveWatchRelaySocket({
+    ws,
+    req,
+    resolveOAuthBearer: () => resolveOpenAIChatGPTOAuthBearer(null),
+    logger: console,
+  });
+});
+
 const wsHeartbeatTimer = setInterval(() => {
-  for (const ws of [...wss.clients, ...codexRealtimeWss.clients]) {
+  for (const ws of [...wss.clients, ...codexRealtimeWss.clients, ...gptLiveWatchRelayWss.clients]) {
     if (ws.isAlive === false) {
       console.warn('[ws] client heartbeat missed; terminating stale socket');
       ws.terminate();
@@ -9826,6 +9849,7 @@ const wsHeartbeatTimer = setInterval(() => {
 wsHeartbeatTimer.unref?.();
 wss.on('close', () => clearInterval(wsHeartbeatTimer));
 codexRealtimeWss.on('close', () => clearInterval(wsHeartbeatTimer));
+gptLiveWatchRelayWss.on('close', () => clearInterval(wsHeartbeatTimer));
 
 // ── Pipeline: audio → ASR → dialogue → TTS → stream back ───────────
 
