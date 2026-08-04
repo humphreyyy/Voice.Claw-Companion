@@ -10,10 +10,10 @@ changes, or removes a Serve mapping. Configure or pair Tailscale yourself.
 
 ## Install
 
-Build or download `voiceclaw-companion_0.1.4_amd64.deb`, then install it:
+Build or download `voiceclaw-companion_0.1.6_amd64.deb`, then install it:
 
 ```sh
-sudo dpkg -i voiceclaw-companion_0.1.4_amd64.deb
+sudo dpkg -i voiceclaw-companion_0.1.6_amd64.deb
 ```
 
 Launch **VoiceClaw Companion** from the desktop menu or run:
