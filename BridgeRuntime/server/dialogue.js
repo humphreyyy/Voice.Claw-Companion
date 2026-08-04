@@ -1501,6 +1501,22 @@ export function getProcessingOptions() {
   };
 }
 
+function normalizeDialogueRuntime(input = {}) {
+  const runtime = String(input.runtime || input.agentRuntime || '').trim().toLowerCase();
+  if (!runtime || runtime === 'openclaw') return 'openclaw';
+  if (runtime === 'hermes') return 'hermes';
+  const error = new Error(
+    runtime === 'direct'
+      ? 'The direct runtime is unavailable in dialogue reply generation; refusing to substitute OpenClaw.'
+      : `The ${runtime} runtime is unavailable in dialogue reply generation; refusing to substitute OpenClaw.`,
+  );
+  error.name = 'DialogueRuntimeError';
+  error.code = 'runtime_unavailable';
+  error.status = 503;
+  error.details = { requestedRuntime: runtime, actualRuntime: null };
+  throw error;
+}
+
 export function resolveProcessingConfig(input = {}) {
   pruneSessionState();
   const routeId = normalizeRoute(input.agent);
@@ -1546,7 +1562,7 @@ export function resolveProcessingConfig(input = {}) {
       routeDerivedId: sessionTarget.routeDerivedSessionId,
     },
     requestId: String(input.requestId || '').trim(),
-    runtime: String(input.runtime || input.agentRuntime || '').trim().toLowerCase() === 'hermes' ? 'hermes' : 'openclaw',
+    runtime: normalizeDialogueRuntime(input),
     label: `${route.label} · thinking ${thinking} · fast on`,
   };
 }

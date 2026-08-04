@@ -18,6 +18,10 @@ import {
   selectCodexAppServerExecutable,
 } from './bin-paths.js';
 import { attachCodexRealtimeRelaySocket, CodexAppServerBridge, CodexAppServerClient } from './codex-app-server.js';
+import {
+  attachGPTLiveWatchRelaySocket,
+  GPTLiveWatchRelaySessionRegistry,
+} from './gpt-live-watch-relay.js';
 import { ComputerUseSupervisor } from './computer-use-supervisor.js';
 import { transcribe } from './asr.js';
 import { synthesize, synthesizeStream, getVoiceOptions, resolveVoiceConfig, getTtsSpeedOptions, getTtsStatus } from './tts.js';
@@ -126,17 +130,6 @@ const routeTaskService = new RouteTaskService({
   artifactInbox,
   inputAttachmentStore,
   computerUseSupervisor,
-  directTurn: async (task, { signal } = {}) => ({
-    reply: await generateReply(task.request.fullText, {
-      signal,
-      processing: {
-        runtime: 'direct',
-        route: task.target.route,
-        model: task.target.model || undefined,
-        thinking: task.target.reasoning || undefined,
-      },
-    }),
-  }),
 });
 const routeTaskHTTP = createRouteTaskHTTPHandler({
   service: routeTaskService,
@@ -271,6 +264,7 @@ const COMPANION_VOICE_HF_KEEPHOT = !['0', 'false', 'off', 'no'].includes(String(
 const COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS = Math.max(120_000, Number.parseInt(process.env.COMPANION_VOICE_HF_KEEPHOT_INTERVAL_MS || '300000', 10));
 const COMPANION_VOICE_HF_BOOT_BURSTS = Math.min(1, Math.max(0, Number.parseInt(process.env.COMPANION_VOICE_HF_BOOT_BURSTS || '0', 10)));
 const COMPANION_VOICE_WS_HEARTBEAT_MS = Math.max(5_000, Number.parseInt(process.env.COMPANION_VOICE_WS_HEARTBEAT_MS || '15000', 10));
+const GPT_LIVE_WATCH_RELAY_KEEPALIVE_MS = Math.max(5_000, Number.parseInt(process.env.GPT_LIVE_WATCH_RELAY_KEEPALIVE_MS || '15000', 10));
 const COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES, 4_000_000, 64_000, 16_000_000));
 const COMPANION_VOICE_WS_AUTH_DEADLINE_MS = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_AUTH_DEADLINE_MS, 3_000, 500, 10_000));
 const COMPANION_VOICE_WS_AUTH_MAX_BYTES = Math.round(boundedNumber(process.env.COMPANION_VOICE_WS_AUTH_MAX_BYTES, 64_000, 1_024, 256_000));
@@ -6188,6 +6182,26 @@ const httpServer = createServer(async (req, res) => {
     await prepareCredentialBoundRequestBody(req, urlPath);
 
     if (req.method === 'GET'
+        && urlPath === `${BASE_PATH}/realtime/gpt-live/watch-relay/status`) {
+      const relaySessionID = String(req.headers['x-voiceclaw-live-relay-session'] || '').trim();
+      const relay = gptLiveWatchRelayRegistry.status({
+        clientIdentity: authenticatedBridgeClientIdentityFromRequest(req),
+        relaySessionID,
+      });
+      const statusCode = relay.state === 'expired'
+        ? 410
+        : relay.state === 'missing'
+          ? 404
+          : 200;
+      res.writeHead(statusCode, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      });
+      res.end(JSON.stringify({ ok: statusCode === 200, relay }));
+      return;
+    }
+
+    if (req.method === 'GET'
         && urlPath === `${BASE_PATH}/realtime/voice-remote-sessions/agents`) {
       const requestURL = new URL(req.url, `http://localhost:${PORT}`);
       const runtime = requestURL.searchParams.get('runtime') || 'openclaw';
@@ -7578,6 +7592,7 @@ httpServer.timeout = 0;
 
 const WS_PATH = `${BASE_PATH}/ws` || '/ws';
 const CODEX_REALTIME_WS_PATH = `${BASE_PATH}/realtime/codex/ws`;
+const GPT_LIVE_WATCH_RELAY_WS_PATH = `${BASE_PATH}/realtime/gpt-live/watch-relay`;
 const wss = new WebSocketServer({
   noServer: true,
   maxPayload: COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES,
@@ -7588,6 +7603,12 @@ const codexRealtimeWss = new WebSocketServer({
   maxPayload: COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES,
   perMessageDeflate: false,
 });
+const gptLiveWatchRelayWss = new WebSocketServer({
+  noServer: true,
+  maxPayload: COMPANION_VOICE_WS_MAX_PAYLOAD_BYTES,
+  perMessageDeflate: false,
+});
+const gptLiveWatchRelayRegistry = new GPTLiveWatchRelaySessionRegistry({ logger: console });
 
 function rejectWebSocketUpgrade(socket, statusCode, statusText) {
   if (!socket?.writable) return;
@@ -7635,7 +7656,8 @@ httpServer.on('upgrade', (req, socket, head) => {
   const requestPath = webSocketRequestPath(req);
   const isCompanionVoiceSocket = requestPath === WS_PATH;
   const isCodexRealtimeSocket = requestPath === CODEX_REALTIME_WS_PATH;
-  if (!isCompanionVoiceSocket && !isCodexRealtimeSocket) {
+  const isGPTLiveWatchRelaySocket = requestPath === GPT_LIVE_WATCH_RELAY_WS_PATH;
+  if (!isCompanionVoiceSocket && !isCodexRealtimeSocket && !isGPTLiveWatchRelaySocket) {
     rejectWebSocketUpgrade(socket, 404, 'Not Found');
     return;
   }
@@ -7649,12 +7671,16 @@ httpServer.on('upgrade', (req, socket, head) => {
   // The general Companion socket supports authenticated first-message setup for
   // legacy clients. The Codex media relay requires authentication at upgrade so
   // no app-server process or durable thread is allocated before authorization.
-  if (isCodexRealtimeSocket && !authenticated) {
+  if ((isCodexRealtimeSocket || isGPTLiveWatchRelaySocket) && !authenticated) {
     rejectWebSocketUpgrade(socket, 401, 'Unauthorized');
     return;
   }
 
-  const targetServer = isCodexRealtimeSocket ? codexRealtimeWss : wss;
+  const targetServer = isCodexRealtimeSocket
+    ? codexRealtimeWss
+    : isGPTLiveWatchRelaySocket
+      ? gptLiveWatchRelayWss
+      : wss;
   targetServer.handleUpgrade(req, socket, head, (ws) => {
     ws.voiceClawUpgradeAuthenticated = authenticated;
     ws.voiceClawAuthenticatedClientIdentity = authenticated
@@ -9824,6 +9850,23 @@ codexRealtimeWss.on('connection', (ws) => {
   attachCodexRealtimeRelaySocket({ ws, bridge: codexAppServerBridge });
 });
 
+gptLiveWatchRelayWss.on('connection', (ws, req) => {
+  ws.isAlive = true;
+  ws.voiceClawLastPongAt = Date.now();
+  ws.on('pong', () => {
+    ws.isAlive = true;
+    ws.voiceClawLastPongAt = Date.now();
+  });
+  attachGPTLiveWatchRelaySocket({
+    ws,
+    req,
+    registry: gptLiveWatchRelayRegistry,
+    clientIdentity: ws.voiceClawAuthenticatedClientIdentity,
+    resolveOAuthBearer: () => resolveOpenAIChatGPTOAuthBearer(null),
+    logger: console,
+  });
+});
+
 const wsHeartbeatTimer = setInterval(() => {
   for (const ws of [...wss.clients, ...codexRealtimeWss.clients]) {
     if (ws.isAlive === false) {
@@ -9838,6 +9881,26 @@ const wsHeartbeatTimer = setInterval(() => {
 wsHeartbeatTimer.unref?.();
 wss.on('close', () => clearInterval(wsHeartbeatTimer));
 codexRealtimeWss.on('close', () => clearInterval(wsHeartbeatTimer));
+
+const gptLiveWatchRelayKeepaliveTimer = setInterval(() => {
+  const now = Date.now();
+  for (const ws of gptLiveWatchRelayWss.clients) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (ws.isAlive === false) {
+      const ageMS = Math.max(0, now - Number(ws.voiceClawLastPongAt || now));
+      console.warn(`[gpt-live-watch-relay] Watch heartbeat remains unanswered ageMS=${ageMS}; retaining the logical session and allowing transport recovery`);
+    }
+    ws.isAlive = false;
+    try { ws.ping(); } catch (error) {
+      console.warn(`[gpt-live-watch-relay] non-terminal Watch ping failed: ${error?.message || String(error)}`);
+    }
+  }
+}, GPT_LIVE_WATCH_RELAY_KEEPALIVE_MS);
+gptLiveWatchRelayKeepaliveTimer.unref?.();
+gptLiveWatchRelayWss.on('close', () => {
+  clearInterval(gptLiveWatchRelayKeepaliveTimer);
+  gptLiveWatchRelayRegistry.closeAll('websocket-server-close');
+});
 
 // ── Pipeline: audio → ASR → dialogue → TTS → stream back ───────────
 

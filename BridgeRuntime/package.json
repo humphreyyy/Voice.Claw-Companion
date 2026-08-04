@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "check": "node --check server/index.js && node --check server/openclaw-gateway.js && node --check server/hf-realtime-sidecar.js && node --check server/asr.js && node --check server/tts.js && node --check server/dialogue.js && node --check server/realtime-auth.js && node --check server/codex-app-server.js && node --check server/computer-use-supervisor.js && node --check server/prompt-contract.js && node --check server/route-tasks.js && node --check server/artifact-inbox.js && node --check server/input-attachments.js && node --check scripts/voiceclaw-bridge-setup.mjs && node --check scripts/check-runtime-imports.mjs && node --check ../scripts/smoke_companion_voice_hf_realtime.mjs && node scripts/check-runtime-imports.mjs && node scripts/check-realtime-prompts.mjs && node --test tests/*.test.mjs",
+    "check": "node --check server/index.js && node --check server/openclaw-gateway.js && node --check server/hf-realtime-sidecar.js && node --check server/asr.js && node --check server/tts.js && node --check server/dialogue.js && node --check server/realtime-auth.js && node --check server/codex-app-server.js && node --check server/computer-use-supervisor.js && node --check server/gpt-live-watch-native-peer.js && node --check server/gpt-live-watch-native-worker.js && node --check server/gpt-live-watch-peer.js && node --check server/gpt-live-watch-relay.js && node --check server/prompt-contract.js && node --check server/route-tasks.js && node --check server/artifact-inbox.js && node --check scripts/voiceclaw-bridge-setup.mjs && node --check scripts/check-runtime-imports.mjs && node --check ../scripts/smoke_companion_voice_hf_realtime.mjs && node scripts/check-runtime-imports.mjs && node scripts/check-realtime-prompts.mjs && node --test tests/*.test.mjs",
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@openclaw/gateway-client": "2026.7.2-beta.4",
     "@openclaw/gateway-protocol": "2026.7.2-beta.4",
+    "@roamhq/wrtc": "0.10.0",
     "json5": "^2.2.3",
     "ws": "^8.21.0"
   }

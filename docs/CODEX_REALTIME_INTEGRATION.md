@@ -92,7 +92,9 @@ Companion discovers the signed Computer Use helper beside the selected Codex
 installation, validates its OpenAI signature, and launches only that helper as
 its own supervised child with `SKY_CUA_SERVICE_NATIVE_PIPE_PATH` pointing to a
 process-private socket. The Codex app-server and its configured `node_repl`
-inherit the matching `SKY_CUA_NATIVE_PIPE_PATH`.
+inherit both `SKY_CUA_NATIVE_PIPE_PATH` and
+`SKY_CUA_SERVICE_NATIVE_PIPE_PATH`, each pointing to that same private socket,
+so released Computer Use clients using either environment name stay isolated.
 
 Readiness has two distinct stages:
 

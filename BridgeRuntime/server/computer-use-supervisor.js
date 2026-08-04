@@ -397,6 +397,7 @@ export class ComputerUseSupervisor {
   environment() {
     return {
       SKY_CUA_NATIVE_PIPE_PATH: this.socketPath,
+      SKY_CUA_SERVICE_NATIVE_PIPE_PATH: this.socketPath,
     };
   }
 

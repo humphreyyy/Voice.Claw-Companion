@@ -194,13 +194,25 @@ async function resolveNodePath() {
   ];
 
   for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) return candidate;
+    if (candidate && existsSync(candidate) && await nodeIsSupported(candidate)) return candidate;
   }
 
   const { stdout } = await execFileAsync('/usr/bin/env', ['which', 'node']);
   const resolved = stdout.trim();
-  if (!resolved) throw new Error('Node.js was not found.');
+  if (!resolved || !await nodeIsSupported(resolved)) {
+    throw new Error('Node.js 22 or newer was not found. Install a current Node.js release and try again.');
+  }
   return resolved;
+}
+
+async function nodeIsSupported(executable) {
+  try {
+    const { stdout } = await execFileAsync(executable, ['--version'], { timeout: 3000 });
+    const match = String(stdout || '').trim().match(/^v?(\d+)(?:\.|$)/);
+    return Number(match?.[1] || 0) >= 22;
+  } catch {
+    return false;
+  }
 }
 
 async function resolveOptionalExecutable(name, explicitPath = '') {

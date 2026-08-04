@@ -352,6 +352,9 @@ print(f"Generated runtime manifest {manifest['runtimeHash']} for {version} ({bui
 PY
 
 if security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
+  while IFS= read -r -d '' native_module; do
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$native_module"
+  done < <(find "$RUNTIME_DIR/node_modules" -type f -name '*.node' -print0)
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
   codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR"
 elif [[ "$RELEASE_MODE" == "local" ]]; then

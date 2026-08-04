@@ -1451,21 +1451,25 @@ private struct PairingPanel: View {
                         .font(.headline)
                         .textSelection(.enabled)
 
-                    Text(store.pairingPreview.isEmpty ? "No pairing payload yet." : store.pairingPreview)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(9)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .background(
-                            VoiceClawCompanionTheme.background.opacity(0.72),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(VoiceClawCompanionTheme.line, lineWidth: 1)
-                        }
+                    ScrollView([.horizontal, .vertical]) {
+                        Text(store.pairingPreview.isEmpty ? "No pairing payload yet." : store.pairingPreview)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: true, vertical: true)
+                            .padding(12)
+                    }
+                    .scrollIndicators(.visible)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 180, alignment: .topLeading)
+                    .background(
+                        VoiceClawCompanionTheme.background.opacity(0.72),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(VoiceClawCompanionTheme.line, lineWidth: 1)
+                    }
 
                     HStack(spacing: 10) {
                         Button {
