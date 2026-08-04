@@ -22,7 +22,12 @@ import { ConfigStore } from './linux/config-store';
 import { linuxPaths } from './linux/paths';
 import { SystemdService } from './linux/systemd';
 import { TailscaleInspector } from './linux/tailscale';
-import { companionWindowOptions, isElectronSmokeTest } from './window-options';
+import { preloadBundlePath } from './preload-path';
+import {
+  companionWindowOptions,
+  developmentRendererURL,
+  isElectronSmokeTest,
+} from './window-options';
 
 const moduleDirectory = fileURLToPath(new URL('.', import.meta.url));
 const APPROVED_WEB_HOSTS = new Set([
@@ -119,9 +124,14 @@ function createController(): CompanionController {
 }
 
 function createMainWindow(controller: CompanionController): BrowserWindow {
-  const preloadPath = join(moduleDirectory, '..', 'preload', 'index.mjs');
+  const preloadPath = preloadBundlePath(moduleDirectory);
   const window = new BrowserWindow(companionWindowOptions(preloadPath));
-  const rendererURL = process.env.ELECTRON_RENDERER_URL;
+  const smokeTest = isElectronSmokeTest(process.argv);
+  const rendererURL = developmentRendererURL({
+    environmentURL: process.env.ELECTRON_RENDERER_URL,
+    isPackaged: app.isPackaged,
+    isSmokeTest: smokeTest,
+  });
   if (rendererURL) {
     void window.loadURL(rendererURL);
   } else {
@@ -135,20 +145,86 @@ function createMainWindow(controller: CompanionController): BrowserWindow {
     }
   });
   window.once('ready-to-show', () => {
-    if (!isElectronSmokeTest(process.argv)) {
+    if (!smokeTest) {
       window.show();
     }
   });
 
-  if (isElectronSmokeTest(process.argv)) {
+  if (smokeTest) {
     const smokeTimeout = setTimeout(() => {
       console.error('VOICECLAW_ELECTRON_SMOKE_TIMEOUT');
       app.exit(1);
     }, 15_000);
-    window.once('ready-to-show', () => {
-      clearTimeout(smokeTimeout);
-      console.log('VOICECLAW_ELECTRON_SMOKE_READY');
-      app.exit(0);
+    window.webContents.once('did-finish-load', () => {
+      void window.webContents.executeJavaScript(`
+        (async () => {
+          const api = window.voiceclaw;
+          if (!api || typeof api.getSnapshot !== 'function') {
+            return {
+              desktopAPIReady: false,
+              pairingScreenReady: false,
+              detail: 'Desktop API is unavailable.',
+            };
+          }
+          const snapshot = await api.getSnapshot();
+          const desktopAPIReady = Boolean(snapshot && snapshot.config && snapshot.service);
+          const waitFor = async (findValue) => {
+            const deadline = Date.now() + 3_000;
+            while (Date.now() < deadline) {
+              const value = findValue();
+              if (value) return value;
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            return undefined;
+          };
+          const pairingButton = await waitFor(() =>
+            Array.from(document.querySelectorAll('button'))
+              .find((button) => button.textContent?.includes('Pair Phone'))
+          );
+          pairingButton?.click();
+          const pairingHeading = await waitFor(() =>
+            Array.from(document.querySelectorAll('h1'))
+              .find((heading) => heading.textContent === 'Pair Phone')
+          );
+          const pairingScreenReady = Boolean(pairingHeading);
+          return {
+            desktopAPIReady,
+            pairingScreenReady,
+            detail: JSON.stringify({
+              pairingButtonFound: Boolean(pairingButton),
+              buttons: Array.from(document.querySelectorAll('button'))
+                .map((button) => button.textContent?.trim()).filter(Boolean),
+              headings: Array.from(document.querySelectorAll('h1'))
+                .map((heading) => heading.textContent?.trim()).filter(Boolean),
+              body: document.body.innerText.slice(0, 500),
+            }),
+          };
+        })()
+      `).then((result: {
+        desktopAPIReady?: boolean;
+        pairingScreenReady?: boolean;
+        detail?: string;
+      }) => {
+        clearTimeout(smokeTimeout);
+        if (!result.desktopAPIReady) {
+          console.error('VOICECLAW_ELECTRON_SMOKE_PRELOAD_MISSING');
+          app.exit(1);
+          return;
+        }
+        if (!result.pairingScreenReady) {
+          console.error(`VOICECLAW_ELECTRON_SMOKE_PAIRING_BLANK: ${result.detail ?? ''}`);
+          app.exit(1);
+          return;
+        }
+        console.log('VOICECLAW_ELECTRON_SMOKE_READY');
+        app.exit(0);
+      }).catch((error: unknown) => {
+        clearTimeout(smokeTimeout);
+        console.error(
+          `VOICECLAW_ELECTRON_SMOKE_FAILED: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        app.exit(1);
+      });
     });
   } else {
     createTray(controller, window);

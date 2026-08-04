@@ -23,3 +23,16 @@ export function companionWindowOptions(
 export function isElectronSmokeTest(argv: readonly string[]): boolean {
   return argv.includes('--smoke-test');
 }
+
+export function developmentRendererURL({
+  environmentURL,
+  isPackaged,
+  isSmokeTest,
+}: {
+  environmentURL?: string;
+  isPackaged: boolean;
+  isSmokeTest: boolean;
+}): string | undefined {
+  if (isPackaged || isSmokeTest) return undefined;
+  return environmentURL || undefined;
+}

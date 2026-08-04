@@ -8,7 +8,7 @@ import { TailscaleScreen } from './screens/TailscaleScreen';
 import { TasksFilesScreen } from './screens/TasksFilesScreen';
 import { useCompanion } from './use-companion';
 
-export function App({ api = window.voiceclaw }: { api?: VoiceClawDesktopAPI }) {
+function CompanionApp({ api }: { api: VoiceClawDesktopAPI }) {
   const companion = useCompanion(api);
   const screen = (() => {
     switch (companion.selectedSection) {
@@ -60,4 +60,23 @@ export function App({ api = window.voiceclaw }: { api?: VoiceClawDesktopAPI }) {
       {screen}
     </AppShell>
   );
+}
+
+export function App({ api }: { api?: VoiceClawDesktopAPI }) {
+  const desktopAPI = api ?? window.voiceclaw;
+  if (!desktopAPI) {
+    return (
+      <main className="startup-failure">
+        <section className="panel">
+          <span className="eyebrow">Desktop integration unavailable</span>
+          <h1>VoiceClaw could not start</h1>
+          <div className="error-banner" role="alert">
+            VoiceClaw desktop integration did not load. Quit the app and install
+            the latest Linux package before trying again.
+          </div>
+        </section>
+      </main>
+    );
+  }
+  return <CompanionApp api={desktopAPI} />;
 }

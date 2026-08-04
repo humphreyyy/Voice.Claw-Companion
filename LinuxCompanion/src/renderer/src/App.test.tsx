@@ -74,6 +74,19 @@ function apiFor(snapshot = snapshotWithWarnings()): VoiceClawDesktopAPI {
 }
 
 describe('App', () => {
+  it('shows an actionable error instead of crashing when the preload API is unavailable', () => {
+    const originalAPI = window.voiceclaw;
+    window.voiceclaw = undefined;
+    try {
+      render(<App />);
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'VoiceClaw desktop integration did not load',
+      );
+    } finally {
+      window.voiceclaw = originalAPI;
+    }
+  });
+
   it('renders all six navigation destinations', async () => {
     render(<App api={apiFor()} />);
     for (const label of [
