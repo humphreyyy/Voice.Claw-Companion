@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
+import {
+  REALTIME_AUTH_MODE_API_KEY,
+  REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
+  selectRealtimeSidebandBearer,
+} from '../server/realtime-auth.js';
+
 const source = async (path) => await readFile(new URL(path, import.meta.url), 'utf8');
 
 test('OAuth import and refresh never mutate OpenClaw auth stores', async () => {
@@ -17,6 +23,21 @@ test('OAuth import and refresh never mutate OpenClaw auth stores', async () => {
   }
   assert.match(auth, /persistOpenAIChatGPTOAuthBridgeConfig\(refreshed\)/);
   assert.match(auth, /OpenClaw stores are import sources only/);
+});
+
+test('OAuth Realtime sideband uses the scoped client secret, not the OAuth access token', () => {
+  const oauthAccessToken = 'oauth-access-token-must-not-join-the-call';
+  const clientSecret = 'ek_scoped_realtime_client_secret';
+  assert.equal(selectRealtimeSidebandBearer({
+    authMode: REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
+    clientSecret,
+    apiKey: oauthAccessToken,
+  }), clientSecret);
+  assert.equal(selectRealtimeSidebandBearer({
+    authMode: REALTIME_AUTH_MODE_API_KEY,
+    clientSecret,
+    apiKey: 'sk-project-api-key',
+  }), 'sk-project-api-key');
 });
 
 test('dependency installation writes VoiceClaw-owned models, not OpenClaw installation data', async () => {

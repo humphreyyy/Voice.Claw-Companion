@@ -61,6 +61,16 @@ export function parseRealtimeBoolean(value, fallback = false) {
   return fallback;
 }
 
+export function selectRealtimeSidebandBearer({
+  authMode,
+  clientSecret = '',
+  apiKey = '',
+} = {}) {
+  return normalizeRealtimeAuthMode(authMode) === REALTIME_AUTH_MODE_OPENCLAW_OAUTH
+    ? nonEmptyString(clientSecret)
+    : nonEmptyString(apiKey);
+}
+
 function nonEmptyString(value = '') {
   return String(value || '').trim();
 }
@@ -480,7 +490,10 @@ export async function resolveRealtimeBearer({ req, session, apiKey, credentialDe
     }
     return {
       bearer: apiKey,
-      sidebandBearer: apiKey,
+      sidebandBearer: selectRealtimeSidebandBearer({
+        authMode: REALTIME_AUTH_MODE_API_KEY,
+        apiKey,
+      }),
       source: REALTIME_AUTH_MODE_API_KEY,
       preferences,
     };
@@ -488,12 +501,19 @@ export async function resolveRealtimeBearer({ req, session, apiKey, credentialDe
 
   try {
     let clientSecret = null;
-    const oauthBearer = await resolveOpenClawOAuthBearer(async (authToken) => {
+    await resolveOpenClawOAuthBearer(async (authToken) => {
       clientSecret = await createRealtimeClientSecret({ authToken, session });
     }, {}, credentialDelegation);
     return {
       bearer: clientSecret.value,
-      sidebandBearer: preferences.fallbackToAPIKey && apiKey ? apiKey : oauthBearer,
+      // Sideband control joins the exact call created with this scoped client
+      // secret. The long-lived ChatGPT OAuth token can mint the secret, but it
+      // cannot join the resulting call_id and is rejected as call_id_not_found.
+      sidebandBearer: selectRealtimeSidebandBearer({
+        authMode: REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
+        clientSecret: clientSecret.value,
+        apiKey,
+      }),
       source: credentialDelegation ? 'paired-phone-delegation' : REALTIME_AUTH_MODE_OPENCLAW_OAUTH,
       expiresAt: clientSecret.expiresAt,
       preferences,
@@ -502,7 +522,10 @@ export async function resolveRealtimeBearer({ req, session, apiKey, credentialDe
     if (preferences.fallbackToAPIKey && apiKey) {
       return {
         bearer: apiKey,
-        sidebandBearer: apiKey,
+        sidebandBearer: selectRealtimeSidebandBearer({
+          authMode: REALTIME_AUTH_MODE_API_KEY,
+          apiKey,
+        }),
         source: 'api-key-fallback',
         oauthError: error?.message || String(error),
         preferences,
