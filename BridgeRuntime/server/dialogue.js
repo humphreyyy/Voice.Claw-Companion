@@ -6,7 +6,7 @@ import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { callOpenClawGateway } from './openclaw-gateway.js';
 
@@ -1082,23 +1082,39 @@ function runHermesChat(message, cfg, { signal, timeoutMs = MIN_OPENCLAW_REPLY_TI
   });
 }
 
-function hermesPythonContext() {
-  const configured = String(process.env.HERMES_PYTHON || '').trim();
-  const fallbackProjectRoot = join(HERMES_HOME, 'hermes-agent');
+function hermesPythonContext({
+  configuredPython = process.env.HERMES_PYTHON,
+  configuredProjectRoot = process.env.HERMES_PROJECT_ROOT,
+  hermesBin = HERMES_BIN,
+  hermesHome = HERMES_HOME,
+  pathExists = existsSync,
+  readText = readFileSync,
+} = {}) {
+  const configured = String(configuredPython || '').trim();
+  const fallbackProjectRoot = join(hermesHome, 'hermes-agent');
   const fallbackPython = join(fallbackProjectRoot, 'venv', 'bin', 'python3');
   if (configured) {
     return {
       python: configured,
-      projectRoot: String(process.env.HERMES_PROJECT_ROOT || fallbackProjectRoot).trim()
+      projectRoot: String(configuredProjectRoot || fallbackProjectRoot).trim()
         || fallbackProjectRoot,
     };
   }
 
+  // Hermes commonly installs a shell launcher whose shebang is
+  // `#!/usr/bin/env bash`. Treating the first shebang token as Python turns the
+  // session-store command into `/usr/bin/env -c <python>`, which fails before a
+  // remote task can reach Hermes. Prefer the runtime's own virtualenv whenever
+  // the standard installation layout is present.
+  if (pathExists(fallbackPython) && pathExists(fallbackProjectRoot)) {
+    return { python: fallbackPython, projectRoot: fallbackProjectRoot };
+  }
+
   try {
-    const firstLine = readFileSync(HERMES_BIN, 'utf8').split(/\r?\n/, 1)[0] || '';
+    const firstLine = readText(hermesBin, 'utf8').split(/\r?\n/, 1)[0] || '';
     if (firstLine.startsWith('#!')) {
       const python = firstLine.slice(2).trim().split(/\s+/, 1)[0];
-      if (python && existsSync(python)) {
+      if (/^python(?:\d+(?:\.\d+)*)?$/u.test(basename(python)) && pathExists(python)) {
         const projectRoot = dirname(dirname(dirname(python)));
         return { python, projectRoot };
       }
@@ -2601,6 +2617,7 @@ export const __dialogueTestHooks = Object.freeze({
   parseHermesChatOutput,
   isStaleHermesResumeError,
   isConfirmedGatewayAbort,
+  hermesPythonContext,
   routeSessionId,
   pruneSessionState,
   sessionStateTTLms: SESSION_STATE_TTL_MS,

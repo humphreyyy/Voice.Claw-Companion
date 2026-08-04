@@ -40,6 +40,47 @@ test.afterEach(() => {
   __dialogueTestHooks.resetExecFileForTest();
 });
 
+test('Hermes Python resolution ignores a bash launcher and uses the Hermes virtualenv', () => {
+  const hermesHome = '/home/tester/.hermes';
+  const projectRoot = `${hermesHome}/hermes-agent`;
+  const python = `${projectRoot}/venv/bin/python3`;
+  const context = __dialogueTestHooks.hermesPythonContext({
+    configuredPython: '',
+    configuredProjectRoot: '',
+    hermesBin: '/home/tester/.local/bin/hermes',
+    hermesHome,
+    pathExists(path) {
+      return path === projectRoot || path === python;
+    },
+    readText() {
+      return '#!/usr/bin/env bash\nunset PYTHONPATH\n';
+    },
+  });
+
+  assert.deepEqual(context, { python, projectRoot });
+});
+
+test('Hermes Python resolution accepts a direct Python shebang for custom installs', () => {
+  const python = '/opt/hermes/venv/bin/python3';
+  const context = __dialogueTestHooks.hermesPythonContext({
+    configuredPython: '',
+    configuredProjectRoot: '',
+    hermesBin: '/opt/hermes/bin/hermes',
+    hermesHome: '/missing/hermes-home',
+    pathExists(path) {
+      return path === python;
+    },
+    readText() {
+      return `#!${python}\n`;
+    },
+  });
+
+  assert.deepEqual(context, {
+    python,
+    projectRoot: '/opt/hermes',
+  });
+});
+
 test('Hermes CLI output parsing removes the decorative reasoning frame and preserves the reply', () => {
   const parsed = __dialogueTestHooks.parseHermesChatOutput([
     '╭─ Reasoning ─╮',
