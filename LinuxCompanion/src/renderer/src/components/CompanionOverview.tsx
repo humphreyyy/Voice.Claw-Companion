@@ -13,24 +13,24 @@ export function CompanionOverview({
   return (
     <div className="overview-stack">
       <section className="hero-panel">
-        <span className="eyebrow">VoiceClaw Companion</span>
-        <h1>Your private voice bridge on Linux</h1>
+        <h1>VoiceClaw Realtime Companion</h1>
         <p>
-          Let your iPhone and Apple Watch reach OpenClaw, Hermes Agent, or Codex
-          through one local companion and your existing private network.
+          Install and manage the private Linux companion that lets VoiceClaw Realtime
+          on your phone or watch reach OpenClaw, Hermes Agent, or Codex on this Linux
+          host through Tailscale or an HTTPS tunnel.
         </p>
       </section>
       <section className="launch-panel">
         <div>
-          <strong>Launch at startup</strong>
-          <span>Open VoiceClaw automatically when you sign in to Linux.</span>
+          <strong>Launch upon Startup</strong>
+          <span>{enabled ? 'VoiceClaw Realtime Companion opens automatically when this Linux user logs in.' : 'VoiceClaw Realtime Companion does not open automatically when this Linux user logs in.'}</span>
         </div>
         <button
           className={enabled ? 'switch switch-on' : 'switch'}
           type="button"
           role="switch"
           aria-checked={enabled}
-          aria-label="Launch at startup"
+          aria-label="Launch upon Startup"
           disabled={busy || !snapshot}
           onClick={() => void onSetLaunchAtLogin(!enabled)}
         >

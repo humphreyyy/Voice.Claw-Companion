@@ -14,7 +14,7 @@ function CompanionApp({ api }: { api: VoiceClawDesktopAPI }) {
   const screen = (() => {
     switch (companion.selectedSection) {
       case 'access':
-        return <AccessScreen snapshot={companion.snapshot} />;
+        return <AccessScreen snapshot={companion.snapshot} api={api} onVerify={companion.refresh} onInstall={companion.install} onEnableStartup={() => companion.setLaunchAtLogin(true)} />;
       case 'tasks':
         return (
           <TasksFilesScreen
@@ -27,14 +27,15 @@ function CompanionApp({ api }: { api: VoiceClawDesktopAPI }) {
         return (
           <PairingScreen
             api={api}
+            snapshot={companion.snapshot}
             bridgeAvailable={companion.snapshot?.service.active ?? false}
             pairingAvailable={companion.snapshot?.pairingAvailable ?? false}
           />
         );
       case 'tailscale':
-        return <TailscaleScreen snapshot={companion.snapshot} />;
+        return <TailscaleScreen snapshot={companion.snapshot} api={api} onVerify={companion.refresh} />;
       case 'diagnostics':
-        return <DiagnosticsScreen snapshot={companion.snapshot} />;
+        return <DiagnosticsScreen snapshot={companion.snapshot} onVerify={companion.refresh} />;
       case 'setup':
       default:
         return (
@@ -42,7 +43,7 @@ function CompanionApp({ api }: { api: VoiceClawDesktopAPI }) {
             snapshot={companion.snapshot}
             busy={companion.busyAction}
             onInstall={companion.install}
-            onRestart={companion.restart}
+            onVerify={companion.refresh}
             onReset={companion.reset}
             onSuggestPort={companion.suggestPort}
           />

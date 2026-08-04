@@ -5,12 +5,12 @@ import type { CompanionSection } from '../use-companion';
 import { StatusBadge } from './StatusBadge';
 
 const NAVIGATION: Array<{ id: CompanionSection; label: string; marker: string; detail: string }> = [
-  { id: 'setup', label: 'Set Up', marker: '01', detail: 'Bridge and runtimes' },
-  { id: 'access', label: 'Access', marker: '02', detail: 'Host readiness' },
-  { id: 'tasks', label: 'Tasks & Files', marker: '03', detail: 'Runtime activity' },
-  { id: 'pairing', label: 'Pair Phone', marker: '04', detail: 'Manual handoff' },
-  { id: 'tailscale', label: 'Tailscale', marker: '05', detail: 'Private network' },
-  { id: 'diagnostics', label: 'Diagnostics', marker: '06', detail: 'Checks and status' },
+  { id: 'setup', label: 'Set Up', marker: '✦', detail: 'Install bridge' },
+  { id: 'access', label: 'Access', marker: '✓', detail: 'Permissions' },
+  { id: 'tasks', label: 'Tasks & Files', marker: '▣', detail: 'Runs and inbox' },
+  { id: 'pairing', label: 'Pair Phone', marker: '▦', detail: 'QR and JSON' },
+  { id: 'tailscale', label: 'Tailscale', marker: '◎', detail: 'Private URL' },
+  { id: 'diagnostics', label: 'Diagnostics', marker: '☷', detail: 'Status checks' },
 ];
 
 interface AppShellProps {
@@ -37,8 +37,8 @@ export function AppShell({
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">VC</span>
           <div>
-            <strong>VoiceClaw</strong>
-            <span>Linux Companion</span>
+            <strong>VoiceClaw Realtime</strong>
+            <span>Companion</span>
           </div>
         </div>
         <nav aria-label="Companion sections">
@@ -65,17 +65,13 @@ export function AppShell({
       </aside>
       <div className="workspace">
         <header className="topbar">
-          <div>
-            <span className="eyebrow">Local control plane</span>
-            <strong>{snapshot?.service.active ? 'Bridge online' : 'Setup needed'}</strong>
-          </div>
           <button
             className="button button-ghost"
             type="button"
             onClick={onRefresh}
             disabled={refreshing}
           >
-            {refreshing ? 'Refreshing…' : 'Refresh Status'}
+            {refreshing ? 'Checking Runtime' : 'Verify Runtime'}
           </button>
         </header>
         <main className="content">{children}</main>

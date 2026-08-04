@@ -7,6 +7,7 @@ import {
   normalizeSetupInput,
   type BridgeConfig,
   type SetupInput,
+  type RealtimeAuthInput,
 } from '../../shared/contracts';
 import type { LinuxOwnedPaths } from './paths';
 
@@ -58,6 +59,7 @@ export class ConfigStore {
       tailscaleDNSName: storedText(raw.tailscaleDNSName),
       tailscaleBaseURL: storedText(raw.tailscaleBaseURL),
       basePath: storedBasePath(raw.basePath),
+      watchPublicBridgeURL: storedText(raw.watchPublicBridgeURL),
     };
   }
 
@@ -73,6 +75,7 @@ export class ConfigStore {
       tailscaleDNSName: storedText(existing.tailscaleDNSName),
       tailscaleBaseURL: storedText(existing.tailscaleBaseURL),
       basePath: storedBasePath(existing.basePath),
+      watchPublicBridgeURL: storedText(existing.watchPublicBridgeURL),
     };
     return this.writeConfig(next);
   }
@@ -124,6 +127,17 @@ export class ConfigStore {
       tailscaleDNSName: normalizedDNS,
       tailscaleBaseURL: normalizedURL,
       basePath: storedBasePath(basePath),
+    });
+  }
+
+  public async updateRealtimeAuth(input: RealtimeAuthInput): Promise<BridgeConfig> {
+    const current = await this.read();
+    return this.writeConfig({
+      ...current,
+      realtimeAuthMode: input.realtimeAuthMode,
+      realtimeAuthFallbackToAPIKey: input.realtimeAuthFallbackToAPIKey,
+      openAIAPIKey: input.openAIAPIKey.trim() || current.openAIAPIKey,
+      watchPublicBridgeURL: input.watchPublicBridgeURL.trim(),
     });
   }
 

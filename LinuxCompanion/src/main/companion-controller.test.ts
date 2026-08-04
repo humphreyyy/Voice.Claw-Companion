@@ -62,6 +62,10 @@ function dependencies(events: string[] = []): CompanionControllerDependencies {
         current = { ...current, tailscaleDNSName: dnsName, tailscaleBaseURL: baseURL };
         return current;
       },
+      async updateRealtimeAuth(input) {
+        current = { ...current, ...input };
+        return current;
+      },
       async remove() {},
     },
     tailscale: {
@@ -172,6 +176,7 @@ describe('CompanionController', () => {
       realtimeAuthMode: 'openclaw-oauth',
       realtimeAuthFallbackToAPIKey: false,
       hasOpenAIAPIKey: true,
+      watchPublicBridgeURL: '',
     });
     expect(snapshot.launchAtLoginEnabled).toBe(true);
     expect(JSON.stringify(snapshot)).not.toContain('sk-secret');

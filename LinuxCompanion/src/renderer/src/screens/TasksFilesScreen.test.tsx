@@ -16,6 +16,7 @@ const snapshot: CompanionSnapshot = {
     realtimeAuthMode: 'openclaw-oauth',
     realtimeAuthFallbackToAPIKey: false,
     hasOpenAIAPIKey: false,
+    watchPublicBridgeURL: '',
   },
   service: {
     installed: true,
@@ -69,6 +70,7 @@ function api(): VoiceClawDesktopAPI {
     suggestPort: vi.fn(async () => 12_321),
     setLaunchAtLogin: vi.fn(async (value) => value),
     getPairingPayload: vi.fn(async () => ({})),
+    updateRealtimeAuth: vi.fn(async () => snapshot),
     deleteArtifact: vi.fn(async () => snapshot),
     emptyArtifactInbox: vi.fn(async () => snapshot),
     copyText: vi.fn(async () => undefined),

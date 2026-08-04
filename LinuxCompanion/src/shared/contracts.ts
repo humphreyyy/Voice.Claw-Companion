@@ -21,10 +21,12 @@ export interface BridgeConfig extends SetupInput {
   tailscaleDNSName: string;
   tailscaleBaseURL: string;
   basePath?: string;
+  watchPublicBridgeURL?: string;
 }
 
 export interface PublicBridgeConfig extends Omit<SetupInput, 'openAIAPIKey'> {
   hasOpenAIAPIKey: boolean;
+  watchPublicBridgeURL: string;
 }
 
 export interface StatusItem {
@@ -85,6 +87,13 @@ export interface PairingOptions {
   includeChatGPTOAuth: boolean;
 }
 
+export interface RealtimeAuthInput {
+  realtimeAuthMode: SetupInput['realtimeAuthMode'];
+  realtimeAuthFallbackToAPIKey: boolean;
+  openAIAPIKey: string;
+  watchPublicBridgeURL: string;
+}
+
 export interface CompanionSnapshot {
   config: PublicBridgeConfig;
   service: ServiceStatus;
@@ -106,6 +115,7 @@ export interface VoiceClawDesktopAPI {
   suggestPort(): Promise<number>;
   setLaunchAtLogin(enabled: boolean): Promise<boolean>;
   getPairingPayload(options: PairingOptions): Promise<Record<string, unknown>>;
+  updateRealtimeAuth(input: RealtimeAuthInput): Promise<CompanionSnapshot>;
   deleteArtifact(artifactID: string): Promise<CompanionSnapshot>;
   emptyArtifactInbox(): Promise<CompanionSnapshot>;
   copyText(value: string): Promise<void>;

@@ -27,6 +27,7 @@ describe('Companion IPC', () => {
       'voiceclaw:open:url',
       'voiceclaw:pairing:get',
       'voiceclaw:port:suggest',
+      'voiceclaw:realtime-auth:update',
       'voiceclaw:snapshot:get',
     ]);
   });

@@ -6,6 +6,7 @@ import type {
   VoiceClawDesktopAPI,
 } from '../../../shared/contracts';
 import {
+  compactSetupDeepLink,
   redactedPairingPreview,
 } from '../pairing';
 import { PairingScreen } from './PairingScreen';
@@ -30,6 +31,7 @@ function api(): VoiceClawDesktopAPI {
       TailscaleBaseURL: 'https://host.tailnet.ts.net:12321',
       gatewayToken: 'bridge-secret',
     })),
+    updateRealtimeAuth: vi.fn(async () => emptySnapshot),
     deleteArtifact: vi.fn(async () => emptySnapshot),
     emptyArtifactInbox: vi.fn(async () => emptySnapshot),
     copyText: vi.fn(async () => undefined),
@@ -55,8 +57,20 @@ describe('manual pairing', () => {
     expect(payload.OpenAIAPIKey).toBe('sk-secret');
   });
 
+  it('uses the macOS compact secure setup link shape for QR payloads', () => {
+    const link = compactSetupDeepLink({
+      TailscaleBaseURL: 'https://host.tailnet.ts.net/voice',
+      OpenClawGatewayToken: 'bridge-secret',
+      ChatGPTOAuthAccessToken: 'long-secret',
+    }, { includeBridgeCredentials: true, includeChatGPTOAuth: true });
+    expect(link).toContain('v=2');
+    expect(link).toContain('payload_url=');
+    expect(link).toContain('gateway_token=bridge-secret');
+    expect(link).not.toContain('long-secret');
+  });
+
   it('shows QR, JSON, and deep-link copy controls without pairing automatically', async () => {
-    render(<PairingScreen api={api()} bridgeAvailable pairingAvailable />);
+    render(<PairingScreen api={api()} snapshot={null} bridgeAvailable pairingAvailable />);
     expect(await screen.findByAltText('VoiceClaw phone setup QR code')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Copy Setup JSON' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Copy Setup Link' })).toBeVisible();
@@ -66,7 +80,7 @@ describe('manual pairing', () => {
 
   it('shows setup guidance without calling the bridge when it is offline', async () => {
     const desktopAPI = api();
-    render(<PairingScreen api={desktopAPI} bridgeAvailable={false} pairingAvailable={false} />);
+    render(<PairingScreen api={desktopAPI} snapshot={null} bridgeAvailable={false} pairingAvailable={false} />);
     expect(screen.getByText(/Install and Start the VoiceClaw bridge/)).toBeVisible();
     expect(desktopAPI.getPairingPayload).not.toHaveBeenCalled();
   });

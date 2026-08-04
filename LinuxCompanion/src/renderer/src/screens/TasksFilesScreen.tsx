@@ -63,19 +63,26 @@ export function TasksFilesScreen({
   };
 
   return (
-    <section className="screen">
+    <section className="screen panel parity-panel">
       <div className="screen-heading">
         <div>
-          <span className="eyebrow">Runtime activity</span>
           <h1>Tasks &amp; Files</h1>
-          <p>Recent routed work and artifacts returned by the bridge.</p>
+          <p>Monitor work delegated through the Companion and manage files explicitly returned to VoiceClaw Realtime.</p>
         </div>
+      </div>
+      <div className="metric-grid work-metrics">
+        <article className="metric-card"><span>Active Tasks</span><strong>{snapshot?.tasks.filter((task) => !['completed', 'failed', 'cancelled'].includes(task.state)).length ?? 0}</strong></article>
+        <article className="metric-card"><span>Retained Files</span><strong>{snapshot?.artifacts.length ?? 0}</strong></article>
+        <article className="metric-card"><span>Inbox Used</span><strong>{displaySize(snapshot?.artifacts.reduce((total, artifact) => total + artifact.byteCount, 0) ?? 0)}</strong></article>
+      </div>
+      <div className="form-actions work-actions">
+        <button className="button button-secondary" type="button" disabled={busy} onClick={() => void onRefresh()}>{busy ? 'Refreshing' : 'Refresh'}</button>
+        <button className="button button-danger-outline" type="button" disabled={busy || !snapshot?.artifacts.length} onClick={() => setConfirmEmpty(true)}>Empty Inbox</button>
       </div>
       <div className="split-panels">
         <section className="panel">
           <div className="panel-title">
-            <span>Tasks</span>
-            <small>{snapshot?.tasks.length ?? 0} recent</small>
+            <span>Route Tasks</span>
           </div>
           <div className="record-list">
             {snapshot?.tasks.length
@@ -90,22 +97,14 @@ export function TasksFilesScreen({
                   </dl>
                 </article>
               ))
-              : <p className="empty-state">No routed tasks yet.</p>}
+              : <div className="empty-state"><strong>No Route Tasks</strong><p>Tasks delegated from VoiceClaw Realtime will appear here without changing the selected voice route.</p></div>}
           </div>
         </section>
         <section className="panel">
           <div className="panel-title">
-            <span>Artifact inbox</span>
+            <span>Artifact Inbox</span>
             <div className="panel-title-actions">
               <small>{snapshot?.artifacts.length ?? 0} files</small>
-              <button
-                className="button button-danger-outline button-compact"
-                type="button"
-                disabled={busy || !snapshot?.artifacts.length}
-                onClick={() => setConfirmEmpty(true)}
-              >
-                Empty Inbox
-              </button>
             </div>
           </div>
           <div className="record-list">
@@ -129,7 +128,7 @@ export function TasksFilesScreen({
                   <code>{artifact.sha256}</code>
                 </article>
               ))
-              : <p className="empty-state">No returned files yet.</p>}
+              : <div className="empty-state"><strong>Inbox Empty</strong><p>Files appear only when you explicitly ask an OpenClaw, Hermes, or Codex task to return them to VoiceClaw Realtime.</p></div>}
           </div>
         </section>
       </div>

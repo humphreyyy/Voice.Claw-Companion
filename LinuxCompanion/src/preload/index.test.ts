@@ -25,6 +25,7 @@ describe('preload API', () => {
       'restartBridge',
       'setLaunchAtLogin',
       'suggestPort',
+      'updateRealtimeAuth',
     ]);
   });
 });

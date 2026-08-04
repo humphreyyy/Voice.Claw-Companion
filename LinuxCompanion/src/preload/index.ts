@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 import type {
   PairingOptions,
+  RealtimeAuthInput,
   SetupInput,
   VoiceClawDesktopAPI,
 } from '../shared/contracts';
@@ -34,6 +35,10 @@ export function createDesktopAPI(invoke: Invoke): VoiceClawDesktopAPI {
       IPC_CHANNELS.getPairing,
       options,
     ) as ReturnType<VoiceClawDesktopAPI['getPairingPayload']>,
+    updateRealtimeAuth: (input: RealtimeAuthInput) => invoke(
+      IPC_CHANNELS.updateRealtimeAuth,
+      input,
+    ) as ReturnType<VoiceClawDesktopAPI['updateRealtimeAuth']>,
     deleteArtifact: (artifactID: string) => invoke(
       IPC_CHANNELS.deleteArtifact,
       artifactID,

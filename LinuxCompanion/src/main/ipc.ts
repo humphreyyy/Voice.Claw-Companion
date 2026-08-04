@@ -1,6 +1,7 @@
 import {
   normalizeSetupInput,
   type PairingOptions,
+  type RealtimeAuthInput,
 } from '../shared/contracts';
 import type { CompanionController } from './companion-controller';
 
@@ -12,6 +13,7 @@ export const IPC_CHANNELS = {
   suggestPort: 'voiceclaw:port:suggest',
   setAutostart: 'voiceclaw:autostart:set',
   getPairing: 'voiceclaw:pairing:get',
+  updateRealtimeAuth: 'voiceclaw:realtime-auth:update',
   deleteArtifact: 'voiceclaw:artifacts:delete',
   emptyArtifacts: 'voiceclaw:artifacts:empty',
   copyText: 'voiceclaw:clipboard:copy',
@@ -73,6 +75,33 @@ function pairingOptions(value: unknown): PairingOptions {
   return input as unknown as PairingOptions;
 }
 
+function realtimeAuthInput(value: unknown): RealtimeAuthInput {
+  const input = value !== null && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : {};
+  if (
+    (input.realtimeAuthMode !== 'api-key' && input.realtimeAuthMode !== 'openclaw-oauth')
+    || typeof input.realtimeAuthFallbackToAPIKey !== 'boolean'
+    || typeof input.openAIAPIKey !== 'string'
+    || typeof input.watchPublicBridgeURL !== 'string'
+  ) {
+    throw new Error('Realtime authentication preferences are invalid.');
+  }
+  const publicURL = input.watchPublicBridgeURL.trim();
+  if (publicURL !== '') {
+    let parsed: URL;
+    try {
+      parsed = new URL(publicURL);
+    } catch {
+      throw new Error('Non-Tailscale HTTPS Bridge must be a valid HTTPS URL.');
+    }
+    if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') {
+      throw new Error('Non-Tailscale HTTPS Bridge must be a valid HTTPS URL.');
+    }
+  }
+  return input as unknown as RealtimeAuthInput;
+}
+
 export function registerCompanionIPC(
   ipc: IpcRegistrar,
   controller: CompanionController,
@@ -102,6 +131,10 @@ export function registerCompanionIPC(
   ipc.handle(
     IPC_CHANNELS.getPairing,
     (_event, options) => controller.getPairingPayload(pairingOptions(options)),
+  );
+  ipc.handle(
+    IPC_CHANNELS.updateRealtimeAuth,
+    (_event, input) => controller.updateRealtimeAuth(realtimeAuthInput(input)),
   );
   ipc.handle(
     IPC_CHANNELS.deleteArtifact,

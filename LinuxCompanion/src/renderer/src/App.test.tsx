@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -17,6 +17,7 @@ function snapshotWithWarnings(): CompanionSnapshot {
       realtimeAuthMode: 'openclaw-oauth',
       realtimeAuthFallbackToAPIKey: false,
       hasOpenAIAPIKey: false,
+      watchPublicBridgeURL: '',
     },
     service: {
       installed: false,
@@ -66,6 +67,7 @@ function apiFor(snapshot = snapshotWithWarnings()): VoiceClawDesktopAPI {
     suggestPort: vi.fn(async () => 12_321),
     setLaunchAtLogin: vi.fn(async (enabled) => enabled),
     getPairingPayload: vi.fn(async () => ({ TailscaleBaseURL: 'https://host.ts.net' })),
+    updateRealtimeAuth: vi.fn(async () => snapshot),
     deleteArtifact: vi.fn(async () => snapshot),
     emptyArtifactInbox: vi.fn(async () => snapshot),
     copyText: vi.fn(async () => undefined),
@@ -108,16 +110,18 @@ describe('App', () => {
     render(<App api={api} />);
 
     expect(await screen.findByText(/OpenClaw, Hermes Agent, or Codex/)).toBeVisible();
-    expect(screen.getByText(/Used only by OpenClaw routes/)).toBeVisible();
-    await user.click(screen.getByRole('switch', { name: 'Launch at startup' }));
+    expect(screen.getByText(/This is only for OpenClaw routes/)).toBeVisible();
+    await user.click(screen.getByRole('switch', { name: 'Launch upon Startup' }));
     expect(api.setLaunchAtLogin).toHaveBeenCalledWith(true);
   });
 
   it('explains route selection on the phone pairing screen', async () => {
     render(<App api={apiFor()} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Pair Phone' }));
-    expect(await screen.findByText('Which runtime handles the work?')).toBeVisible();
-    expect(screen.queryByText('Cerebras API key')).not.toBeInTheDocument();
+    expect(await screen.findByText('Which Runtime Handles the Work')).toBeVisible();
+    expect(screen.getByLabelText('Realtime Authentication')).toHaveValue('openclaw-oauth');
+    expect(screen.getByRole('option', { name: 'OAuth (ChatGPT Subscription)' })).toBeVisible();
+    expect(screen.queryByText('Cerebras API Key')).not.toBeInTheDocument();
   });
 
   it('installs the bridge without offering a Tailscale mutation', async () => {
@@ -139,7 +143,7 @@ describe('App', () => {
   it('keeps diagnostics visible when dependencies are unavailable', async () => {
     render(<App api={apiFor()} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Diagnostics' }));
-    expect(await screen.findByText('Tailscale CLI is not available.')).toBeVisible();
+    expect((await screen.findAllByText('Tailscale CLI is not available.')).length).toBeGreaterThan(0);
     expect(screen.getByText('OpenClaw configuration was not found.')).toBeVisible();
   });
 
@@ -147,9 +151,9 @@ describe('App', () => {
     const api = apiFor();
     const user = userEvent.setup();
     render(<App api={api} />);
-    await user.click(await screen.findByRole('button', { name: 'Reset Companion State' }));
+    await user.click(await screen.findByRole('button', { name: 'Reset First-Run State' }));
     expect(api.resetBridge).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Confirm Reset' }));
+    await user.click(within(screen.getByRole('dialog', { name: 'Reset First-Run State' })).getByRole('button', { name: 'Reset First-Run State' }));
     expect(api.resetBridge).toHaveBeenCalledWith(true);
   });
 });

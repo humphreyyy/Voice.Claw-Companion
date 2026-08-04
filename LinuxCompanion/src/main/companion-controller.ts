@@ -12,6 +12,7 @@ import type {
   RouteTaskSummary,
   ServiceStatus,
   SetupInput,
+  RealtimeAuthInput,
   StatusItem,
   TailscaleStatus,
 } from '../shared/contracts';
@@ -24,6 +25,7 @@ interface ConfigStoreLike {
   read(): Promise<BridgeConfig>;
   write(input: SetupInput): Promise<BridgeConfig>;
   updateNetwork(dnsName: string, baseURL: string, basePath?: string): Promise<BridgeConfig>;
+  updateRealtimeAuth(input: RealtimeAuthInput): Promise<BridgeConfig>;
   remove(): Promise<void>;
 }
 
@@ -88,6 +90,7 @@ function fallbackConfig(): BridgeConfig {
     tailscaleDNSName: '',
     tailscaleBaseURL: '',
     basePath: '',
+    watchPublicBridgeURL: '',
   };
 }
 
@@ -122,6 +125,7 @@ function publicConfig(config: BridgeConfig): PublicBridgeConfig {
     realtimeAuthMode: config.realtimeAuthMode,
     realtimeAuthFallbackToAPIKey: config.realtimeAuthFallbackToAPIKey,
     hasOpenAIAPIKey: config.openAIAPIKey.length > 0,
+    watchPublicBridgeURL: config.watchPublicBridgeURL ?? '',
   };
 }
 
@@ -297,6 +301,11 @@ export class CompanionController {
   ): Promise<Record<string, unknown>> {
     const config = await this.dependencies.configStore.read();
     return this.dependencies.bridgeClientFactory(config).setupPayload(options);
+  }
+
+  public async updateRealtimeAuth(input: RealtimeAuthInput): Promise<CompanionSnapshot> {
+    await this.dependencies.configStore.updateRealtimeAuth(input);
+    return this.getSnapshot();
   }
 
   public async deleteArtifact(artifactID: string): Promise<CompanionSnapshot> {
