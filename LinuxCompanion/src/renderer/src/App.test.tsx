@@ -51,6 +51,7 @@ function snapshotWithWarnings(): CompanionSnapshot {
     }],
     tasks: [],
     artifacts: [],
+    launchAtLoginEnabled: false,
     pairingAvailable: false,
     checkedAt: 1,
   };
@@ -99,6 +100,24 @@ describe('App', () => {
     ]) {
       expect(await screen.findByRole('button', { name: label })).toBeVisible();
     }
+  });
+
+  it('matches the macOS runtime model and exposes the startup preference', async () => {
+    const api = apiFor();
+    const user = userEvent.setup();
+    render(<App api={api} />);
+
+    expect(await screen.findByText(/OpenClaw, Hermes Agent, or Codex/)).toBeVisible();
+    expect(screen.getByText(/Used only by OpenClaw routes/)).toBeVisible();
+    await user.click(screen.getByRole('switch', { name: 'Launch at startup' }));
+    expect(api.setLaunchAtLogin).toHaveBeenCalledWith(true);
+  });
+
+  it('explains route selection on the phone pairing screen', async () => {
+    render(<App api={apiFor()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Pair Phone' }));
+    expect(await screen.findByText('Which runtime handles the work?')).toBeVisible();
+    expect(screen.queryByText('Cerebras API key')).not.toBeInTheDocument();
   });
 
   it('installs the bridge without offering a Tailscale mutation', async () => {

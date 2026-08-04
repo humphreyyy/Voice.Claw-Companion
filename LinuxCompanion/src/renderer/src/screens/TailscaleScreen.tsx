@@ -20,7 +20,8 @@ export function TailscaleScreen({ snapshot }: { snapshot: CompanionSnapshot | nu
       </div>
       <div className="callout">
         This Linux port reads your existing Tailscale state. It never creates,
-        changes, or removes a Serve mapping.
+        changes, or removes a Serve mapping. The same private URL can carry
+        OpenClaw, Hermes, Codex, and realtime routes after you map it manually.
       </div>
       <div className="metric-grid">
         {cards.map(([label, value, ready]) => (

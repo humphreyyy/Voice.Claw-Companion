@@ -89,6 +89,9 @@ function dependencies(events: string[] = []): CompanionControllerDependencies {
       async remove() {},
     },
     autostart: {
+      async isEnabled() {
+        return true;
+      },
       async setEnabled(enabled) {
         return enabled;
       },
@@ -170,6 +173,7 @@ describe('CompanionController', () => {
       realtimeAuthFallbackToAPIKey: false,
       hasOpenAIAPIKey: true,
     });
+    expect(snapshot.launchAtLoginEnabled).toBe(true);
     expect(JSON.stringify(snapshot)).not.toContain('sk-secret');
     expect(JSON.stringify(snapshot)).not.toContain('A'.repeat(43));
   });

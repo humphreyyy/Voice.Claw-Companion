@@ -93,7 +93,10 @@ export class AccessDiagnostics {
         ),
       ]);
 
-    const hermesAvailable = await commandAvailable(this.options.runner, 'hermes', ['--help']);
+    const [hermesAvailable, codexCLIAvailable] = await Promise.all([
+      commandAvailable(this.options.runner, 'hermes', ['--help']),
+      commandAvailable(this.options.runner, 'codex', ['--version']),
+    ]);
     const pactlAvailable = await commandAvailable(this.options.runner, 'pactl', ['info']);
     const audioAvailable = pactlAvailable
       || await commandAvailable(this.options.runner, 'arecord', ['-l']);
@@ -104,7 +107,8 @@ export class AccessDiagnostics {
     ].filter(Boolean);
     const bridgeReady = bridge.ok === true;
     const serializedBridge = JSON.stringify(bridge).toLowerCase();
-    const codexAvailable = bridgeReady && serializedBridge.includes('codex');
+    const codexAdvertised = bridgeReady && serializedBridge.includes('codex');
+    const codexAvailable = codexCLIAvailable || codexAdvertised;
 
     const stateForCodex: ReadinessState = codexAvailable ? 'ready' : 'warning';
     return [
@@ -137,12 +141,12 @@ export class AccessDiagnostics {
       ),
       {
         id: 'codex',
-        label: 'Codex bridge',
+        label: 'Codex CLI',
         state: stateForCodex,
         summary: codexAvailable
-          ? 'Codex support is advertised by the bridge.'
-          : 'Codex support is not currently advertised by the bridge.',
-        detail: '',
+          ? 'Codex is available to the companion.'
+          : 'Codex CLI was not found and support is not advertised by the bridge.',
+        detail: codexCLIAvailable ? 'Detected with codex --version.' : '',
       },
       item(
         'audio',

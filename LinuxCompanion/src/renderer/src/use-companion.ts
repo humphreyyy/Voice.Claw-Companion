@@ -52,6 +52,18 @@ export function useCompanion(api: VoiceClawDesktopAPI) {
     [api, perform],
   );
   const suggestPort = useCallback(() => api.suggestPort(), [api]);
+  const setLaunchAtLogin = useCallback(async (enabled: boolean): Promise<void> => {
+    setBusyAction('autostart');
+    setError('');
+    try {
+      await api.setLaunchAtLogin(enabled);
+      setSnapshot(await api.getSnapshot());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusyAction('');
+    }
+  }, [api]);
 
   useEffect(() => {
     void refresh();
@@ -75,5 +87,6 @@ export function useCompanion(api: VoiceClawDesktopAPI) {
     restart,
     reset,
     suggestPort,
+    setLaunchAtLogin,
   };
 }

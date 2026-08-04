@@ -13,8 +13,14 @@ export function DiagnosticsScreen({
         <div>
           <span className="eyebrow">Troubleshooting</span>
           <h1>Diagnostics</h1>
-          <p>Every failed integration remains visible without hiding the rest of the app.</p>
+          <p>Review bridge, runtime, authentication, startup, audio, and private-network readiness in one place.</p>
         </div>
+      </div>
+      <div className="diagnostic-summary">
+        <span>Last checked</span>
+        <strong>{snapshot ? new Date(snapshot.checkedAt).toLocaleString() : 'Checking…'}</strong>
+        <span>Launch at startup</span>
+        <strong>{snapshot?.launchAtLoginEnabled ? 'Enabled' : 'Disabled'}</strong>
       </div>
       <div className="status-grid">
         {items.map((item, index) => (

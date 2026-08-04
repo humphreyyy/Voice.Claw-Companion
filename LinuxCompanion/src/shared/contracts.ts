@@ -91,6 +91,7 @@ export interface CompanionSnapshot {
   diagnostics: StatusItem[];
   tasks: RouteTaskSummary[];
   artifacts: ArtifactSummary[];
+  launchAtLoginEnabled: boolean;
   pairingAvailable: boolean;
   checkedAt: number;
 }

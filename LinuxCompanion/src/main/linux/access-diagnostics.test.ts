@@ -102,6 +102,7 @@ describe('AccessDiagnostics', () => {
       'network',
     ]);
     expect(calls).toContainEqual(['pactl', ['info']]);
+    expect(calls).toContainEqual(['codex', ['--version']]);
     expect(calls).not.toContainEqual(['arecord', ['-l']]);
     expect(environment).toEqual({
       XDG_CURRENT_DESKTOP: 'GNOME',

@@ -62,8 +62,8 @@ export function SetupScreen({
       <div className="screen-heading">
         <div>
           <span className="eyebrow">Host configuration</span>
-          <h1>Set up the Linux bridge</h1>
-          <p>Install a private systemd user service and connect it to your existing OpenClaw runtime.</p>
+          <h1>Linux Setup</h1>
+          <p>Install the private bridge used by OpenClaw, Hermes Agent, Codex, realtime voice, and phone relay routes.</p>
         </div>
         <StatusBadge state={snapshot?.service.active ? 'ready' : 'needs_action'} />
       </div>
@@ -100,6 +100,7 @@ export function SetupScreen({
               value={openClawInstallPath}
               onChange={(event) => setOpenClawInstallPath(event.target.value)}
             />
+            <small>Used only by OpenClaw routes. Hermes uses the installed <code>hermes</code> command and its HERMES_HOME; Codex uses the installed <code>codex</code> command.</small>
           </label>
           <label>
             OpenClaw agent
@@ -107,6 +108,7 @@ export function SetupScreen({
               value={openClawAgentName}
               onChange={(event) => setOpenClawAgentName(event.target.value)}
             />
+            <small>Selects the OpenClaw agent only. Hermes and Codex choose their runtime context per task.</small>
           </label>
           <label>
             Realtime authentication
@@ -158,11 +160,26 @@ export function SetupScreen({
             <li><strong>systemd</strong><span>One user service owned by VoiceClaw.</span></li>
             <li><strong>Storage</strong><span>XDG data and cache directories only.</span></li>
             <li><strong>Network</strong><span>Loopback bridge on 127.0.0.1.</span></li>
+            <li><strong>Runtime routes</strong><span>One bridge serves OpenClaw, Hermes Agent, Codex, and realtime voice.</span></li>
             <li><strong>Tailscale</strong><span>Read-only inspection of your existing state.</span></li>
           </ul>
+          <div className="info-stack">
+            <div className="info-card">
+              <strong>Hermes Agent routes</strong>
+              <span>Hermes is discovered from your shell and HERMES_HOME. The OpenClaw path and agent fields do not configure it.</span>
+            </div>
+            <div className="info-card">
+              <strong>Codex routes</strong>
+              <span>Codex is discovered from the local CLI and invoked only when a phone task chooses the Codex route.</span>
+            </div>
+            <div className="info-card">
+              <strong>Testing first-run setup</strong>
+              <span>Install and Start writes VoiceClaw-owned files, starts its user service, then verifies the loopback bridge.</span>
+            </div>
+          </div>
           <div className="danger-zone">
             <span className="eyebrow">Danger zone</span>
-            <p>Remove only VoiceClaw-owned Linux state. Your OpenClaw and Tailscale configuration stay untouched.</p>
+            <p>Remove only VoiceClaw-owned Linux state. OpenClaw, Hermes, Codex, and Tailscale stay untouched.</p>
             <button
               className="button button-danger-outline"
               type="button"

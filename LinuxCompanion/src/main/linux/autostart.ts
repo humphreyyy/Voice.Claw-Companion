@@ -1,4 +1,4 @@
-import { chmod, mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 
 import type { LinuxOwnedPaths } from './paths';
 
@@ -21,6 +21,10 @@ X-GNOME-Autostart-enabled=true
 
 export class AutostartStore {
   public constructor(private readonly paths: LinuxOwnedPaths) {}
+
+  public async isEnabled(): Promise<boolean> {
+    return access(this.paths.autostartFile).then(() => true, () => false);
+  }
 
   public async setEnabled(enabled: boolean, executablePath: string): Promise<boolean> {
     if (!enabled) {

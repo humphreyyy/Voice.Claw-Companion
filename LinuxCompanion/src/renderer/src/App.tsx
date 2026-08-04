@@ -1,5 +1,6 @@
 import type { VoiceClawDesktopAPI } from '../../shared/contracts';
 import { AppShell } from './components/AppShell';
+import { CompanionOverview } from './components/CompanionOverview';
 import { AccessScreen } from './screens/AccessScreen';
 import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
 import { PairingScreen } from './screens/PairingScreen';
@@ -56,6 +57,11 @@ function CompanionApp({ api }: { api: VoiceClawDesktopAPI }) {
       onRefresh={() => void companion.refresh()}
       refreshing={companion.busyAction === 'refresh'}
     >
+      <CompanionOverview
+        snapshot={companion.snapshot}
+        busy={companion.busyAction === 'autostart'}
+        onSetLaunchAtLogin={companion.setLaunchAtLogin}
+      />
       {companion.error && <div className="error-banner" role="alert">{companion.error}</div>}
       {screen}
     </AppShell>

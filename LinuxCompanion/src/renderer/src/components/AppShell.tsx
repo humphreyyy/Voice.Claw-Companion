@@ -4,13 +4,13 @@ import type { CompanionSnapshot } from '../../../shared/contracts';
 import type { CompanionSection } from '../use-companion';
 import { StatusBadge } from './StatusBadge';
 
-const NAVIGATION: Array<{ id: CompanionSection; label: string; marker: string }> = [
-  { id: 'setup', label: 'Set Up', marker: '01' },
-  { id: 'access', label: 'Access', marker: '02' },
-  { id: 'tasks', label: 'Tasks & Files', marker: '03' },
-  { id: 'pairing', label: 'Pair Phone', marker: '04' },
-  { id: 'tailscale', label: 'Tailscale', marker: '05' },
-  { id: 'diagnostics', label: 'Diagnostics', marker: '06' },
+const NAVIGATION: Array<{ id: CompanionSection; label: string; marker: string; detail: string }> = [
+  { id: 'setup', label: 'Set Up', marker: '01', detail: 'Bridge and runtimes' },
+  { id: 'access', label: 'Access', marker: '02', detail: 'Host readiness' },
+  { id: 'tasks', label: 'Tasks & Files', marker: '03', detail: 'Runtime activity' },
+  { id: 'pairing', label: 'Pair Phone', marker: '04', detail: 'Manual handoff' },
+  { id: 'tailscale', label: 'Tailscale', marker: '05', detail: 'Private network' },
+  { id: 'diagnostics', label: 'Diagnostics', marker: '06', detail: 'Checks and status' },
 ];
 
 interface AppShellProps {
@@ -50,8 +50,8 @@ export function AppShell({
               aria-label={item.label}
               onClick={() => onSelect(item.id)}
             >
-              <span aria-hidden="true">{item.marker}</span>
-              {item.label}
+              <span className="nav-marker" aria-hidden="true">{item.marker}</span>
+              <span className="nav-copy"><strong>{item.label}</strong><small>{item.detail}</small></span>
             </button>
           ))}
         </nav>

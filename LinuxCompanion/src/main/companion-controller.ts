@@ -40,6 +40,7 @@ interface SystemdLike {
 }
 
 interface AutostartLike {
+  isEnabled(): Promise<boolean>;
   setEnabled(enabled: boolean, executablePath: string): Promise<boolean>;
 }
 
@@ -186,6 +187,7 @@ export class CompanionController {
       authResult,
       tasksResult,
       artifactsResult,
+      autostartResult,
     ] = await Promise.allSettled([
       this.dependencies.systemd.status(),
       this.dependencies.tailscale.status(config.port),
@@ -194,6 +196,7 @@ export class CompanionController {
       client.authStatus(),
       client.tasks(),
       client.artifacts(),
+      this.dependencies.autostart.isEnabled(),
     ]);
 
     const service = serviceResult.status === 'fulfilled'
@@ -224,6 +227,9 @@ export class CompanionController {
       ],
       tasks: tasksResult.status === 'fulfilled' ? tasksResult.value : [],
       artifacts: artifactsResult.status === 'fulfilled' ? artifactsResult.value : [],
+      launchAtLoginEnabled: autostartResult.status === 'fulfilled'
+        ? autostartResult.value
+        : false,
       pairingAvailable: service.active && tailscale.serveMapped && health.ok === true,
       checkedAt: Date.now(),
     };

@@ -69,7 +69,7 @@ export function PairingScreen({
         <div>
           <span className="eyebrow">Manual handoff</span>
           <h1>Pair Phone</h1>
-          <p>Choose exactly which credentials belong in the setup payload. Nothing is sent automatically.</p>
+          <p>Transfer bridge settings and runtime support to your iPhone. Nothing is sent automatically.</p>
         </div>
       </div>
       {!pairingAvailable && (
@@ -77,6 +77,9 @@ export function PairingScreen({
           Remote pairing is not ready. Check the bridge and your existing Tailscale Serve mapping.
         </div>
       )}
+      <div className="callout">
+        <strong>Which runtime handles the work?</strong> The phone chooses the route for each task: OpenClaw uses the configured agent, Hermes uses your local Hermes environment, Codex uses the local Codex CLI, and GPT Realtime handles live conversation.
+      </div>
       <div className="pairing-grid">
         <section className="panel">
           <div className="panel-title"><span>Payload contents</span></div>
@@ -84,7 +87,6 @@ export function PairingScreen({
             ['includeBridgeCredentials', 'Bridge credentials'],
             ['includeChatGPTOAuth', 'ChatGPT OAuth'],
             ['includeOpenAIAPIKey', 'OpenAI API key'],
-            ['includeCerebrasAPIKey', 'Cerebras API key'],
           ] as Array<[keyof PairingOptions, string]>).map(([key, label]) => (
             <label className="toggle-card" key={key}>
               <input type="checkbox" checked={options[key]} onChange={() => toggle(key)} />

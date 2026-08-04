@@ -55,6 +55,7 @@ const snapshot: CompanionSnapshot = {
     sha256: 'a'.repeat(64),
     createdAt: 1,
   }],
+  launchAtLoginEnabled: false,
   pairingAvailable: true,
   checkedAt: 1,
 };

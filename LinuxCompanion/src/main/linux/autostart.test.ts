@@ -28,6 +28,7 @@ describe('AutostartStore', () => {
   });
 
   it('creates the exact owned desktop entry with mode 0644', async () => {
+    expect(await store.isEnabled()).toBe(false);
     expect(await store.setEnabled(
       true,
       '/opt/VoiceClaw Companion/voiceclaw-companion',
@@ -42,6 +43,7 @@ Categories=Utility;
 X-GNOME-Autostart-enabled=true
 `);
     expect((await fs.stat(paths.autostartFile)).mode & 0o777).toBe(0o644);
+    expect(await store.isEnabled()).toBe(true);
   });
 
   it('disables only the owned entry and preserves neighboring files', async () => {
@@ -50,5 +52,6 @@ X-GNOME-Autostart-enabled=true
     expect(await store.setEnabled(false, '/ignored')).toBe(false);
     await expect(fs.access(paths.autostartFile)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await fs.readFile(join(paths.autostartDir, 'keep.desktop'), 'utf8')).toBe('keep');
+    expect(await store.isEnabled()).toBe(false);
   });
 });
