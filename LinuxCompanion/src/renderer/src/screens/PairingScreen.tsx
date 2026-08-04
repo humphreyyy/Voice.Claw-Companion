@@ -11,6 +11,7 @@ import {
   compactSetupDeepLink,
   redactedPairingPreview,
   setupDeepLink,
+  setupJSONString,
 } from '../pairing';
 
 const DEFAULT_OPTIONS: PairingOptions = {
@@ -100,7 +101,7 @@ export function PairingScreen({
     setOptions((current) => ({ ...current, [key]: !current[key] }));
   };
   const copy = async (kind: 'json' | 'link') => {
-    await api.copyText(kind === 'json' ? JSON.stringify(payload, null, 2) : setupDeepLink(payload));
+    await api.copyText(kind === 'json' ? setupJSONString(payload) : setupDeepLink(payload));
     setCopied(kind);
     window.setTimeout(() => setCopied(''), 1_500);
   };
@@ -190,7 +191,7 @@ export function PairingScreen({
         </section>
         <section>
           <strong className="bridge-url">{String(payload.TailscaleBaseURL || 'Run setup to generate a Tailscale URL.')}</strong>
-          {error ? <p className="error-copy">{error}</p> : <pre className="json-preview">{Object.keys(preview).length ? JSON.stringify(preview, null, 2) : 'No pairing payload yet.'}</pre>}
+          {error ? <p className="error-copy">{error}</p> : <pre className="json-preview">{Object.keys(preview).length ? setupJSONString(preview) : 'No pairing payload yet.'}</pre>}
           <div className="pairing-actions">
             <button className="button button-secondary" type="button" disabled={!Object.keys(payload).length} onClick={() => void copy('json')}>{copied === 'json' ? 'Setup JSON Copied' : 'Copy Setup JSON'}</button>
             <button className="button button-secondary" type="button" disabled={!Object.keys(payload).length} onClick={() => void copy('link')}>{copied === 'link' ? 'Setup Link Copied' : 'Copy Setup Link'}</button>

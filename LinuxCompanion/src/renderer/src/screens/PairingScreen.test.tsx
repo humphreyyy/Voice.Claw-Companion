@@ -8,6 +8,7 @@ import type {
 import {
   compactSetupDeepLink,
   redactedPairingPreview,
+  setupJSONString,
 } from '../pairing';
 import { PairingScreen } from './PairingScreen';
 
@@ -67,6 +68,20 @@ describe('manual pairing', () => {
     expect(link).toContain('payload_url=');
     expect(link).toContain('gateway_token=bridge-secret');
     expect(link).not.toContain('long-secret');
+  });
+
+  it('sorts setup JSON recursively while preserving array order', () => {
+    const json = setupJSONString({
+      zeta: 9,
+      Alpha: { zulu: true, bravo: 'second', Able: 'first' },
+      ordered: [{ zeta: 2, alpha: 1 }, 'second', 'third'],
+    });
+
+    expect(json.indexOf('"Alpha"')).toBeLessThan(json.indexOf('"ordered"'));
+    expect(json.indexOf('"ordered"')).toBeLessThan(json.indexOf('\n  "zeta"'));
+    expect(json.indexOf('"Able"')).toBeLessThan(json.indexOf('"bravo"'));
+    expect(json.indexOf('"bravo"')).toBeLessThan(json.indexOf('"zulu"'));
+    expect(JSON.parse(json).ordered).toEqual([{ alpha: 1, zeta: 2 }, 'second', 'third']);
   });
 
   it('shows QR, JSON, and deep-link copy controls without pairing automatically', async () => {

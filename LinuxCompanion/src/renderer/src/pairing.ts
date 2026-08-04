@@ -15,6 +15,24 @@ function redact(value: unknown, fieldName = ''): unknown {
   return value;
 }
 
+function sortedSetupValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortedSetupValue);
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right, 'en', { sensitivity: 'case' }))
+        .map(([key, child]) => [key, sortedSetupValue(child)]),
+    );
+  }
+  return value;
+}
+
+export function setupJSONString(payload: Record<string, unknown>): string {
+  return JSON.stringify(sortedSetupValue(payload), null, 2);
+}
+
 export function redactedPairingPreview(
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -34,7 +52,7 @@ function base64URL(value: string): string {
 }
 
 export function setupDeepLink(payload: Record<string, unknown>): string {
-  return `voiceclaw://setup?payload=${base64URL(JSON.stringify(payload))}`;
+  return `voiceclaw://setup?payload=${base64URL(setupJSONString(payload))}`;
 }
 
 function payloadEndpoint(value: unknown): string {
