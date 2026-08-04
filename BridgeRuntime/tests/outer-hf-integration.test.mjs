@@ -193,6 +193,25 @@ test('sideband ownership follows the exact session contract and legacy direct to
     true);
 });
 
+test('Hermes sideband route remains Hermes even when legacy tool arguments say OpenClaw', () => {
+  const processing = outerHFIntegration.realtimeSidebandProcessingForSession({
+    routeMode: 'hermes',
+    processing: {
+      agent: 'gpt-5.6-sol',
+      runtime: 'openclaw',
+      runtimeAgentID: 'main',
+    },
+  }, {
+    runtime: 'openclaw',
+    thinking: 'medium',
+  }, 'openclaw_turn');
+
+  assert.equal(processing.runtime, 'hermes');
+  assert.equal(processing.agent, 'gpt-5.6-sol');
+  assert.equal(processing.runtimeAgentID, 'main');
+  assert.equal(processing.thinking, 'medium');
+});
+
 test('processing normalization preserves separate model route and runtime agent identities', () => {
   const current = outerHFIntegration.normalizeRealtimeProcessingPayload({
     agent: 'julian',

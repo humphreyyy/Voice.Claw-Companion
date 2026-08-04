@@ -2510,6 +2510,18 @@ function isClientOwnedRealtimeTool(name = '', sessionToken = '') {
   return isLegacyClientOwnedRealtimeTool(value);
 }
 
+function realtimeSidebandProcessingForSession(sessionConfig = {}, requested = {}, toolName = '') {
+  const processing = {
+    ...(sessionConfig?.processing || {}),
+    ...(requested && typeof requested === 'object' ? requested : {}),
+  };
+  const routeMode = String(sessionConfig?.routeMode || '').trim().toLowerCase();
+  if (toolName === 'codex_turn' || routeMode === 'codex') processing.runtime = 'codex';
+  else if (routeMode === 'hermes') processing.runtime = 'hermes';
+  else if (routeMode === 'openclaw') processing.runtime = 'openclaw';
+  return processing;
+}
+
 async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
   const key = sanitizeRealtimeSessionToken(sessionToken);
   const state = realtimeSidebandStateFor(key);
@@ -2528,6 +2540,16 @@ async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
   state.lastToolCallId = callId;
   let args = {};
   try { args = JSON.parse(event.arguments || event.output || '{}'); } catch {}
+  const sessionConfig = realtimeSessionConfigs.get(key) || {};
+  const sessionProcessing = realtimeSidebandProcessingForSession(
+    sessionConfig,
+    args.processing,
+    name,
+  );
+  const sessionRuntime = String(sessionProcessing.runtime || '').toLowerCase();
+  const sessionRuntimeLabel = sessionRuntime === 'hermes'
+    ? 'Hermes'
+    : (sessionRuntime === 'codex' ? 'Codex' : 'OpenClaw');
   await appendRealtimeLog({ kind: 'sideband_function_requested', sessionToken: key, name, callId, args });
   const exact = (text) => `Say exactly this text and nothing else:\n${String(text || '').trim()}`;
   const outputAndSpeak = (output, { speak = true } = {}) => {
@@ -2552,8 +2574,8 @@ async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
   if (name === 'steer_openclaw') {
     const steerText = String(args.text || '').trim();
     if (!steerText) { outputJsonAndSpeakSummary({ ok: false, error: 'No steering text supplied.' }); return; }
-    const result = await steerRealtimeOpenClawTurn({ text: steerText, sessionToken, urgency: args.urgency || 'normal', processing: args.processing || {} });
-    outputJsonAndSpeakSummary({ ...result, summary: result.ok ? 'Added that to the active OpenClaw request.' : `OpenClaw steering failed: ${result.error || 'unknown error'}` });
+    const result = await steerRealtimeOpenClawTurn({ text: steerText, sessionToken, urgency: args.urgency || 'normal', processing: sessionProcessing });
+    outputJsonAndSpeakSummary({ ...result, summary: result.ok ? `Added that to the active ${sessionRuntimeLabel} request.` : `${sessionRuntimeLabel} steering failed: ${result.error || 'unknown error'}` });
     return;
   }
   if (name === 'bridge_status') { outputAndSpeak(JSON.stringify(bridgeStatusSnapshot(sessionToken))); return; }
@@ -2583,17 +2605,13 @@ async function handleRealtimeSidebandToolCall(ws, event, sessionToken) {
     return;
   }
   if (name && name !== 'openclaw_turn' && name !== 'codex_turn') return;
-  const isCodexTurn = name === 'codex_turn';
-  const runtimeLabel = isCodexTurn ? 'Codex' : 'OpenClaw';
+  const runtimeLabel = sessionRuntimeLabel;
   const gate = actionability(args.text || '', { allowWake: false, allowShortCommand: true, context: 'realtime-sideband' });
   if (!gate.actionable) { outputAndSpeak("I didn't catch that. Say it again?"); return; }
   if (!incrementRealtimeQueue(sessionToken)) { outputAndSpeak(`The ${runtimeLabel} queue is full (${MAX_REALTIME_PENDING_TURNS} waiting). Say stop or wait a moment.`); return; }
   const turnId = `rt-sideband-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    const sessionConfig = realtimeSessionConfigs.get(sanitizeRealtimeSessionToken(sessionToken)) || {};
-    const processing = { ...(sessionConfig.processing || {}), ...(args.processing || {}) };
-    if (isCodexTurn) processing.runtime = 'codex';
-    const result = await runRealtimeOpenClawTurn({ text: gate.text, sessionToken, turnId, urgency: args.urgency || 'normal', processing });
+    const result = await runRealtimeOpenClawTurn({ text: gate.text, sessionToken, turnId, urgency: args.urgency || 'normal', processing: sessionProcessing });
     if (isRealtimeCancelled(sessionToken, turnId)) { outputAndSpeak('Stopped.'); return; }
     outputAndSpeak(result.ok ? result.reply : (result.cancelled ? 'Stopped.' : `${runtimeLabel} route error: ${result.error || 'unknown error'}`));
   } finally { decrementRealtimeQueue(sessionToken); }
@@ -11116,6 +11134,7 @@ export const outerHFIntegration = Object.freeze({
     const config = realtimeSessionConfigs.get(sanitizeRealtimeSessionToken(sessionToken));
     return config ? { ...config } : null;
   },
+  realtimeSidebandProcessingForSession,
   reconfigureRealtimeSessionRouting,
   resolveRealtimeSessionAdmission,
   realtimeRemoteSessionLookupKey,
