@@ -62,12 +62,29 @@ require_path "$RUNTIME_DIR/package.json"
 require_path "$RUNTIME_DIR/package-lock.json"
 require_path "$RUNTIME_DIR/server/index.js"
 require_path "$RUNTIME_DIR/server/hf-realtime-sidecar.js"
+require_path "$RUNTIME_DIR/server/gpt-live-watch-native-peer.js"
+require_path "$RUNTIME_DIR/server/gpt-live-watch-native-worker.js"
 require_path "$RUNTIME_DIR/scripts/check-runtime-imports.mjs"
+NODE_MAJOR="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
+[[ "$NODE_MAJOR" =~ ^[0-9]+$ && "$NODE_MAJOR" -ge 22 ]] || fail "Node.js 22 or newer is required for packaged runtime verification"
 (
   cd "$RUNTIME_DIR"
   node scripts/check-runtime-imports.mjs
   node scripts/check-realtime-prompts.mjs
+  node --input-type=module --eval "
+    import wrtcImport from '@roamhq/wrtc';
+    const wrtc = wrtcImport.default || wrtcImport;
+    if (typeof wrtc.RTCPeerConnection !== 'function'
+      || typeof wrtc.nonstandard?.RTCAudioSource !== 'function'
+      || typeof wrtc.nonstandard?.RTCAudioSink !== 'function') {
+      throw new Error('Packaged @roamhq/wrtc binding is incomplete.');
+    }
+  "
 )
+WRTC_BINDING="$RUNTIME_DIR/node_modules/@roamhq/wrtc-darwin-arm64/wrtc.node"
+require_path "$WRTC_BINDING"
+file "$WRTC_BINDING" | grep -Fq 'arm64' || fail "packaged libwebrtc binding is not arm64"
+codesign --verify --strict --verbose=2 "$WRTC_BINDING"
 /usr/bin/python3 - "$RUNTIME_MANIFEST" "$SHORT_VERSION" "$BUNDLE_VERSION" <<'PY'
 import json
 import sys

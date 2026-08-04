@@ -73,8 +73,8 @@ Before installing, prepare:
   tailnet as the iPhone.
 - Tailscale HTTPS certificates enabled for the tailnet. If you are not the
   tailnet owner or admin, ask that person to enable them.
-- Node.js installed on the Mac. Companion checks common Homebrew and system
-  locations and links to the installer if it is missing.
+- Node.js 22 or newer installed on the Mac. Companion checks common Homebrew
+  and system locations and links to the installer if it is missing or outdated.
 - VoiceClaw Realtime installed on iPhone and signed in.
 - At least one Mac-side agent route:
   - OpenClaw installed on the Mac, usually at `~/.openclaw`, with

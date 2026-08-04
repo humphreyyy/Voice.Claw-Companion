@@ -1936,7 +1936,9 @@ final class BridgeStore: ObservableObject {
         ]
 
         for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
-            return candidate
+            if (await nodeMajorVersion(executable: candidate) ?? 0) >= 22 {
+                return candidate
+            }
         }
 
         do {
@@ -1947,20 +1949,38 @@ final class BridgeStore: ObservableObject {
                 environment: [:]
             )
             let resolved = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !resolved.isEmpty {
+            if !resolved.isEmpty, (await nodeMajorVersion(executable: resolved) ?? 0) >= 22 {
                 return resolved
             }
         } catch {}
 
-        throw BridgeProcessError(message: "Node.js is not installed or is not available to apps launched from Finder. Install Node.js, reopen VoiceClaw Realtime Companion, then click Install and Start again.")
+        throw BridgeProcessError(message: "Node.js 22 or newer is required and must be available to apps launched from Finder. Install a current Node.js release, reopen VoiceClaw Realtime Companion, then click Install and Start again.")
+    }
+
+    private func nodeMajorVersion(executable: String) async -> Int? {
+        guard let output = try? await runner.run(
+            executable: executable,
+            arguments: ["--version"],
+            workingDirectory: projectRoot,
+            environment: [:]
+        ) else {
+            return nil
+        }
+        let normalized = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let version = normalized.hasPrefix("v") ? String(normalized.dropFirst()) : normalized
+        return Int(version.split(separator: ".", maxSplits: 1).first ?? "")
     }
 
     private static func userFacingSetupError(_ error: Error) -> String {
         let raw = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = raw.lowercased()
 
+        if lower.contains("node.js 22") {
+            return raw
+        }
+
         if lower.contains("node") && (lower.contains("no such file") || lower.contains("not installed") || lower.contains("not found")) {
-            return "Node.js is required to run the local bridge, but VoiceClaw Realtime Companion could not find it. Install Node.js, reopen the companion app, then click Install and Start again."
+            return "Node.js 22 or newer is required to run the local bridge, but VoiceClaw Realtime Companion could not find a supported installation. Install a current Node.js release, reopen the companion app, then click Install and Start again."
         }
 
         if lower.contains("tailscale") {
