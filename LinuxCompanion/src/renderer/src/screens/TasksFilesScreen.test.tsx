@@ -33,6 +33,7 @@ const snapshot: CompanionSnapshot = {
     dnsName: 'host.ts.net',
     serveURL: 'https://host.ts.net:12321',
     serveMapped: true,
+    pairingCompatible: true,
     summary: 'mapped',
   },
   access: [],

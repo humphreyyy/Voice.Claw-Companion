@@ -55,7 +55,9 @@ export interface TailscaleStatus {
   dnsName: string;
   serveURL: string;
   serveMapped: boolean;
+  pairingCompatible: boolean;
   serveBasePath?: string;
+  servePublicBasePath?: string;
   summary: string;
 }
 

@@ -61,7 +61,10 @@ describe('TailscaleInspector', () => {
     ]);
     expect(status.connected).toBe(true);
     expect(status.serveMapped).toBe(true);
+    expect(status.pairingCompatible).toBe(true);
     expect(status.serveURL).toBe('https://openclaw.tailnet.ts.net:12321');
+    expect(status.serveBasePath).toBe('');
+    expect(status.servePublicBasePath).toBe('');
   });
 
   it('treats missing Tailscale as a warning without a repair attempt', async () => {
@@ -74,7 +77,7 @@ describe('TailscaleInspector', () => {
     expect(status.summary).toBe('Tailscale CLI is not available.');
   });
 
-  it('reuses an existing path-based Serve mapping without changing it', async () => {
+  it('reports a path-based Serve mapping without falsely marking it pairing-compatible', async () => {
     const calls: Array<[string, string[]]> = [];
     const runner = fakeRunner(calls, {
       'status --json': JSON.stringify({
@@ -93,8 +96,39 @@ describe('TailscaleInspector', () => {
     const status = await new TailscaleInspector(runner).status(3_334);
 
     expect(status.serveMapped).toBe(true);
+    expect(status.pairingCompatible).toBe(false);
     expect(status.serveBasePath).toBe('/voice');
+    expect(status.servePublicBasePath).toBe('/voice');
     expect(status.serveURL).toBe('https://openclaw-ubuntu.galago-stonecat.ts.net/voice');
+    expect(status.summary).toContain('dedicated HTTPS origin or port');
+  });
+
+  it('prefers a dedicated HTTPS port and preserves its internal target path', async () => {
+    const calls: Array<[string, string[]]> = [];
+    const runner = fakeRunner(calls, {
+      'status --json': JSON.stringify({
+        BackendState: 'Running',
+        Self: { DNSName: 'openclaw-ubuntu.galago-stonecat.ts.net.' },
+      }),
+      'serve status --json': JSON.stringify({
+        Web: {
+          'openclaw-ubuntu.galago-stonecat.ts.net:443': {
+            Handlers: { '/voice': { Proxy: 'http://127.0.0.1:3334/voice' } },
+          },
+          'openclaw-ubuntu.galago-stonecat.ts.net:3334': {
+            Handlers: { '/': { Proxy: 'http://127.0.0.1:3334/voice' } },
+          },
+        },
+      }),
+    });
+
+    const status = await new TailscaleInspector(runner).status(3_334);
+
+    expect(status.serveMapped).toBe(true);
+    expect(status.pairingCompatible).toBe(true);
+    expect(status.serveURL).toBe('https://openclaw-ubuntu.galago-stonecat.ts.net:3334');
+    expect(status.serveBasePath).toBe('/voice');
+    expect(status.servePublicBasePath).toBe('');
   });
 
   it('contains no mutating Tailscale command vocabulary', async () => {

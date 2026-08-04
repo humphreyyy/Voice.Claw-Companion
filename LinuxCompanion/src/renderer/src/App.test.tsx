@@ -34,6 +34,7 @@ function snapshotWithWarnings(): CompanionSnapshot {
       dnsName: '',
       serveURL: '',
       serveMapped: false,
+      pairingCompatible: false,
       summary: 'Tailscale CLI is not available.',
     },
     access: [{

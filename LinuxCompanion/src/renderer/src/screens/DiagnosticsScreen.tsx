@@ -9,7 +9,7 @@ export function DiagnosticsScreen({
   onVerify(): Promise<void>;
 }) {
   const items = [...(snapshot?.diagnostics ?? []), ...(snapshot?.access ?? [])];
-  const ready = snapshot?.service.active && snapshot?.tailscale.serveMapped;
+  const ready = snapshot?.service.active && snapshot?.tailscale.pairingCompatible;
   return (
     <section className="screen panel parity-panel">
       <div className="screen-heading">

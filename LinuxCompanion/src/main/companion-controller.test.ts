@@ -41,6 +41,7 @@ const tailscaleStatus: TailscaleStatus = {
   dnsName: 'openclaw.tailnet.ts.net',
   serveURL: 'https://openclaw.tailnet.ts.net:12321',
   serveMapped: true,
+  pairingCompatible: true,
   summary: 'mapped',
 };
 
@@ -181,6 +182,41 @@ describe('CompanionController', () => {
     expect(snapshot.launchAtLoginEnabled).toBe(true);
     expect(JSON.stringify(snapshot)).not.toContain('sk-secret');
     expect(JSON.stringify(snapshot)).not.toContain('A'.repeat(43));
+  });
+
+  it('does not mark a path-only Tailscale mapping as ready for iPhone pairing', async () => {
+    const deps = dependencies();
+    deps.tailscale.status = async () => ({
+      ...tailscaleStatus,
+      serveURL: 'https://openclaw.tailnet.ts.net/voice',
+      serveBasePath: '/voice',
+      servePublicBasePath: '/voice',
+      pairingCompatible: false,
+    });
+
+    const snapshot = await new CompanionController(deps).getSnapshot();
+
+    expect(snapshot.tailscale.serveMapped).toBe(true);
+    expect(snapshot.tailscale.pairingCompatible).toBe(false);
+    expect(snapshot.pairingAvailable).toBe(false);
+  });
+
+  it('preserves existing bridge network config when only a path mapping exists', async () => {
+    const events: string[] = [];
+    const deps = dependencies(events);
+    deps.tailscale.status = async () => ({
+      ...tailscaleStatus,
+      serveURL: 'https://openclaw.tailnet.ts.net/voice',
+      serveBasePath: '/voice',
+      servePublicBasePath: '/voice',
+      pairingCompatible: false,
+    });
+    const controller = new CompanionController(deps);
+    vi.spyOn(controller, 'getSnapshot').mockResolvedValue({ checkedAt: 1 } as CompanionSnapshot);
+
+    await controller.installAndStart(config);
+
+    expect(events).not.toContain('config.update-network');
   });
 
   it('keeps a snapshot available when optional integrations reject', async () => {

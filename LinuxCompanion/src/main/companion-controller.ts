@@ -113,6 +113,7 @@ function unavailableTailscale(): TailscaleStatus {
     dnsName: '',
     serveURL: '',
     serveMapped: false,
+    pairingCompatible: false,
     summary: 'Tailscale status is unavailable.',
   };
 }
@@ -235,7 +236,11 @@ export class CompanionController {
       launchAtLoginEnabled: autostartResult.status === 'fulfilled'
         ? autostartResult.value
         : false,
-      pairingAvailable: service.active && tailscale.serveMapped && health.ok === true,
+      pairingAvailable:
+        service.active
+        && tailscale.serveMapped
+        && tailscale.pairingCompatible
+        && health.ok === true,
       checkedAt: Date.now(),
     };
   }
@@ -244,11 +249,13 @@ export class CompanionController {
     let config = await this.dependencies.configStore.write(input);
     const tailscale = await this.dependencies.tailscale.status(config.port)
       .catch(() => unavailableTailscale());
-    config = await this.dependencies.configStore.updateNetwork(
-      tailscale.serveMapped ? tailscale.dnsName : '',
-      tailscale.serveMapped ? tailscale.serveURL : '',
-      tailscale.serveMapped ? tailscale.serveBasePath : '',
-    );
+    if (tailscale.serveMapped && tailscale.pairingCompatible) {
+      config = await this.dependencies.configStore.updateNetwork(
+        tailscale.dnsName,
+        tailscale.serveURL,
+        tailscale.serveBasePath,
+      );
+    }
     await this.dependencies.systemd.installAndStart(this.launch());
     const client = this.dependencies.bridgeClientFactory(config);
     await (this.dependencies.waitForHealth ?? defaultWaitForHealth)(client, 15_000);

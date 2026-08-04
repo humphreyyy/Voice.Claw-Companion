@@ -22,10 +22,16 @@ export function TailscaleScreen({
       <div className="info-card"><strong>Why VoiceClaw Realtime Does Not Use Serve Reset</strong><span>Tailscale&apos;s full Serve reset clears every Serve mapping on this Linux host. This Linux port never resets or changes your existing Tailscale Serve mappings.</span></div>
 
       <article className="status-row tailscale-status-row">
-        <div className="status-row-heading"><h3>Tailscale Serve</h3><StatusBadge state={tailscale?.serveMapped ? 'ready' : 'warning'} /></div>
+        <div className="status-row-heading"><h3>Tailscale Serve</h3><StatusBadge state={tailscale?.pairingCompatible ? 'ready' : 'warning'} /></div>
         <p>{tailscale?.summary ?? 'Checking your existing Tailscale state…'}</p>
         <code>{tailscale?.serveURL || 'No matching Serve URL detected for this bridge port.'}</code>
       </article>
+
+      {tailscale?.serveMapped && !tailscale.pairingCompatible && (
+        <div className="callout callout-warning">
+          The existing path mapping remains untouched. Add a separate HTTPS port manually, then click Install and Start again: <code>tailscale serve --bg --https={snapshot?.config.port ?? 12321} http://127.0.0.1:{snapshot?.config.port ?? 12321}{tailscale.serveBasePath || ''}</code>
+        </div>
+      )}
 
       <div className="form-actions wrap-actions tailscale-actions">
         <button className="button button-secondary" type="button" onClick={() => void api.openURL('https://tailscale.com/download/linux')}>Get Tailscale</button>

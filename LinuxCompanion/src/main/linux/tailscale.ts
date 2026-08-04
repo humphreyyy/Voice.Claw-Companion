@@ -24,6 +24,7 @@ function missingStatus(): TailscaleStatus {
     dnsName: '',
     serveURL: '',
     serveMapped: false,
+    pairingCompatible: false,
     summary: 'Tailscale CLI is not available.',
   };
 }
@@ -35,12 +36,14 @@ function malformedStatus(): TailscaleStatus {
     dnsName: '',
     serveURL: '',
     serveMapped: false,
+    pairingCompatible: false,
     summary: 'Tailscale status could not be read.',
   };
 }
 
 interface SelectedProxy {
-  basePath: string;
+  publicBasePath: string;
+  targetBasePath: string;
   publicPort: string;
 }
 
@@ -50,6 +53,7 @@ function selectedProxy(value: UnknownRecord, port: number): SelectedProxy | unde
     return undefined;
   }
 
+  const candidates: SelectedProxy[] = [];
   for (const [webAddress, webEntry] of Object.entries(web)) {
     const handlers = record(record(webEntry)?.Handlers);
     if (!handlers) continue;
@@ -61,17 +65,24 @@ function selectedProxy(value: UnknownRecord, port: number): SelectedProxy | unde
         if (target.hostname === '127.0.0.1' && Number(target.port) === port) {
           const normalizedHandler = handlerPath === '/' ? '' : handlerPath.replace(/\/+$/u, '');
           const normalizedTarget = target.pathname === '/' ? '' : target.pathname.replace(/\/+$/u, '');
-          return {
-            basePath: normalizedTarget || normalizedHandler,
+          candidates.push({
+            publicBasePath: normalizedHandler,
+            targetBasePath: normalizedTarget,
             publicPort: webAddress.split(':').at(-1) || '443',
-          };
+          });
         }
       } catch {
         continue;
       }
     }
   }
-  return undefined;
+
+  return candidates.sort((left, right) => {
+    const leftPathPenalty = left.publicBasePath === '' ? 0 : 1;
+    const rightPathPenalty = right.publicBasePath === '' ? 0 : 1;
+    if (leftPathPenalty !== rightPathPenalty) return leftPathPenalty - rightPathPenalty;
+    return Number(left.publicPort) - Number(right.publicPort);
+  })[0];
 }
 
 export class TailscaleInspector {
@@ -105,13 +116,16 @@ export class TailscaleInspector {
         dnsName,
         serveURL: '',
         serveMapped: false,
+        pairingCompatible: false,
         summary: 'Tailscale is not connected.',
       };
     }
 
     let serveMapped = false;
     let serveBasePath = '';
+    let servePublicBasePath = '';
     let serveURL = '';
+    let pairingCompatible = false;
     try {
       const serveResult = await this.runner.run(
         'tailscale',
@@ -124,12 +138,15 @@ export class TailscaleInspector {
       const mapping = parsedServe === undefined ? undefined : selectedProxy(parsedServe, port);
       serveMapped = mapping !== undefined;
       if (mapping) {
-        serveBasePath = mapping.basePath;
+        serveBasePath = mapping.targetBasePath;
+        servePublicBasePath = mapping.publicBasePath;
+        pairingCompatible = mapping.publicBasePath === '';
         const portSuffix = mapping.publicPort === '443' ? '' : `:${mapping.publicPort}`;
-        serveURL = `https://${dnsName}${portSuffix}${mapping.basePath}`;
+        serveURL = `https://${dnsName}${portSuffix}${mapping.publicBasePath}`;
       }
     } catch {
       serveMapped = false;
+      pairingCompatible = false;
     }
 
     return {
@@ -138,9 +155,13 @@ export class TailscaleInspector {
       dnsName,
       serveURL,
       serveMapped,
+      pairingCompatible,
       serveBasePath,
+      servePublicBasePath,
       summary: serveMapped
-        ? 'Tailscale Serve is mapped to the VoiceClaw bridge.'
+        ? pairingCompatible
+          ? 'Tailscale Serve is mapped to the VoiceClaw bridge.'
+          : `Tailscale Serve reaches this bridge under ${servePublicBasePath}, but iPhone WebRTC pairing requires a dedicated HTTPS origin or port.`
         : 'Tailscale is connected; Serve is not mapped to this bridge.',
     };
   }

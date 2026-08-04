@@ -84,4 +84,13 @@ describe('manual pairing', () => {
     expect(screen.getByText(/Install and Start the VoiceClaw bridge/)).toBeVisible();
     expect(desktopAPI.getPairingPayload).not.toHaveBeenCalled();
   });
+
+  it('does not generate a misleading QR for a path-only Serve mapping', async () => {
+    const desktopAPI = api();
+    render(<PairingScreen api={desktopAPI} snapshot={null} bridgeAvailable pairingAvailable={false} />);
+
+    expect(screen.getByText(/dedicated Tailscale HTTPS origin or port/u)).toBeVisible();
+    expect(desktopAPI.getPairingPayload).not.toHaveBeenCalled();
+    expect(screen.queryByAltText('VoiceClaw phone setup QR code')).not.toBeInTheDocument();
+  });
 });

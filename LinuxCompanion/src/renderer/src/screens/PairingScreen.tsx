@@ -52,7 +52,7 @@ export function PairingScreen({
   }, [snapshot]);
 
   useEffect(() => {
-    if (!bridgeAvailable) {
+    if (!bridgeAvailable || !pairingAvailable) {
       setPayload({});
       setQRCode('');
       setError('');
@@ -75,7 +75,7 @@ export function PairingScreen({
       if (active) setError('The local VoiceClaw bridge is not responding. Return to Set Up and restart it.');
     });
     return () => { active = false; };
-  }, [api, authRevision, bridgeAvailable, options]);
+  }, [api, authRevision, bridgeAvailable, options, pairingAvailable]);
 
   const saveAuth = async (next: Partial<RealtimeAuthInput> = {}) => {
     setSavingAuth(true);
@@ -118,7 +118,7 @@ export function PairingScreen({
         </div>
       </div>
 
-      {!pairingAvailable && <div className="callout callout-warning">Remote pairing is not ready. Check the bridge and your existing Tailscale Serve mapping.</div>}
+      {!pairingAvailable && <div className="callout callout-warning">Remote pairing is not ready. VoiceClaw Realtime on iPhone requires a dedicated Tailscale HTTPS origin or port; a path-only mapping such as /voice is not used for WebRTC signaling.</div>}
       {!bridgeAvailable && <div className="callout callout-warning">Install and Start the VoiceClaw bridge from Set Up before creating a pairing payload.</div>}
 
       <div className="parity-form pairing-preferences">
