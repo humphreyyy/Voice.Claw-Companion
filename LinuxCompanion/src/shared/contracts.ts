@@ -20,6 +20,7 @@ export interface BridgeConfig extends SetupInput {
   gatewayToken: string;
   tailscaleDNSName: string;
   tailscaleBaseURL: string;
+  basePath?: string;
 }
 
 export interface PublicBridgeConfig extends Omit<SetupInput, 'openAIAPIKey'> {
@@ -52,6 +53,7 @@ export interface TailscaleStatus {
   dnsName: string;
   serveURL: string;
   serveMapped: boolean;
+  serveBasePath?: string;
   summary: string;
 }
 

@@ -23,6 +23,13 @@ function storedText(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+function storedBasePath(value: unknown): string {
+  const path = storedText(value).trim();
+  return path === '' || /^\/[A-Za-z0-9._~!$&'()*+,;=:@/-]*$/u.test(path)
+    ? path.replace(/\/+$/u, '')
+    : '';
+}
+
 export class ConfigStore {
   public constructor(private readonly paths: LinuxOwnedPaths) {}
 
@@ -50,6 +57,7 @@ export class ConfigStore {
         : randomBytes(32).toString('base64url'),
       tailscaleDNSName: storedText(raw.tailscaleDNSName),
       tailscaleBaseURL: storedText(raw.tailscaleBaseURL),
+      basePath: storedBasePath(raw.basePath),
     };
   }
 
@@ -64,11 +72,16 @@ export class ConfigStore {
         : randomBytes(32).toString('base64url'),
       tailscaleDNSName: storedText(existing.tailscaleDNSName),
       tailscaleBaseURL: storedText(existing.tailscaleBaseURL),
+      basePath: storedBasePath(existing.basePath),
     };
     return this.writeConfig(next);
   }
 
-  public async updateNetwork(dnsName: string, baseURL: string): Promise<BridgeConfig> {
+  public async updateNetwork(
+    dnsName: string,
+    baseURL: string,
+    basePath = '',
+  ): Promise<BridgeConfig> {
     const normalizedDNS = dnsName.trim().replace(/\.$/u, '');
     const normalizedURL = baseURL.trim();
 
@@ -78,6 +91,7 @@ export class ConfigStore {
         ...current,
         tailscaleDNSName: '',
         tailscaleBaseURL: '',
+        basePath: '',
       });
     }
 
@@ -109,6 +123,7 @@ export class ConfigStore {
       ...current,
       tailscaleDNSName: normalizedDNS,
       tailscaleBaseURL: normalizedURL,
+      basePath: storedBasePath(basePath),
     });
   }
 

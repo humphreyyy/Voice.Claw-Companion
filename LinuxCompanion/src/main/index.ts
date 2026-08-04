@@ -113,6 +113,7 @@ function createController(): CompanionController {
     bridgeClientFactory: (config) => new BridgeClient({
       port: config.port,
       token: config.gatewayToken,
+      basePath: config.basePath,
     }),
   });
   registerCompanionIPC(

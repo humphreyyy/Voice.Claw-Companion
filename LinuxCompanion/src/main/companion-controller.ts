@@ -23,7 +23,7 @@ type UnknownRecord = Record<string, unknown>;
 interface ConfigStoreLike {
   read(): Promise<BridgeConfig>;
   write(input: SetupInput): Promise<BridgeConfig>;
-  updateNetwork(dnsName: string, baseURL: string): Promise<BridgeConfig>;
+  updateNetwork(dnsName: string, baseURL: string, basePath?: string): Promise<BridgeConfig>;
   remove(): Promise<void>;
 }
 
@@ -87,6 +87,7 @@ function fallbackConfig(): BridgeConfig {
     gatewayToken: '',
     tailscaleDNSName: '',
     tailscaleBaseURL: '',
+    basePath: '',
   };
 }
 
@@ -242,6 +243,7 @@ export class CompanionController {
     config = await this.dependencies.configStore.updateNetwork(
       tailscale.serveMapped ? tailscale.dnsName : '',
       tailscale.serveMapped ? tailscale.serveURL : '',
+      tailscale.serveMapped ? tailscale.serveBasePath : '',
     );
     await this.dependencies.systemd.installAndStart(this.launch());
     const client = this.dependencies.bridgeClientFactory(config);

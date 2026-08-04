@@ -19,6 +19,7 @@ export class BridgeRequestError extends Error {
 export interface BridgeClientOptions {
   port: number;
   token: string;
+  basePath?: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
 }
@@ -78,18 +79,21 @@ function artifact(value: unknown): ArtifactSummary {
 }
 
 export class BridgeClient {
+  private readonly origin: string;
   private readonly baseURL: string;
   private readonly fetchImplementation: typeof fetch;
   private readonly timeoutMs: number;
 
   public constructor(private readonly options: BridgeClientOptions) {
-    this.baseURL = `http://127.0.0.1:${options.port}`;
+    this.origin = `http://127.0.0.1:${options.port}`;
+    const basePath = options.basePath?.trim().replace(/\/+$/u, '') ?? '';
+    this.baseURL = `${this.origin}${basePath}`;
     this.fetchImplementation = options.fetch ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs ?? 5_000;
   }
 
   public health(): Promise<UnknownRecord> {
-    return this.request('/healthz', { authenticated: false });
+    return this.request('/healthz', { authenticated: false, originOnly: true });
   }
 
   public status(): Promise<UnknownRecord> {
@@ -144,6 +148,7 @@ export class BridgeClient {
     path: string,
     options: {
       authenticated?: boolean;
+      originOnly?: boolean;
       method?: string;
       headers?: Record<string, string>;
     } = {},
@@ -157,7 +162,7 @@ export class BridgeClient {
     }
 
     try {
-      const response = await this.fetchImplementation(`${this.baseURL}${path}`, {
+      const response = await this.fetchImplementation(`${options.originOnly ? this.origin : this.baseURL}${path}`, {
         method: options.method ?? 'GET',
         headers,
         signal: controller.signal,

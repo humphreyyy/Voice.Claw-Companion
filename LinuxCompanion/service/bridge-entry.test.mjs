@@ -17,6 +17,7 @@ test('maps protected bridge config into the existing runtime environment', () =>
   }), {
     VB_PORT: '12321',
     VB_BIND_HOST: '127.0.0.1',
+    VB_BASE_PATH: '',
     VOICECLAW_BRIDGE_TOKEN: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     VOICECLAW_CONFIG_PATH: '/home/tester/.voiceclaw/bridge.json',
     VOICECLAW_CONFIG: '/home/tester/.voiceclaw/bridge.json',

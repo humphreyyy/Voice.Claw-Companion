@@ -16,9 +16,11 @@ const DEFAULT_OPTIONS: PairingOptions = {
 
 export function PairingScreen({
   api,
+  bridgeAvailable,
   pairingAvailable,
 }: {
   api: VoiceClawDesktopAPI;
+  bridgeAvailable: boolean;
   pairingAvailable: boolean;
 }) {
   const [options, setOptions] = useState(DEFAULT_OPTIONS);
@@ -28,6 +30,12 @@ export function PairingScreen({
   const [copied, setCopied] = useState('');
 
   useEffect(() => {
+    if (!bridgeAvailable) {
+      setPayload({});
+      setQRCode('');
+      setError('');
+      return undefined;
+    }
     let active = true;
     api.getPairingPayload(options).then((payload) => {
       if (!active) return;
@@ -43,13 +51,13 @@ export function PairingScreen({
       if (active && dataURL) setQRCode(dataURL);
     }).catch((caught: unknown) => {
       if (active) {
-        setError(caught instanceof Error ? caught.message : String(caught));
+        setError('The local VoiceClaw bridge is not responding. Return to Set Up and restart it.');
       }
     });
     return () => {
       active = false;
     };
-  }, [api, options]);
+  }, [api, bridgeAvailable, options]);
 
   const toggle = (key: keyof PairingOptions) => {
     setOptions((current) => ({ ...current, [key]: !current[key] }));
@@ -75,6 +83,11 @@ export function PairingScreen({
       {!pairingAvailable && (
         <div className="callout callout-warning">
           Remote pairing is not ready. Check the bridge and your existing Tailscale Serve mapping.
+        </div>
+      )}
+      {!bridgeAvailable && (
+        <div className="callout callout-warning">
+          Install and Start the VoiceClaw bridge from Set Up before creating a pairing payload.
         </div>
       )}
       <div className="callout">

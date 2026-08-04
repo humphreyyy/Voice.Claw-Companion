@@ -39,6 +39,7 @@ export function environmentFromConfig(config, paths) {
   return {
     VB_PORT: String(port),
     VB_BIND_HOST: '127.0.0.1',
+    VB_BASE_PATH: typeof config?.basePath === 'string' ? config.basePath : '',
     VOICECLAW_BRIDGE_TOKEN: config.gatewayToken,
     VOICECLAW_CONFIG_PATH: configFile,
     VOICECLAW_CONFIG: configFile,

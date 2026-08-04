@@ -27,6 +27,7 @@ function CompanionApp({ api }: { api: VoiceClawDesktopAPI }) {
         return (
           <PairingScreen
             api={api}
+            bridgeAvailable={companion.snapshot?.service.active ?? false}
             pairingAvailable={companion.snapshot?.pairingAvailable ?? false}
           />
         );

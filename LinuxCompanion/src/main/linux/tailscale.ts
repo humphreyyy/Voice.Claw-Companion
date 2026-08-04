@@ -39,19 +39,39 @@ function malformedStatus(): TailscaleStatus {
   };
 }
 
-function hasSelectedProxy(value: UnknownRecord, port: number): boolean {
+interface SelectedProxy {
+  basePath: string;
+  publicPort: string;
+}
+
+function selectedProxy(value: UnknownRecord, port: number): SelectedProxy | undefined {
   const web = record(value.Web);
   if (!web) {
-    return false;
+    return undefined;
   }
 
-  const expectedProxy = `http://127.0.0.1:${port}`;
-  return Object.values(web).some((webEntry) => {
+  for (const [webAddress, webEntry] of Object.entries(web)) {
     const handlers = record(record(webEntry)?.Handlers);
-    return handlers !== undefined && Object.values(handlers).some(
-      (handler) => record(handler)?.Proxy === expectedProxy,
-    );
-  });
+    if (!handlers) continue;
+    for (const [handlerPath, handler] of Object.entries(handlers)) {
+      const proxy = record(handler)?.Proxy;
+      if (typeof proxy !== 'string') continue;
+      try {
+        const target = new URL(proxy);
+        if (target.hostname === '127.0.0.1' && Number(target.port) === port) {
+          const normalizedHandler = handlerPath === '/' ? '' : handlerPath.replace(/\/+$/u, '');
+          const normalizedTarget = target.pathname === '/' ? '' : target.pathname.replace(/\/+$/u, '');
+          return {
+            basePath: normalizedTarget || normalizedHandler,
+            publicPort: webAddress.split(':').at(-1) || '443',
+          };
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+  return undefined;
 }
 
 export class TailscaleInspector {
@@ -90,6 +110,8 @@ export class TailscaleInspector {
     }
 
     let serveMapped = false;
+    let serveBasePath = '';
+    let serveURL = '';
     try {
       const serveResult = await this.runner.run(
         'tailscale',
@@ -99,7 +121,13 @@ export class TailscaleInspector {
       const parsedServe = serveResult.exitCode === 0
         ? parseJSON(serveResult.stdout)
         : undefined;
-      serveMapped = parsedServe !== undefined && hasSelectedProxy(parsedServe, port);
+      const mapping = parsedServe === undefined ? undefined : selectedProxy(parsedServe, port);
+      serveMapped = mapping !== undefined;
+      if (mapping) {
+        serveBasePath = mapping.basePath;
+        const portSuffix = mapping.publicPort === '443' ? '' : `:${mapping.publicPort}`;
+        serveURL = `https://${dnsName}${portSuffix}${mapping.basePath}`;
+      }
     } catch {
       serveMapped = false;
     }
@@ -108,8 +136,9 @@ export class TailscaleInspector {
       installed: true,
       connected: true,
       dnsName,
-      serveURL: serveMapped ? `https://${dnsName}:${port}` : '',
+      serveURL,
       serveMapped,
+      serveBasePath,
       summary: serveMapped
         ? 'Tailscale Serve is mapped to the VoiceClaw bridge.'
         : 'Tailscale is connected; Serve is not mapped to this bridge.',

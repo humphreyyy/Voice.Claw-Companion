@@ -56,11 +56,18 @@ describe('manual pairing', () => {
   });
 
   it('shows QR, JSON, and deep-link copy controls without pairing automatically', async () => {
-    render(<PairingScreen api={api()} pairingAvailable />);
+    render(<PairingScreen api={api()} bridgeAvailable pairingAvailable />);
     expect(await screen.findByAltText('VoiceClaw phone setup QR code')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Copy Setup JSON' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Copy Setup Link' })).toBeVisible();
     expect(screen.queryByRole('button', { name: /pair iphone now/i }))
       .not.toBeInTheDocument();
+  });
+
+  it('shows setup guidance without calling the bridge when it is offline', async () => {
+    const desktopAPI = api();
+    render(<PairingScreen api={desktopAPI} bridgeAvailable={false} pairingAvailable={false} />);
+    expect(screen.getByText(/Install and Start the VoiceClaw bridge/)).toBeVisible();
+    expect(desktopAPI.getPairingPayload).not.toHaveBeenCalled();
   });
 });

@@ -74,6 +74,29 @@ describe('TailscaleInspector', () => {
     expect(status.summary).toBe('Tailscale CLI is not available.');
   });
 
+  it('reuses an existing path-based Serve mapping without changing it', async () => {
+    const calls: Array<[string, string[]]> = [];
+    const runner = fakeRunner(calls, {
+      'status --json': JSON.stringify({
+        BackendState: 'Running',
+        Self: { DNSName: 'openclaw-ubuntu.galago-stonecat.ts.net.' },
+      }),
+      'serve status --json': JSON.stringify({
+        Web: {
+          'openclaw-ubuntu.galago-stonecat.ts.net:443': {
+            Handlers: { '/voice': { Proxy: 'http://127.0.0.1:3334/voice' } },
+          },
+        },
+      }),
+    });
+
+    const status = await new TailscaleInspector(runner).status(3_334);
+
+    expect(status.serveMapped).toBe(true);
+    expect(status.serveBasePath).toBe('/voice');
+    expect(status.serveURL).toBe('https://openclaw-ubuntu.galago-stonecat.ts.net/voice');
+  });
+
   it('contains no mutating Tailscale command vocabulary', async () => {
     const source = await fs.readFile(new URL('./tailscale.ts', import.meta.url), 'utf8');
     expect(source).not.toMatch(/\[['"](?:up|down|set|reset)['"]/u);
