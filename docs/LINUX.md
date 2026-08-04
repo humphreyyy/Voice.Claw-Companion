@@ -90,5 +90,5 @@ Build and verify the Debian package:
 ```sh
 npm run package:deb
 ../scripts/verify_linux_companion.sh \
-  dist/voiceclaw-companion_0.1.5_amd64.deb
+  dist/voiceclaw-companion_0.1.6_amd64.deb
 ```

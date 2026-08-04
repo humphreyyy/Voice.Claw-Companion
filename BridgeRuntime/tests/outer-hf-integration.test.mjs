@@ -259,7 +259,15 @@ test('an unsupported delayed tool is permanently detached after its deadline', a
   }));
 
   await waitFor(() => downstream !== null);
-  await task;
+  // Production deadline timers are intentionally unref'ed. Keep this test's
+  // event loop alive long enough to observe that deadline instead of allowing
+  // Node's test runner to cancel this and every following subtest.
+  const keepAlive = setTimeout(() => {}, 100);
+  try {
+    await task;
+  } finally {
+    clearTimeout(keepAlive);
+  }
   assert.equal(downstream.signal.aborted, true);
   resolveDelayed('late stale answer');
   await new Promise((resolve) => setTimeout(resolve, 25));
@@ -445,6 +453,49 @@ test('response.create timeout is observation-only and pending intents are bounde
   } finally {
     outerHFIntegration.clearRealtimeSidebandForTest(sessionToken);
   }
+});
+
+test('Realtime sideband startup does not block the signaling response lifecycle', async () => {
+  const sessionToken = 'nonblocking-sideband-start-test';
+  const sessionStartedAt = new Date().toISOString();
+  let resolveStart;
+  let receivedArguments = null;
+  const pendingStart = new Promise((resolve) => { resolveStart = resolve; });
+  outerHFIntegration.setRealtimeSessionConfigForTest(sessionToken, {
+    sessionStartedAt,
+    sidebandScheduled: true,
+    sidebandStarted: false,
+  });
+
+  const scheduled = outerHFIntegration.beginRealtimeSidebandAfterSignaling({
+    location: 'https://api.openai.com/v1/realtime/calls/call-nonblocking-test',
+    sessionToken,
+    apiKey: 'test-sideband-bearer',
+    sessionStartedAt,
+    startRealtimeSidebandFn: (...args) => {
+      receivedArguments = args;
+      return pendingStart;
+    },
+  });
+
+  assert.equal(scheduled, true);
+  assert.deepEqual(receivedArguments, [
+    'https://api.openai.com/v1/realtime/calls/call-nonblocking-test',
+    sessionToken,
+    'test-sideband-bearer',
+  ]);
+  assert.equal(
+    outerHFIntegration.realtimeSessionConfigForTest(sessionToken).sidebandStarted,
+    false,
+  );
+
+  resolveStart(true);
+  await waitFor(() => (
+    outerHFIntegration.realtimeSessionConfigForTest(sessionToken)?.sidebandStarted === true
+  ));
+  const settled = outerHFIntegration.realtimeSessionConfigForTest(sessionToken);
+  assert.equal(settled.sidebandScheduled, false);
+  assert.equal(settled.sidebandStarted, true);
 });
 
 test('duplicate start_session returns one durable receipt without advancing generation', async () => {

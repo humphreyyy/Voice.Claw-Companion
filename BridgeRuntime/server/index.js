@@ -2762,6 +2762,38 @@ async function startRealtimeSideband(location, sessionToken, apiKey = getOpenAIA
   } catch (err) { appendRealtimeLog({ kind: 'sideband_start_failed', sessionToken: key, error: err.message }); return false; }
 }
 
+function beginRealtimeSidebandAfterSignaling({
+  location,
+  sessionToken,
+  apiKey,
+  sessionStartedAt,
+  startRealtimeSidebandFn = startRealtimeSideband,
+} = {}) {
+  if (!REALTIME_SIDEBAND_ENABLED || !location || !apiKey) return false;
+  const key = sanitizeRealtimeSessionToken(sessionToken);
+  void startRealtimeSidebandFn(location, key, apiKey).then((started) => {
+    const current = realtimeSessionConfigs.get(key);
+    if (current?.sessionStartedAt === sessionStartedAt) {
+      realtimeSessionConfigs.set(key, {
+        ...current,
+        sidebandScheduled: false,
+        sidebandStarted: !!started,
+      });
+    }
+    return appendRealtimeLog({
+      kind: started ? 'sideband_start_ready' : 'sideband_start_not_ready',
+      sessionToken: key,
+    });
+  }).catch((error) => {
+    appendRealtimeLog({
+      kind: 'sideband_start_failed',
+      sessionToken: key,
+      error: error?.message || String(error),
+    }).catch(() => {});
+  });
+  return true;
+}
+
 function sanitizeRealtimeSessionToken(value = '') {
   const cleaned = String(value || '').trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return cleaned || `browser-${Date.now().toString(36)}`;
@@ -7318,6 +7350,7 @@ const httpServer = createServer(async (req, res) => {
 
       const sessionToken = req.headers['x-voice-session-token'] || `browser-${Date.now().toString(36)}`;
       const options = realtimeRequestOptions(req, routeMode, sessionToken);
+      const sessionStartedAt = new Date().toISOString();
       const {
         sdpOffer,
         providedSession,
@@ -7365,7 +7398,7 @@ const httpServer = createServer(async (req, res) => {
       } catch (error) {
         realtimeSessionConfigs.set(options.sessionToken, {
           ...options,
-          sessionStartedAt: new Date().toISOString(),
+          sessionStartedAt,
           authSource: 'unavailable',
           authPreferenceSource: realtimeAuthPreferences(req).source,
           realtimeAuthPreference: realtimeAuthPreferences(req).mode,
@@ -7388,7 +7421,7 @@ const httpServer = createServer(async (req, res) => {
 
       realtimeSessionConfigs.set(options.sessionToken, {
         ...options,
-        sessionStartedAt: new Date().toISOString(),
+        sessionStartedAt,
         authSource: realtimeBearer.source,
         authPreferenceSource: realtimeBearer.preferences.source,
         realtimeAuthPreference: realtimeBearer.preferences.mode,
@@ -7416,12 +7449,13 @@ const httpServer = createServer(async (req, res) => {
       });
       const body = await upstream.text();
       const location = upstream.headers.get('location') || upstream.headers.get('Location') || '';
-      const sidebandStarted = companionOwnedToolNames.length && upstream.ok && location
-        ? await startRealtimeSideband(
-            location,
-            sessionToken,
-            realtimeBearer.sidebandBearer || realtimeBearer.bearer)
-        : false;
+      const sidebandEligible = !!(
+        REALTIME_SIDEBAND_ENABLED
+        && companionOwnedToolNames.length
+        && upstream.ok
+        && location
+        && (realtimeBearer.sidebandBearer || realtimeBearer.bearer)
+      );
       await appendRealtimeLog({
         kind: upstream.ok ? 'realtime_signaling_upstream_ok' : 'realtime_signaling_upstream_error',
         sessionToken: sanitizeRealtimeSessionToken(sessionToken),
@@ -7442,6 +7476,7 @@ const httpServer = createServer(async (req, res) => {
         upstreamStatus: upstream.status,
         upstreamContentType: upstream.headers.get('content-type') || '',
         sidebandLocationHeader: !!location,
+        sidebandScheduled: sidebandEligible,
         requestId: upstream.headers.get('x-request-id') || upstream.headers.get('openai-request-id') || '',
         bodyPreview: upstream.ok ? '' : body.slice(0, 1200),
         sessionSummary: {
@@ -7467,7 +7502,7 @@ const httpServer = createServer(async (req, res) => {
       });
       realtimeSessionConfigs.set(options.sessionToken, {
         ...options,
-        sessionStartedAt: new Date().toISOString(),
+        sessionStartedAt,
         authSource: realtimeBearer.source,
         authPreferenceSource: realtimeBearer.preferences.source,
         realtimeAuthPreference: realtimeBearer.preferences.mode,
@@ -7483,13 +7518,13 @@ const httpServer = createServer(async (req, res) => {
         upstreamOK: upstream.ok,
         upstreamStatus: upstream.status,
         sidebandLocationHeader: !!location,
-        sidebandStarted,
+        sidebandScheduled: sidebandEligible,
+        sidebandStarted: false,
       });
-      if (upstream.ok) await appendRealtimeLog({ kind: 'realtime_session_created', sessionToken: sanitizeRealtimeSessionToken(sessionToken), routeMode, clientPlatform, clientProvidedSession: !!providedSession, sessionTransport, sidebandLocationHeader: !!location, sidebandStarted, authSource: realtimeBearer.source, authPreferenceSource: realtimeBearer.preferences.source, fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey, oauthFallbackError: realtimeBearer.oauthError || '', options: { model: options.model, voice: options.voice, noiseReduction: options.noiseReduction, captions: options.captions, turnDetection: options.turnDetection, vadSensitivity: options.vadSensitivity, realtimeReasoning: options.realtimeReasoning, transcriptionDelay: options.transcriptionDelay } });
+      if (upstream.ok) await appendRealtimeLog({ kind: 'realtime_session_created', sessionToken: sanitizeRealtimeSessionToken(sessionToken), routeMode, clientPlatform, clientProvidedSession: !!providedSession, sessionTransport, sidebandLocationHeader: !!location, sidebandScheduled: sidebandEligible, sidebandStarted: false, authSource: realtimeBearer.source, authPreferenceSource: realtimeBearer.preferences.source, fallbackToAPIKey: realtimeBearer.preferences.fallbackToAPIKey, oauthFallbackError: realtimeBearer.oauthError || '', options: { model: options.model, voice: options.voice, noiseReduction: options.noiseReduction, captions: options.captions, turnDetection: options.turnDetection, vadSensitivity: options.vadSensitivity, realtimeReasoning: options.realtimeReasoning, transcriptionDelay: options.transcriptionDelay } });
       const headers = { 'Content-Type': upstream.ok ? 'application/sdp' : 'text/plain' };
       if (location) headers['X-OpenAI-Realtime-Location'] = 'present';
       headers['X-OpenClaw-Route'] = routeMode;
-      if (sidebandStarted) headers['X-OpenClaw-Sideband'] = 'started';
       if (providedSession) headers['X-VoiceClaw-Provided-Session'] = 'used';
       if (promptContract) {
         headers['X-VoiceClaw-Prompt-Contract-SHA256'] = promptContract.sha256;
@@ -7508,6 +7543,18 @@ const httpServer = createServer(async (req, res) => {
       headers['X-Realtime-Reasoning'] = options.realtimeReasoning;
       res.writeHead(upstream.status, headers);
       res.end(body);
+      // The provider does not admit the call's sideband until the client has
+      // applied this SDP answer. Starting it before the response is fine, but
+      // awaiting it here deadlocks signaling and makes short-lived clients
+      // cancel an otherwise successful call.
+      if (sidebandEligible) {
+        beginRealtimeSidebandAfterSignaling({
+          location,
+          sessionToken,
+          apiKey: realtimeBearer.sidebandBearer || realtimeBearer.bearer,
+          sessionStartedAt,
+        });
+      }
       return;
     }
 
@@ -11047,6 +11094,7 @@ if (process.env.VOICECLAW_OUTER_HF_TEST !== '1') {
 }
 
 export const outerHFIntegration = Object.freeze({
+  beginRealtimeSidebandAfterSignaling,
   companionVoiceHFBridgeConfigKey,
   credentialBoundaryRuntimeSnapshot: () => ({ ...credentialBoundaryRuntimeMetrics }),
   dispatchHFCompanionConfigTransition,
@@ -11063,6 +11111,10 @@ export const outerHFIntegration = Object.freeze({
       responseCreateOutcomeUnknownAt: state.responseCreateOutcomeUnknownAt,
       responseIntentOverflowCount: state.responseIntentOverflowCount,
     };
+  },
+  realtimeSessionConfigForTest(sessionToken) {
+    const config = realtimeSessionConfigs.get(sanitizeRealtimeSessionToken(sessionToken));
+    return config ? { ...config } : null;
   },
   reconfigureRealtimeSessionRouting,
   resolveRealtimeSessionAdmission,
